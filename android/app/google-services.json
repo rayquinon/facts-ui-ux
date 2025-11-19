@@ -1,0 +1,40 @@
+{
+  "project_info": {
+    "project_number": "424296832329",
+    "firebase_url": "https://simple-distributed-database-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "simple-distributed-database",
+    "storage_bucket": "simple-distributed-database.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:424296832329:android:f85602b9ccbf951ce64e98",
+        "android_client_info": {
+          "package_name": "com.example.facts_ui_ux"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "424296832329-njdg8md5ife7m6337voeebmf3f6dduvh.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAjQAxHIyvdG-DAYiY3_Rn9aBrFMXAkJds"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "424296832329-fs1mlao1354ofah8unumurcc3309jjln.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
