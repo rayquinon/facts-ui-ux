@@ -30,6 +30,13 @@
             {
               "client_id": "424296832329-fs1mlao1354ofah8unumurcc3309jjln.apps.googleusercontent.com",
               "client_type": 3
+            },
+            {
+              "client_id": "424296832329-igai84cr1mh909ctm3htind2glcramjb.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.factsUiUx"
+              }
             }
           ]
         }
