@@ -27,15 +27,9 @@ class DefaultFirebaseOptions {
       case TargetPlatform.macOS:
         return macos;
       case TargetPlatform.windows:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for windows - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
+        return windows;
       case TargetPlatform.linux:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for linux - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
+        return linux;
       default:
         throw UnsupportedError(
           'DefaultFirebaseOptions are not supported for this platform.',
@@ -49,7 +43,8 @@ class DefaultFirebaseOptions {
     messagingSenderId: '424296832329',
     projectId: 'simple-distributed-database',
     authDomain: 'simple-distributed-database.firebaseapp.com',
-    databaseURL: 'https://simple-distributed-database-default-rtdb.asia-southeast1.firebasedatabase.app',
+    databaseURL:
+        'https://simple-distributed-database-default-rtdb.asia-southeast1.firebasedatabase.app',
     storageBucket: 'simple-distributed-database.firebasestorage.app',
     measurementId: 'G-LXW241NRWG',
   );
@@ -59,7 +54,8 @@ class DefaultFirebaseOptions {
     appId: '1:424296832329:android:f85602b9ccbf951ce64e98',
     messagingSenderId: '424296832329',
     projectId: 'simple-distributed-database',
-    databaseURL: 'https://simple-distributed-database-default-rtdb.asia-southeast1.firebasedatabase.app',
+    databaseURL:
+        'https://simple-distributed-database-default-rtdb.asia-southeast1.firebasedatabase.app',
     storageBucket: 'simple-distributed-database.firebasestorage.app',
   );
 
@@ -68,9 +64,11 @@ class DefaultFirebaseOptions {
     appId: '1:424296832329:ios:dc3bbf3d931bf1cfe64e98',
     messagingSenderId: '424296832329',
     projectId: 'simple-distributed-database',
-    databaseURL: 'https://simple-distributed-database-default-rtdb.asia-southeast1.firebasedatabase.app',
+    databaseURL:
+        'https://simple-distributed-database-default-rtdb.asia-southeast1.firebasedatabase.app',
     storageBucket: 'simple-distributed-database.firebasestorage.app',
-    iosClientId: '424296832329-igai84cr1mh909ctm3htind2glcramjb.apps.googleusercontent.com',
+    iosClientId:
+        '424296832329-igai84cr1mh909ctm3htind2glcramjb.apps.googleusercontent.com',
     iosBundleId: 'com.example.factsUiUx',
   );
 
@@ -79,9 +77,35 @@ class DefaultFirebaseOptions {
     appId: '1:424296832329:ios:dc3bbf3d931bf1cfe64e98',
     messagingSenderId: '424296832329',
     projectId: 'simple-distributed-database',
-    databaseURL: 'https://simple-distributed-database-default-rtdb.asia-southeast1.firebasedatabase.app',
+    databaseURL:
+        'https://simple-distributed-database-default-rtdb.asia-southeast1.firebasedatabase.app',
     storageBucket: 'simple-distributed-database.firebasestorage.app',
-    iosClientId: '424296832329-igai84cr1mh909ctm3htind2glcramjb.apps.googleusercontent.com',
+    iosClientId:
+        '424296832329-igai84cr1mh909ctm3htind2glcramjb.apps.googleusercontent.com',
     iosBundleId: 'com.example.factsUiUx',
+  );
+
+  static const FirebaseOptions windows = FirebaseOptions(
+    apiKey: 'AIzaSyCIX6BPWg4vO25X-3WuvREdArIIOU2lyK4',
+    appId: '1:424296832329:web:f5b861176f40a44be64e98',
+    messagingSenderId: '424296832329',
+    projectId: 'simple-distributed-database',
+    authDomain: 'simple-distributed-database.firebaseapp.com',
+    databaseURL:
+        'https://simple-distributed-database-default-rtdb.asia-southeast1.firebasedatabase.app',
+    storageBucket: 'simple-distributed-database.firebasestorage.app',
+    measurementId: 'G-82N0GTJ8CP',
+  );
+
+  static const FirebaseOptions linux = FirebaseOptions(
+    apiKey: 'AIzaSyCIX6BPWg4vO25X-3WuvREdArIIOU2lyK4',
+    appId: '1:424296832329:web:f5b861176f40a44be64e98',
+    messagingSenderId: '424296832329',
+    projectId: 'simple-distributed-database',
+    authDomain: 'simple-distributed-database.firebaseapp.com',
+    databaseURL:
+        'https://simple-distributed-database-default-rtdb.asia-southeast1.firebasedatabase.app',
+    storageBucket: 'simple-distributed-database.firebasestorage.app',
+    measurementId: 'G-82N0GTJ8CP',
   );
 }
