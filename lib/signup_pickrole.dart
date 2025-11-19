@@ -1,5 +1,10 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+
+import 'instructor_page.dart';
+import 'student_page.dart';
 
 enum UserRole { instructor, student }
 
@@ -211,18 +216,77 @@ class _SignUpPageState extends State<SignUpPage> {
     final bool isValid = _formKey.currentState?.validate() ?? false;
     if (!isValid || _isSubmitting) return;
 
+    FocusScope.of(context).unfocus();
     setState(() => _isSubmitting = true);
-    await Future<void>.delayed(const Duration(seconds: 1));
-    if (!mounted) return;
 
-    setState(() => _isSubmitting = false);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Welcome aboard, ${_nameController.text.trim()}!'),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-    Navigator.of(context).popUntil((Route<dynamic> route) => route.isFirst);
+    final bool isInstructor = widget.role == UserRole.instructor;
+    final String email = _emailController.text.trim();
+    final String password = _passwordController.text.trim();
+    final String fullName = _nameController.text.trim();
+    final String? department = _selectedDepartment;
+    final String? studentId = isInstructor
+        ? null
+        : _studentIdController.text.trim();
+    final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+
+    try {
+      final UserCredential credential = await FirebaseAuth.instance
+          .createUserWithEmailAndPassword(email: email, password: password);
+
+      final User? user = credential.user;
+      if (user != null) {
+        await user.updateDisplayName(fullName);
+        final Map<String, dynamic> profile = <String, dynamic>{
+          'fullName': fullName,
+          'email': email,
+          'role': widget.role.name,
+          'createdAt': FieldValue.serverTimestamp(),
+        };
+        if (isInstructor) {
+          profile['department'] = department;
+        } else {
+          profile['studentId'] = studentId;
+        }
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .set(profile, SetOptions(merge: true));
+      }
+
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('Welcome aboard, $fullName!'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      if (mounted) {
+        final String destinationRoute = isInstructor
+            ? InstructorPage.routeName
+            : StudentPage.routeName;
+        Navigator.of(context).pushNamedAndRemoveUntil(
+          destinationRoute,
+          (Route<dynamic> route) => false,
+        );
+      }
+    } on FirebaseAuthException catch (error) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(_mapSignUpError(error)),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Something went wrong. Please try again.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isSubmitting = false);
+      }
+    }
   }
 
   @override
@@ -436,5 +500,20 @@ class _SignUpPageState extends State<SignUpPage> {
         ),
       ),
     );
+  }
+}
+
+String _mapSignUpError(FirebaseAuthException error) {
+  switch (error.code) {
+    case 'email-already-in-use':
+      return 'An account already exists for that email.';
+    case 'weak-password':
+      return 'Password is too weak. Try a stronger one.';
+    case 'invalid-email':
+      return 'That email address looks invalid.';
+    case 'operation-not-allowed':
+      return 'Email/password sign-up is disabled for this project.';
+    default:
+      return 'Sign up failed (${error.code}). Please try again.';
   }
 }
