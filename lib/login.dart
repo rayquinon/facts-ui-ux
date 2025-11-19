@@ -1,6 +1,12 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'admin_page.dart';
+import 'instructor_page.dart';
 import 'signup_pickrole.dart';
+import 'student_page.dart';
+import 'constants/auth_constants.dart';
+import 'services/user_role_service.dart';
 
 /// Standalone login page with simple validation and submit feedback.
 class LoginPage extends StatefulWidget {
@@ -47,19 +53,93 @@ class _LoginPageState extends State<LoginPage> {
     final bool isValid = _formKey.currentState?.validate() ?? false;
     if (!isValid || _isSubmitting) return;
 
+    FocusScope.of(context).unfocus();
     setState(() => _isSubmitting = true);
 
-    await Future<void>.delayed(const Duration(seconds: 1));
+    final String email = _emailController.text.trim();
+    final String password = _passwordController.text.trim();
+    final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
 
-    if (!mounted) return;
-    setState(() => _isSubmitting = false);
+    try {
+      final UserCredential credential = await FirebaseAuth.instance
+          .signInWithEmailAndPassword(email: email, password: password);
+      final User? user = credential.user;
+      final String normalizedAdminEmail = kAdminEmail.toLowerCase();
+      final bool isAdmin =
+          (user?.email ?? '').toLowerCase() == normalizedAdminEmail;
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Welcome ${_emailController.text.trim()}'),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
+      late final String destinationRoute;
+      String welcomeMessage = 'Welcome back, ${user?.email ?? email}';
+
+      if (isAdmin) {
+        destinationRoute = AdminPage.routeName;
+        welcomeMessage = 'Signed in as Admin';
+      } else {
+        final String? role = await UserRoleService.fetchRoleByUid(user?.uid);
+        if (role == 'student') {
+          destinationRoute = StudentPage.routeName;
+          welcomeMessage = 'Welcome back, student!';
+        } else if (role == 'instructor') {
+          destinationRoute = InstructorPage.routeName;
+          welcomeMessage = 'Welcome back, instructor!';
+        } else {
+          messenger.showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Your profile is missing a role assignment. Contact support.',
+              ),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+          return;
+        }
+      }
+
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(welcomeMessage),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+
+      if (mounted) {
+        Navigator.of(context).pushReplacementNamed(destinationRoute);
+      }
+    } on FirebaseAuthException catch (error) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(_mapAuthError(error)),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Something went wrong. Please try again.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isSubmitting = false);
+      }
+    }
+  }
+
+  String _mapAuthError(FirebaseAuthException error) {
+    switch (error.code) {
+      case 'invalid-credential':
+      case 'wrong-password':
+        return 'Incorrect email or password.';
+      case 'user-not-found':
+        return 'No account found for that email.';
+      case 'user-disabled':
+        return 'This account has been disabled.';
+      case 'too-many-requests':
+        return 'Too many attempts. Please try again later.';
+      default:
+        return 'Sign-in failed (${error.code}). Please try again.';
+    }
   }
 
   @override
