@@ -1,1 +1,1 @@
-const String kAdminEmail = 'admin@facts.app';
+const String kAdminEmail = 'admin@gmail.com';
