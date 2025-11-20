@@ -237,16 +237,17 @@ class _SignUpPageState extends State<SignUpPage> {
       if (user != null) {
         await user.updateDisplayName(fullName);
         final Map<String, dynamic> profile = <String, dynamic>{
-          'fullName': fullName,
-          'email': email,
+          'Full Name': fullName,
+          'Email': email,
           'role': widget.role.name,
           'createdAt': FieldValue.serverTimestamp(),
         };
         if (isInstructor) {
-          profile['department'] = department;
+          profile['Department'] = department;
         } else {
-          profile['studentId'] = studentId;
+          profile['Student ID'] = studentId;
         }
+        profile.removeWhere((_, Object? value) => value == null);
         await FirebaseFirestore.instance
             .collection('users')
             .doc(user.uid)
@@ -275,7 +276,16 @@ class _SignUpPageState extends State<SignUpPage> {
           behavior: SnackBarBehavior.floating,
         ),
       );
-    } catch (_) {
+    } on FirebaseException catch (error, stackTrace) {
+      debugPrint('Firestore write failed: ${error.code} -> ${error.message}\n$stackTrace');
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('Firestore write failed (${error.code}).'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (error, stackTrace) {
+      debugPrint('Unexpected signup error: $error\n$stackTrace');
       messenger.showSnackBar(
         const SnackBar(
           content: Text('Something went wrong. Please try again.'),
@@ -331,7 +341,7 @@ class _SignUpPageState extends State<SignUpPage> {
                           ),
                           validator: (String? value) {
                             if ((value ?? '').trim().isEmpty) {
-                              return 'Please enter your name';
+                              return 'Please enter your full name';
                             }
                             return null;
                           },
@@ -341,6 +351,7 @@ class _SignUpPageState extends State<SignUpPage> {
                           controller: _emailController,
                           keyboardType: TextInputType.emailAddress,
                           textInputAction: TextInputAction.next,
+                          autofillHints: const <String>[AutofillHints.email],
                           decoration: const InputDecoration(
                             labelText: 'Email address',
                             prefixIcon: Icon(Icons.mail_outline),
@@ -432,6 +443,7 @@ class _SignUpPageState extends State<SignUpPage> {
                         TextFormField(
                           controller: _passwordController,
                           textInputAction: TextInputAction.next,
+                          autofillHints: const <String>[AutofillHints.newPassword],
                           decoration: InputDecoration(
                             labelText: 'Password',
                             prefixIcon: const Icon(Icons.lock_outline),
@@ -458,6 +470,7 @@ class _SignUpPageState extends State<SignUpPage> {
                         TextFormField(
                           controller: _confirmPasswordController,
                           textInputAction: TextInputAction.done,
+                          autofillHints: const <String>[AutofillHints.newPassword],
                           decoration: const InputDecoration(
                             labelText: 'Confirm password',
                             prefixIcon: Icon(Icons.lock_person_outlined),
