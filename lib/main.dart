@@ -4,6 +4,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import 'admin_page.dart';
+import 'face_enrollment_page.dart';
 import 'firebase_options.dart';
 import 'instructor_page.dart';
 import 'login.dart';
@@ -59,6 +60,8 @@ class FactsApp extends StatelessWidget {
         StudentPage.routeName: (BuildContext context) => const StudentPage(),
         InstructorPage.routeName: (BuildContext context) =>
             const InstructorPage(),
+        FaceEnrollmentPage.routeName: (BuildContext context) =>
+          const FaceEnrollmentPage(),
       },
       onUnknownRoute: (RouteSettings settings) => MaterialPageRoute<void>(
         builder: (BuildContext context) =>
