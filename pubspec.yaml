@@ -41,6 +41,8 @@ dependencies:
   camera: ^0.11.3
   camera_windows: ^0.2.6+2
   camera_macos: ^0.0.9
+  onnxruntime: ^1.4.1
+  image: ^4.2.0
 
 dev_dependencies:
   flutter_test:
@@ -63,6 +65,9 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  assets:
+    - assets/models/
 
   # To add assets to your application, add an assets section, like this:
   # assets:
