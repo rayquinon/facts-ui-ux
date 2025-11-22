@@ -10,6 +10,7 @@ import 'instructor_page.dart';
 import 'login.dart';
 import 'signup_pickrole.dart';
 import 'student_page.dart';
+import 'attendance_session_page.dart';
 import 'constants/auth_constants.dart';
 import 'services/user_role_service.dart';
 
@@ -62,6 +63,17 @@ class FactsApp extends StatelessWidget {
             const InstructorPage(),
         FaceEnrollmentPage.routeName: (BuildContext context) =>
           const FaceEnrollmentPage(),
+          AttendanceSessionPage.routeName: (BuildContext context) {
+            final ModalRoute<dynamic>? route = ModalRoute.of(context);
+            final AttendanceSessionConfig? config =
+                route?.settings.arguments as AttendanceSessionConfig?;
+            if (config == null) {
+              return const UnknownRouteScreen(
+                unknownRouteName: AttendanceSessionPage.routeName,
+              );
+            }
+            return AttendanceSessionPage(config: config);
+          },
       },
       onUnknownRoute: (RouteSettings settings) => MaterialPageRoute<void>(
         builder: (BuildContext context) =>
