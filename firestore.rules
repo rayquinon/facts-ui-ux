@@ -226,6 +226,11 @@ service cloud.firestore {
       }
     }
 
+    match /alerts/{alertId} {
+      allow read: if isAdmin() || isRoleAdmin();
+      allow create, update, delete: if isAdmin();
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }
