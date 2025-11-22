@@ -98,6 +98,17 @@ service cloud.firestore {
         : null;
     }
 
+    function classDoc(classId) {
+      return classId is string && exists(/databases/$(database)/documents/classes/$(classId))
+        ? get(/databases/$(database)/documents/classes/$(classId))
+        : null;
+    }
+
+    function isClassInstructor(classId) {
+      let doc = classDoc(classId);
+      return doc != null && doc.data.instructorId == request.auth.uid;
+    }
+
     function subjectDepartmentMatches(deptId, deptName) {
       let dept = departmentDoc(deptId);
       return dept != null && dept.data.name == deptName;
@@ -170,7 +181,7 @@ service cloud.firestore {
         nonEmptyString(request.resource.data.Email)
       ) || isAdmin();
 
-      allow read: if isOwner() || isAdmin() || isRoleAdmin();
+      allow read: if isOwner() || isAdmin() || isRoleAdmin() || isInstructor();
 
       allow update: if isAdmin() || (
         isOwner() &&
@@ -190,7 +201,7 @@ service cloud.firestore {
     }
 
     match /subjects/{subjectId} {
-      allow read: if canViewCatalog();
+      allow read: if canViewCatalog() || request.auth == null;
       allow create, update: if isAdmin() && isValidSubject(request.resource.data);
       allow delete: if isAdmin();
     }
@@ -199,6 +210,20 @@ service cloud.firestore {
       allow read: if canViewCatalog();
       allow create, update: if isAdmin() && isValidClass(request.resource.data);
       allow delete: if isAdmin();
+
+      match /attendanceStats/{studentId} {
+        allow read: if isSignedIn() && (request.auth.uid == studentId || isClassInstructor(classId) || isAdmin());
+        allow write: if isAdmin() || (isSignedIn() && isClassInstructor(classId));
+      }
+    }
+
+    match /attendanceSessions/{sessionId} {
+      allow create, read, update: if isSignedIn() && (isInstructor() || isAdmin());
+      allow delete: if isAdmin();
+
+      match /{subcollection=**}/{docId} {
+        allow read, write: if isSignedIn() && (isInstructor() || isAdmin());
+      }
     }
 
     match /{document=**} {
