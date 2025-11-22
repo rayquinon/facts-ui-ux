@@ -11,6 +11,8 @@ import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'services/face_embedding_service.dart';
 import 'services/web_camera_service.dart';
 
+enum _OrientationPhase { front, left, right }
+
 class FaceEnrollmentPage extends StatefulWidget {
   const FaceEnrollmentPage({super.key});
 
@@ -21,6 +23,9 @@ class FaceEnrollmentPage extends StatefulWidget {
 }
 
 class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
+  static const int _capturesPerPhase = 10;
+  static final List<_OrientationPhase> _phaseOrder = _OrientationPhase.values;
+
   CameraController? _cameraController;
   FaceDetector? _faceDetector;
   final FaceEmbeddingService _embeddingService = FaceEmbeddingService.instance;
@@ -30,6 +35,12 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   bool _isSaving = false;
   List<double>? _latestEmbedding;
   String? _statusMessage;
+  int _currentPhaseIndex = 0;
+  final Map<_OrientationPhase, List<List<double>>> _phaseEmbeddings = {
+    _OrientationPhase.front: <List<double>>[],
+    _OrientationPhase.left: <List<double>>[],
+    _OrientationPhase.right: <List<double>>[],
+  };
 
   @override
   void initState() {
@@ -56,7 +67,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       } else {
         await _initializeCamera();
       }
-      setState(() => _statusMessage = 'Align your face within the frame.');
+      setState(() => _statusMessage = _phaseInstruction(_currentPhase));
     } catch (error) {
       setState(() => _statusMessage = 'Setup failed: $error');
     }
@@ -130,25 +141,14 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     try {
       final InputImage inputImage = _buildInputImage(image);
       final List<Face> faces = await detector.processImage(inputImage);
-      if (faces.isEmpty) {
-        if (mounted) {
-          setState(() {
-            _latestEmbedding = null;
-            _statusMessage = 'No face detected. Please center your face.';
-          });
+        if (faces.isEmpty) {
+          _updateNoFaceStatus();
+        } else {
+          final Rect bbox = faces.first.boundingBox;
+          final List<double> embedding =
+              await _embeddingService.generateEmbedding(image, bbox);
+          _recordEmbedding(embedding);
         }
-      } else {
-        final Rect bbox = faces.first.boundingBox;
-        final List<double> embedding =
-            await _embeddingService.generateEmbedding(image, bbox);
-        if (mounted) {
-          setState(() {
-            _latestEmbedding = embedding;
-            _statusMessage =
-                'Face captured. Tap "Save & Continue" to finish enrollment.';
-          });
-        }
-      }
     } catch (error) {
       debugPrint('Face processing error: $error');
     } finally {
@@ -172,18 +172,96 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       );
       final List<double> embedding = await _embeddingService
           .generateEmbeddingFromImage(frame.image, boundingBox);
-      if (mounted) {
-        setState(() {
-          _latestEmbedding = embedding;
-          _statusMessage =
-              'Browser camera active. Tap "Save & Continue" when ready.';
-        });
-      }
+      _recordEmbedding(embedding);
     } catch (error) {
       debugPrint('Web frame processing error: $error');
     } finally {
       _isProcessingFrame = false;
     }
+  }
+
+  void _updateNoFaceStatus() {
+    if (!mounted) return;
+    setState(() {
+      _latestEmbedding = null;
+      _statusMessage =
+          'No face detected. Keep ${_phaseLabel(_currentPhase)} and stay within the frame.';
+    });
+  }
+
+  void _recordEmbedding(List<double> embedding) {
+    final _OrientationPhase phase = _currentPhase;
+    final List<List<double>> bucket = _phaseEmbeddings[phase]!;
+    if (bucket.length >= _capturesPerPhase || !mounted) {
+      return;
+    }
+    bucket.add(embedding);
+    setState(() {
+      final int captured = bucket.length;
+      if (captured >= _capturesPerPhase) {
+        if (_currentPhaseIndex < _phaseOrder.length - 1) {
+          _currentPhaseIndex++;
+          _statusMessage =
+              'Great! ${_phaseLabel(phase)} captures complete. ${_phaseInstruction(_currentPhase)}';
+        } else {
+          _latestEmbedding = _averageAllEmbeddings();
+          _statusMessage =
+              'All angles captured. Tap "Save & Continue" to store your profile.';
+          _stopStreams();
+        }
+      } else {
+        final int remaining = _capturesPerPhase - captured;
+        _statusMessage =
+            '${_phaseLabel(phase)} capture $captured/$_capturesPerPhase. Hold steady for $remaining more.';
+      }
+    });
+  }
+
+  List<double> _averageAllEmbeddings() {
+    final List<List<double>> allVectors = _phaseEmbeddings.values
+        .expand((List<List<double>> e) => e)
+        .toList(growable: false);
+    if (allVectors.isEmpty) {
+      return <double>[];
+    }
+    final int length = allVectors.first.length;
+    final List<double> sums = List<double>.filled(length, 0);
+    for (final List<double> vector in allVectors) {
+      for (int i = 0; i < length; i++) {
+        sums[i] += vector[i];
+      }
+    }
+    final double divisor = allVectors.length.toDouble();
+    return sums.map((double value) => value / divisor).toList();
+  }
+
+  _OrientationPhase get _currentPhase => _phaseOrder[_currentPhaseIndex];
+
+  bool get _isReadyToSave =>
+      _phaseEmbeddings.values
+          .every((List<List<double>> bucket) => bucket.length >= _capturesPerPhase) &&
+      (_latestEmbedding?.isNotEmpty ?? false);
+
+  String _phaseLabel(_OrientationPhase phase) {
+    switch (phase) {
+      case _OrientationPhase.front:
+        return 'Face forward';
+      case _OrientationPhase.left:
+        return 'Turn slightly left';
+      case _OrientationPhase.right:
+        return 'Turn slightly right';
+    }
+  }
+
+  String _phaseInstruction(_OrientationPhase phase) {
+    final int step = _phaseOrder.indexOf(phase) + 1;
+    final String label = _phaseLabel(phase);
+    return 'Step $step/${_phaseOrder.length}: $label and hold still while we capture $_capturesPerPhase images.';
+  }
+
+  void _stopStreams() {
+    _cameraController?.stopImageStream();
+    _webFrameTimer?.cancel();
   }
 
   InputImage _buildInputImage(CameraImage image) {
@@ -296,7 +374,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: <Widget>[
                       FilledButton.icon(
-                        onPressed: _isSaving || _latestEmbedding == null
+                        onPressed: _isSaving || !_isReadyToSave
                             ? null
                             : _handleSaveEmbedding,
                         icon: _isSaving
