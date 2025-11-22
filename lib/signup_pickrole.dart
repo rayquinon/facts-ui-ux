@@ -193,14 +193,28 @@ class _SignUpPageState extends State<SignUpPage> {
   final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _confirmPasswordController =
       TextEditingController();
+  final TextEditingController _sectionSearchController =
+      TextEditingController();
   static const List<String> _departments = <String>[
     'Department of Information Technology',
     'Department of Technology Livelihood and Education',
     'Department of Food Processing Technology',
   ];
   String? _selectedDepartment;
+  List<String> _availableSections = <String>[];
+  bool _isLoadingSections = false;
+  String? _sectionsError;
+  String? _selectedStudentSection;
   bool _obscurePassword = true;
   bool _isSubmitting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.role == UserRole.student) {
+      _loadSections();
+    }
+  }
 
   @override
   void dispose() {
@@ -209,15 +223,59 @@ class _SignUpPageState extends State<SignUpPage> {
     _studentIdController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
+    _sectionSearchController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadSections() async {
+    setState(() {
+      _isLoadingSections = true;
+      _sectionsError = null;
+    });
+    try {
+      final QuerySnapshot<Map<String, dynamic>> snapshot = await FirebaseFirestore
+          .instance
+          .collection('subjects')
+          .get();
+      final Set<String> uniqueSections = <String>{};
+      for (final QueryDocumentSnapshot<Map<String, dynamic>> doc in snapshot.docs) {
+        final List<dynamic> sections =
+            (doc.data()['sections'] as List<dynamic>? ?? <dynamic>[]);
+        for (final dynamic entry in sections) {
+          final String normalized = entry.toString().trim();
+          if (normalized.isNotEmpty) {
+            uniqueSections.add(normalized);
+          }
+        }
+      }
+      final List<String> sorted = uniqueSections.toList()..sort();
+      if (!mounted) return;
+      setState(() {
+        _availableSections = sorted;
+        if (_selectedStudentSection != null &&
+            !_availableSections.contains(_selectedStudentSection)) {
+          _selectedStudentSection = null;
+          _sectionSearchController.clear();
+        } else if (_selectedStudentSection != null) {
+          _sectionSearchController.text = _selectedStudentSection!;
+        }
+        if (_availableSections.isEmpty) {
+          _sectionsError = 'No sections found. Ask an admin to add sections first.';
+        }
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _sectionsError = 'Failed to load sections. $error');
+    } finally {
+      if (mounted) {
+        setState(() => _isLoadingSections = false);
+      }
+    }
   }
 
   Future<void> _handleSignUp() async {
     final bool isValid = _formKey.currentState?.validate() ?? false;
     if (!isValid || _isSubmitting) return;
-
-    FocusScope.of(context).unfocus();
-    setState(() => _isSubmitting = true);
 
     final bool isInstructor = widget.role == UserRole.instructor;
     final String email = _emailController.text.trim();
@@ -228,6 +286,21 @@ class _SignUpPageState extends State<SignUpPage> {
         ? null
         : _studentIdController.text.trim();
     final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+    if (!isInstructor) {
+      final String? section = _selectedStudentSection;
+      if (section == null || section.isEmpty) {
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text('Select your section to continue.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+    }
+
+    FocusScope.of(context).unfocus();
+    setState(() => _isSubmitting = true);
 
     try {
       final UserCredential credential = await FirebaseAuth.instance
@@ -237,6 +310,7 @@ class _SignUpPageState extends State<SignUpPage> {
       if (user != null) {
         await user.updateDisplayName(fullName);
         final Map<String, dynamic> profile = <String, dynamic>{
+          'displayName': fullName,
           'Full Name': fullName,
           'Email': email,
           'role': widget.role.name,
@@ -246,6 +320,7 @@ class _SignUpPageState extends State<SignUpPage> {
           profile['Department'] = department;
         } else {
           profile['Student ID'] = studentId;
+          profile['section'] = _selectedStudentSection;
         }
         profile.removeWhere((_, Object? value) => value == null);
         await FirebaseFirestore.instance
@@ -297,6 +372,93 @@ class _SignUpPageState extends State<SignUpPage> {
         setState(() => _isSubmitting = false);
       }
     }
+  }
+
+  Widget _buildSectionSelector() {
+    final bool hasError = _sectionsError != null;
+    final bool hasSections = _availableSections.isNotEmpty;
+    final bool isDisabled = _isLoadingSections || !hasSections;
+    final List<DropdownMenuEntry<String>> entries = _availableSections
+        .map(
+          (String section) => DropdownMenuEntry<String>(
+            value: section,
+            label: section,
+          ),
+        )
+        .toList();
+
+    final List<Widget> children = <Widget>[
+      DropdownMenu<String>(
+        controller: _sectionSearchController,
+        initialSelection: _selectedStudentSection,
+        enabled: !isDisabled,
+        menuHeight: 260,
+        requestFocusOnTap: true,
+        label: const Text('Section'),
+        hintText: _isLoadingSections
+            ? 'Loading sections…'
+            : (hasSections ? 'Search or pick your section' : 'No sections available'),
+        leadingIcon: const Icon(Icons.group_work_outlined),
+        trailingIcon: _isLoadingSections
+            ? const Padding(
+                padding: EdgeInsets.only(right: 12),
+                child: SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              )
+            : null,
+        dropdownMenuEntries: entries,
+        onSelected: (String? value) {
+          setState(() {
+            _selectedStudentSection = value;
+            _sectionSearchController.text = value ?? '';
+          });
+        },
+      ),
+    ];
+
+    if (hasError) {
+      children.add(
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Row(
+            children: <Widget>[
+              Expanded(
+                child: Text(
+                  _sectionsError!,
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.error,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+              TextButton.icon(
+                onPressed: _isLoadingSections ? null : _loadSections,
+                icon: const Icon(Icons.refresh_outlined),
+                label: const Text('Retry'),
+              ),
+            ],
+          ),
+        ),
+      );
+    } else if (!hasSections && !_isLoadingSections) {
+      children.add(
+        const Padding(
+          padding: EdgeInsets.only(top: 8),
+          child: Text(
+            'No sections yet. Please contact an administrator.',
+            style: TextStyle(fontSize: 13),
+          ),
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: children,
+    );
   }
 
   @override
@@ -396,6 +558,8 @@ class _SignUpPageState extends State<SignUpPage> {
                               return null;
                             },
                           ),
+                          const SizedBox(height: 16),
+                          _buildSectionSelector(),
                         ],
                         if (isInstructor) ...<Widget>[
                           const SizedBox(height: 16),
