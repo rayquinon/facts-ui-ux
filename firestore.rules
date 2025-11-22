@@ -1,0 +1,208 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function normalizedEmail() {
+      return isSignedIn() && (request.auth.token.email is string)
+        ? request.auth.token.email
+        : '';
+    }
+
+    function isAdmin() {
+      return normalizedEmail() == 'admin@gmail.com';
+    }
+
+    function adminRoleValues() {
+      return ['admin', 'Admin', 'ADMIN'];
+    }
+
+    function instructorRoleValues() {
+      return ['instructor', 'Instructor', 'INSTRUCTOR'];
+    }
+
+    function studentRoleValues() {
+      return ['student', 'Student', 'STUDENT'];
+    }
+
+    function allowedUserRoleValues() {
+      return ['instructor', 'Instructor', 'INSTRUCTOR', 'student', 'Student', 'STUDENT'];
+    }
+
+    function roleMatches(role, allowed) {
+      return role is string && role in allowed;
+    }
+
+    function roleFromData(data) {
+      return data is map && data.role is string ? data.role : null;
+    }
+
+    function userDoc(uid) {
+      return uid is string && exists(/databases/$(database)/documents/users/$(uid))
+        ? get(/databases/$(database)/documents/users/$(uid))
+        : null;
+    }
+
+    function userRole(uid) {
+      let snapshot = userDoc(uid);
+      return snapshot == null ? null : roleFromData(snapshot.data);
+    }
+
+    function currentRole() {
+      return isSignedIn() ? userRole(request.auth.uid) : null;
+    }
+
+    function isInstructor() {
+      return roleMatches(currentRole(), instructorRoleValues());
+    }
+
+    function isStudent() {
+      return roleMatches(currentRole(), studentRoleValues());
+    }
+
+    function isRoleAdmin() {
+      return roleMatches(currentRole(), adminRoleValues());
+    }
+
+    function canViewCatalog() {
+      return isAdmin() || isRoleAdmin() || isInstructor() || isStudent();
+    }
+
+    function nonEmptyString(value) {
+      return value is string && value.size() > 0;
+    }
+
+    function optionalString(data, field) {
+      return !(field in data) || data[field] is string;
+    }
+
+    function optionalTimestamp(data, field) {
+      return !(field in data) || data[field] is timestamp;
+    }
+
+    function nonEmptyStringList(data, field) {
+      return (field in data) && (data[field] is list) && data[field].size() > 0;
+    }
+
+    function departmentDoc(deptId) {
+      return deptId is string && exists(/databases/$(database)/documents/departments/$(deptId))
+        ? get(/databases/$(database)/documents/departments/$(deptId))
+        : null;
+    }
+
+    function subjectDoc(subjectId) {
+      return subjectId is string && exists(/databases/$(database)/documents/subjects/$(subjectId))
+        ? get(/databases/$(database)/documents/subjects/$(subjectId))
+        : null;
+    }
+
+    function subjectDepartmentMatches(deptId, deptName) {
+      let dept = departmentDoc(deptId);
+      return dept != null && dept.data.name == deptName;
+    }
+
+    function classSubjectMatches(subjectId, subjectCode, subjectName, departmentName) {
+      let subject = subjectDoc(subjectId);
+      return subject != null &&
+             subject.data.subjectCode == subjectCode &&
+             subject.data.subjectName == subjectName &&
+             subject.data.departmentName == departmentName;
+    }
+
+    function assignedInstructorIsValid(instructorId) {
+      let doc = userDoc(instructorId);
+      return doc != null && roleMatches(roleFromData(doc.data), instructorRoleValues());
+    }
+
+    function isValidDepartment(data) {
+      return nonEmptyString(data.name) &&
+             optionalString(data, 'abbr') &&
+             (!('isActive' in data) || data.isActive is bool) &&
+             optionalTimestamp(data, 'createdAt') &&
+             optionalTimestamp(data, 'updatedAt');
+    }
+
+    function isValidSubject(data) {
+      return nonEmptyString(data.subjectCode) &&
+             nonEmptyString(data.subjectName) &&
+             nonEmptyString(data.departmentId) &&
+             nonEmptyString(data.departmentName) &&
+             nonEmptyStringList(data, 'sections') &&
+             nonEmptyStringList(data, 'terms') &&
+             data.isActive is bool &&
+             optionalTimestamp(data, 'createdAt') &&
+             optionalTimestamp(data, 'updatedAt') &&
+             subjectDepartmentMatches(data.departmentId, data.departmentName);
+    }
+
+    function isValidClass(data) {
+      return nonEmptyString(data.subjectId) &&
+             nonEmptyString(data.subjectCode) &&
+             nonEmptyString(data.subjectName) &&
+             nonEmptyString(data.departmentName) &&
+             nonEmptyString(data.section) &&
+             nonEmptyString(data.term) &&
+             nonEmptyString(data.instructorId) &&
+             (data.schedules is list) && data.schedules.size() > 0 &&
+             data.hasLab is bool &&
+             optionalTimestamp(data, 'createdAt') &&
+             optionalTimestamp(data, 'updatedAt') &&
+             classSubjectMatches(
+               data.subjectId,
+               data.subjectCode,
+               data.subjectName,
+               data.departmentName
+             ) &&
+             assignedInstructorIsValid(data.instructorId);
+    }
+
+    match /users/{userId} {
+      function isOwner() {
+        return isSignedIn() && request.auth.uid == userId;
+      }
+
+      allow create: if (
+        isOwner() &&
+        request.resource.data.role in allowedUserRoleValues() &&
+        nonEmptyString(request.resource.data['Full Name']) &&
+        nonEmptyString(request.resource.data.Email)
+      ) || isAdmin();
+
+      allow read: if isOwner() || isAdmin() || isRoleAdmin();
+
+      allow update: if isAdmin() || (
+        isOwner() &&
+        roleMatches(
+          roleFromData(request.resource.data),
+          roleFromData(resource.data) == null ? [] : [roleFromData(resource.data)]
+        )
+      );
+
+      allow delete: if isAdmin();
+    }
+
+    match /departments/{deptId} {
+      allow read: if canViewCatalog();
+      allow create, update: if isAdmin() && isValidDepartment(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /subjects/{subjectId} {
+      allow read: if canViewCatalog();
+      allow create, update: if isAdmin() && isValidSubject(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /classes/{classId} {
+      allow read: if canViewCatalog();
+      allow create, update: if isAdmin() && isValidClass(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
