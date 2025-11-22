@@ -660,7 +660,10 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
             : const Text('Camera initializing...'),
       );
     }
-    return CameraPreview(controller);
+    return Transform.scale(
+      scaleX: -1,
+      child: CameraPreview(controller),
+    );
   }
 
   String _formatConfidence(double value) {

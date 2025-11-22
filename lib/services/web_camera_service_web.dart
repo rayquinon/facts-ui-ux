@@ -34,7 +34,9 @@ class WebCameraService {
       ..style.objectFit = 'contain'
       ..style.width = '100%'
       ..style.height = '100%'
-      ..style.backgroundColor = '#000';
+      ..style.backgroundColor = '#000'
+      ..style.transform = 'scaleX(-1)'
+      ..style.transformOrigin = 'center';
     _canvasElement = html.CanvasElement();
 
     final mediaDevices = html.window.navigator.mediaDevices;
