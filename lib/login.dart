@@ -37,6 +37,7 @@ class _LoginPageState extends State<LoginPage> {
   final TextEditingController _passwordController = TextEditingController();
   bool _obscurePassword = true;
   bool _isSubmitting = false;
+  final ScrollController _promoScrollController = ScrollController();
 
   void _openSignUpPage() {
     Navigator.of(context).pushNamed(SignupPickRolePage.routeName);
@@ -46,6 +47,7 @@ class _LoginPageState extends State<LoginPage> {
   void dispose() {
     _emailController.dispose();
     _passwordController.dispose();
+    _promoScrollController.dispose();
     super.dispose();
   }
 
@@ -397,7 +399,9 @@ class _LoginPageState extends State<LoginPage> {
             ),
             child: Scrollbar(
               thumbVisibility: showThumb,
+              controller: _promoScrollController,
               child: SingleChildScrollView(
+                controller: _promoScrollController,
                 padding: const EdgeInsets.all(40),
                 child: ConstrainedBox(
                   constraints: BoxConstraints(minHeight: minHeight),
