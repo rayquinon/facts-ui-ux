@@ -18,6 +18,7 @@ class AdminPage extends StatefulWidget {
 
 class _AdminPageState extends State<AdminPage> {
   _AdminSection _selectedSection = _AdminSection.overview;
+  late Future<_AdminOverviewStats> _overviewFuture;
   static const List<_SectionNavItem> _navItems = <_SectionNavItem>[
     _SectionNavItem(
       _AdminSection.overview,
@@ -42,21 +43,14 @@ class _AdminPageState extends State<AdminPage> {
   ];
 
   @override
+  void initState() {
+    super.initState();
+    _overviewFuture = _loadOverviewStats();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
-    final List<_AdminStat> stats = const <_AdminStat>[
-      _AdminStat(
-        label: 'Instructors',
-        value: '24',
-        icon: Icons.school_outlined,
-      ),
-      _AdminStat(label: 'Students', value: '640', icon: Icons.people_outline),
-      _AdminStat(
-        label: 'Alerts',
-        value: '3',
-        icon: Icons.warning_amber_rounded,
-      ),
-    ];
     final List<_AdminAction> actions = const <_AdminAction>[
       _AdminAction('Review Attendance Reports', Icons.insights_outlined),
       _AdminAction('Manage Departments', Icons.account_tree_outlined),
@@ -118,7 +112,6 @@ class _AdminPageState extends State<AdminPage> {
                       section: _selectedSection,
                       theme: theme,
                       isWide: isWide,
-                      stats: stats,
                       actions: actions,
                     ),
                   ),
@@ -160,43 +153,104 @@ class _AdminPageState extends State<AdminPage> {
     required _AdminSection section,
     required ThemeData theme,
     required bool isWide,
-    required List<_AdminStat> stats,
     required List<_AdminAction> actions,
   }) {
     switch (section) {
       case _AdminSection.overview:
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            Text(
-              'System overview',
-              style: theme.textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 24),
-            Wrap(
-              spacing: 16,
-              runSpacing: 16,
-              children: stats
-                  .map(
-                    (_AdminStat stat) =>
-                        _AdminStatCard(stat: stat, isWide: isWide),
-                  )
-                  .toList(),
-            ),
-            const SizedBox(height: 32),
-            Text(
-              'Quick actions',
-              style: theme.textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            const SizedBox(height: 12),
-            ...actions
-                .map((_AdminAction action) => _AdminActionTile(action: action))
-                .toList(),
-          ],
+        return FutureBuilder<_AdminOverviewStats>(
+          future: _overviewFuture,
+          builder:
+              (BuildContext context, AsyncSnapshot<_AdminOverviewStats> snapshot) {
+            Widget statsContent;
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              statsContent = Wrap(
+                spacing: 16,
+                runSpacing: 16,
+                children: List<Widget>.generate(
+                  3,
+                  (int index) => _AdminStatPlaceholder(isWide: isWide),
+                ),
+              );
+            } else if (snapshot.hasError) {
+              statsContent = Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      const Text('Unable to load overview stats.'),
+                      const SizedBox(height: 8),
+                      Text(
+                        snapshot.error.toString(),
+                        style: theme.textTheme.bodySmall,
+                      ),
+                      const SizedBox(height: 12),
+                      TextButton.icon(
+                        onPressed: _refreshOverviewStats,
+                        icon: const Icon(Icons.refresh),
+                        label: const Text('Retry'),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            } else {
+              final _AdminOverviewStats data =
+                  snapshot.data ?? const _AdminOverviewStats();
+              final List<_AdminStat> stats = <_AdminStat>[
+                _AdminStat(
+                  label: 'Instructors',
+                  value: data.instructors.toString(),
+                  icon: Icons.school_outlined,
+                ),
+                _AdminStat(
+                  label: 'Students',
+                  value: data.students.toString(),
+                  icon: Icons.people_outline,
+                ),
+                _AdminStat(
+                  label: 'Alerts',
+                  value: data.alerts.toString(),
+                  icon: Icons.warning_amber_rounded,
+                ),
+              ];
+              statsContent = Wrap(
+                spacing: 16,
+                runSpacing: 16,
+                children: stats
+                    .map(
+                      (_AdminStat stat) =>
+                          _AdminStatCard(stat: stat, isWide: isWide),
+                    )
+                    .toList(),
+              );
+            }
+
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(
+                  'System overview',
+                  style: theme.textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                statsContent,
+                const SizedBox(height: 32),
+                Text(
+                  'Quick actions',
+                  style: theme.textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                ...actions
+                    .map((_AdminAction action) => _AdminActionTile(action: action))
+                    .toList(),
+              ],
+            );
+          },
         );
       case _AdminSection.departments:
         return Column(
@@ -236,6 +290,53 @@ class _AdminPageState extends State<AdminPage> {
         );
     }
   }
+
+  Future<_AdminOverviewStats> _loadOverviewStats() async {
+    final FirebaseFirestore firestore = FirebaseFirestore.instance;
+    final Query<Map<String, dynamic>> usersCollection =
+        firestore.collection('users');
+    final Future<int> instructorsFuture =
+        _countDocuments(usersCollection.where('role', isEqualTo: 'instructor'));
+    final Future<int> studentsFuture =
+        _countDocuments(usersCollection.where('role', isEqualTo: 'student'));
+    final Future<int> alertsFuture =
+        _countDocuments(firestore.collection('alerts'));
+    final List<int> counts = await Future.wait(<Future<int>>[
+      instructorsFuture,
+      studentsFuture,
+      alertsFuture,
+    ]);
+    return _AdminOverviewStats(
+      instructors: counts[0],
+      students: counts[1],
+      alerts: counts[2],
+    );
+  }
+
+  Future<void> _refreshOverviewStats() async {
+    final Future<_AdminOverviewStats> refreshFuture = _loadOverviewStats();
+    setState(() {
+      _overviewFuture = refreshFuture;
+    });
+    await refreshFuture;
+  }
+
+  Future<int> _countDocuments(Query<Map<String, dynamic>> query) async {
+    final QuerySnapshot<Map<String, dynamic>> snapshot = await query.get();
+    return snapshot.size;
+  }
+}
+
+class _AdminOverviewStats {
+  const _AdminOverviewStats({
+    this.instructors = 0,
+    this.students = 0,
+    this.alerts = 0,
+  });
+
+  final int instructors;
+  final int students;
+  final int alerts;
 }
 
 class _AdminStat {
@@ -248,6 +349,41 @@ class _AdminStat {
   final String label;
   final String value;
   final IconData icon;
+}
+
+class _AdminStatPlaceholder extends StatelessWidget {
+  const _AdminStatPlaceholder({required this.isWide});
+
+  final bool isWide;
+
+  @override
+  Widget build(BuildContext context) {
+    final double width = isWide ? 240 : double.infinity;
+    return SizedBox(
+      width: width,
+      child: Card(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              const SizedBox(
+                height: 24,
+                width: 24,
+                child: CircularProgressIndicator(strokeWidth: 3),
+              ),
+              const SizedBox(height: 16),
+              LinearProgressIndicator(
+                backgroundColor:
+                    Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.6),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _DepartmentMaintenancePanel extends StatefulWidget {
