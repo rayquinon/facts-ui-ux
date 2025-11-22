@@ -31,7 +31,10 @@ class WebCameraService {
     _videoElement = html.VideoElement()
       ..autoplay = true
       ..muted = true
-      ..style.objectFit = 'cover';
+      ..style.objectFit = 'contain'
+      ..style.width = '100%'
+      ..style.height = '100%'
+      ..style.backgroundColor = '#000';
     _canvasElement = html.CanvasElement();
 
     final mediaDevices = html.window.navigator.mediaDevices;
