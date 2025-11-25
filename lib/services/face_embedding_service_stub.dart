@@ -5,6 +5,8 @@ import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as imglib;
 
+import 'image_normalization_service.dart';
+
 /// Web-friendly fallback that produces a deterministic, lightweight embedding.
 ///
 /// Without access to `dart:ffi` (and therefore ONNX Runtime) we approximate an
@@ -20,6 +22,8 @@ class FaceEmbeddingService {
   static const int _embeddingLength = 192;
 
   bool _initialized = false;
+  final ImageNormalizationService _imageNormalizer =
+      ImageNormalizationService();
 
   Future<void> initialize() async {
     _initialized = true;
@@ -50,10 +54,7 @@ class FaceEmbeddingService {
     return _generateFromRgbImage(rgbImage, boundingBox);
   }
 
-  List<double> _generateFromRgbImage(
-    imglib.Image rgbImage,
-    Rect boundingBox,
-  ) {
+  List<double> _generateFromRgbImage(imglib.Image rgbImage, Rect boundingBox) {
     final math.Rectangle<int> cropRect = _boundingBoxToRect(
       boundingBox,
       imageWidth: rgbImage.width,
@@ -72,14 +73,15 @@ class FaceEmbeddingService {
       height: _fallbackImageSize,
       interpolation: imglib.Interpolation.average,
     );
+    final imglib.Image processed = _imageNormalizer.normalize(resized);
 
     final List<double> buckets = List<double>.filled(_embeddingLength, 0);
     final List<int> counts = List<int>.filled(_embeddingLength, 0);
 
-    for (int y = 0; y < resized.height; y++) {
-      for (int x = 0; x < resized.width; x++) {
-        final int bucketIndex = (y * resized.width + x) % _embeddingLength;
-        final imglib.Pixel pixel = resized.getPixel(x, y);
+    for (int y = 0; y < processed.height; y++) {
+      for (int x = 0; x < processed.width; x++) {
+        final int bucketIndex = (y * processed.width + x) % _embeddingLength;
+        final imglib.Pixel pixel = processed.getPixel(x, y);
         final double intensity =
             ((pixel.r + pixel.g + pixel.b) / 3.0 - 127.5) / 127.5;
         buckets[bucketIndex] += intensity.clamp(-1.0, 1.0);
@@ -151,10 +153,10 @@ class FaceEmbeddingService {
         final int uValue = uPlane.bytes[uvIndex];
         final int vValue = vPlane.bytes[uvIndex];
         final int r = (yValue + 1.402 * (vValue - 128)).round().clamp(0, 255);
-        final int g = (yValue - 0.344136 * (uValue - 128) -
-                0.714136 * (vValue - 128))
-            .round()
-            .clamp(0, 255);
+        final int g =
+            (yValue - 0.344136 * (uValue - 128) - 0.714136 * (vValue - 128))
+                .round()
+                .clamp(0, 255);
         final int b = (yValue + 1.772 * (uValue - 128)).round().clamp(0, 255);
         converted.setPixelRgb(x, y, r, g, b);
       }

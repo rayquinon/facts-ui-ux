@@ -16,17 +16,19 @@ class InstructorPage extends StatefulWidget {
 }
 
 class _InstructorPageState extends State<InstructorPage> {
-
   bool _simulationEnabled = true;
   late DateTime _simulatedTime;
-  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _assignmentSubscription;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>?
+  _assignmentSubscription;
   bool _isLoadingAssignments = true;
   String? _assignmentError;
-  List<_InstructorClassAssignment> _assignments = <_InstructorClassAssignment>[];
+  List<_InstructorClassAssignment> _assignments =
+      <_InstructorClassAssignment>[];
   List<_InstructorSchedule> _scheduleEntries = <_InstructorSchedule>[];
   bool _isLaunchingSession = false;
 
-  DateTime get _activeTime => _simulationEnabled ? _simulatedTime : DateTime.now();
+  DateTime get _activeTime =>
+      _simulationEnabled ? _simulatedTime : DateTime.now();
 
   @override
   void initState() {
@@ -53,7 +55,9 @@ class _InstructorPageState extends State<InstructorPage> {
     }
 
     if (!mounted) return;
-    Navigator.of(context).pushNamedAndRemoveUntil('/login', (Route<dynamic> route) => false);
+    Navigator.of(
+      context,
+    ).pushNamedAndRemoveUntil('/login', (Route<dynamic> route) => false);
   }
 
   void _adjustSimulatedTime(Duration delta) {
@@ -117,7 +121,8 @@ class _InstructorPageState extends State<InstructorPage> {
     final User? user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       setState(() {
-        _assignmentError = 'You must be signed in to view your assigned classes.';
+        _assignmentError =
+            'You must be signed in to view your assigned classes.';
         _isLoadingAssignments = false;
         _assignments = <_InstructorClassAssignment>[];
         _scheduleEntries = <_InstructorSchedule>[];
@@ -136,31 +141,35 @@ class _InstructorPageState extends State<InstructorPage> {
         .where('instructorId', isEqualTo: user.uid)
         .snapshots()
         .listen(
-      (QuerySnapshot<Map<String, dynamic>> snapshot) {
-        final List<_InstructorClassAssignment> assignments = snapshot.docs
-            .map(_InstructorClassAssignment.fromDocument)
-            .whereType<_InstructorClassAssignment>()
-            .toList();
-        final List<_InstructorSchedule> scheduleEntries = assignments
-            .expand((_InstructorClassAssignment assignment) => assignment.schedules)
-            .toList()
-          ..sort(_InstructorSchedule.compareByDayAndTime);
-        setState(() {
-          _assignments = assignments;
-          _scheduleEntries = scheduleEntries;
-          _isLoadingAssignments = false;
-          _assignmentError = null;
-        });
-      },
-      onError: (Object error, StackTrace stackTrace) {
-        setState(() {
-          _assignmentError = 'Failed to load classes. $error';
-          _isLoadingAssignments = false;
-          _assignments = <_InstructorClassAssignment>[];
-          _scheduleEntries = <_InstructorSchedule>[];
-        });
-      },
-    );
+          (QuerySnapshot<Map<String, dynamic>> snapshot) {
+            final List<_InstructorClassAssignment> assignments = snapshot.docs
+                .map(_InstructorClassAssignment.fromDocument)
+                .whereType<_InstructorClassAssignment>()
+                .toList();
+            final List<_InstructorSchedule> scheduleEntries =
+                assignments
+                    .expand(
+                      (_InstructorClassAssignment assignment) =>
+                          assignment.schedules,
+                    )
+                    .toList()
+                  ..sort(_InstructorSchedule.compareByDayAndTime);
+            setState(() {
+              _assignments = assignments;
+              _scheduleEntries = scheduleEntries;
+              _isLoadingAssignments = false;
+              _assignmentError = null;
+            });
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            setState(() {
+              _assignmentError = 'Failed to load classes. $error';
+              _isLoadingAssignments = false;
+              _assignments = <_InstructorClassAssignment>[];
+              _scheduleEntries = <_InstructorSchedule>[];
+            });
+          },
+        );
   }
 
   _InstructorSchedule? _resolveActiveSchedule(DateTime time) {
@@ -187,6 +196,10 @@ class _InstructorPageState extends State<InstructorPage> {
   Future<void> _startRecognitionSession(_InstructorSchedule schedule) async {
     if (_isLaunchingSession) return;
     setState(() => _isLaunchingSession = true);
+    final DateTime launchNow = DateTime.now();
+    final Duration? simulatedClockOffset = _simulationEnabled
+        ? _simulatedTime.difference(launchNow)
+        : null;
     final AttendanceSessionConfig config = AttendanceSessionConfig(
       classId: schedule.classId,
       subjectCode: schedule.subjectCode,
@@ -197,11 +210,13 @@ class _InstructorPageState extends State<InstructorPage> {
       dayOfWeek: schedule.dayOfWeek,
       start: schedule.start,
       end: schedule.end,
+      simulatedClockOffset: simulatedClockOffset,
     );
     try {
       final bool? completed = await Navigator.of(context).push<bool?>(
         MaterialPageRoute<bool?>(
-          builder: (BuildContext context) => AttendanceSessionPage(config: config),
+          builder: (BuildContext context) =>
+              AttendanceSessionPage(config: config),
           settings: RouteSettings(
             name: AttendanceSessionPage.routeName,
             arguments: config,
@@ -224,15 +239,30 @@ class _InstructorPageState extends State<InstructorPage> {
   }
 
   List<_InstructorStat> _buildInstructorStats(DateTime activeTime) {
-    final int sessionsToday =
-        _scheduleEntries.where((_InstructorSchedule entry) => entry.dayOfWeek == activeTime.weekday).length;
+    final int sessionsToday = _scheduleEntries
+        .where(
+          (_InstructorSchedule entry) => entry.dayOfWeek == activeTime.weekday,
+        )
+        .length;
     final int assignedSections = _assignments.length;
     final int weeklySessions = _scheduleEntries.length;
 
     return <_InstructorStat>[
-      _InstructorStat(label: 'Classes Today', value: _formatCounter(sessionsToday), icon: Icons.event_note_outlined),
-      _InstructorStat(label: 'Assigned Sections', value: _formatCounter(assignedSections), icon: Icons.layers_outlined),
-      _InstructorStat(label: 'Weekly Sessions', value: _formatCounter(weeklySessions), icon: Icons.schedule_outlined),
+      _InstructorStat(
+        label: 'Classes Today',
+        value: _formatCounter(sessionsToday),
+        icon: Icons.event_note_outlined,
+      ),
+      _InstructorStat(
+        label: 'Assigned Sections',
+        value: _formatCounter(assignedSections),
+        icon: Icons.layers_outlined,
+      ),
+      _InstructorStat(
+        label: 'Weekly Sessions',
+        value: _formatCounter(weeklySessions),
+        icon: Icons.schedule_outlined,
+      ),
     ];
   }
 
@@ -242,7 +272,9 @@ class _InstructorPageState extends State<InstructorPage> {
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
     final DateTime activeTime = _activeTime;
-    final _InstructorSchedule? activeSchedule = _resolveActiveSchedule(activeTime);
+    final _InstructorSchedule? activeSchedule = _resolveActiveSchedule(
+      activeTime,
+    );
     final _InstructorSchedule? nextSchedule = _resolveNextSchedule(activeTime);
     final List<_InstructorStat> stats = _buildInstructorStats(activeTime);
     final bool showLoadingState = _isLoadingAssignments && _assignments.isEmpty;
@@ -303,8 +335,12 @@ class _InstructorPageState extends State<InstructorPage> {
 
   Widget _buildSimulationPanel(BuildContext context, DateTime activeTime) {
     final ThemeData theme = Theme.of(context);
-    final MaterialLocalizations localizations = MaterialLocalizations.of(context);
-    final String timeLabel = localizations.formatTimeOfDay(TimeOfDay.fromDateTime(activeTime));
+    final MaterialLocalizations localizations = MaterialLocalizations.of(
+      context,
+    );
+    final String timeLabel = localizations.formatTimeOfDay(
+      TimeOfDay.fromDateTime(activeTime),
+    );
     final String dateLabel = localizations.formatFullDate(activeTime);
 
     return Card(
@@ -328,7 +364,9 @@ class _InstructorPageState extends State<InstructorPage> {
                       const SizedBox(height: 4),
                       Text(
                         timeLabel,
-                        style: theme.textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.bold),
+                        style: theme.textTheme.headlineMedium?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                       Text(dateLabel, style: theme.textTheme.bodyMedium),
                     ],
@@ -338,7 +376,10 @@ class _InstructorPageState extends State<InstructorPage> {
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: <Widget>[
                     Text('Simulation mode', style: theme.textTheme.labelLarge),
-                    Switch.adaptive(value: _simulationEnabled, onChanged: _toggleSimulation),
+                    Switch.adaptive(
+                      value: _simulationEnabled,
+                      onChanged: _toggleSimulation,
+                    ),
                   ],
                 ),
               ],
@@ -349,14 +390,16 @@ class _InstructorPageState extends State<InstructorPage> {
               runSpacing: 12,
               children: <Widget>[
                 OutlinedButton.icon(
-                  onPressed:
-                      _simulationEnabled ? () => _adjustSimulatedTime(const Duration(minutes: -15)) : null,
+                  onPressed: _simulationEnabled
+                      ? () => _adjustSimulatedTime(const Duration(minutes: -15))
+                      : null,
                   icon: const Icon(Icons.history_toggle_off),
                   label: const Text('- 15 min'),
                 ),
                 OutlinedButton.icon(
-                  onPressed:
-                      _simulationEnabled ? () => _adjustSimulatedTime(const Duration(minutes: 15)) : null,
+                  onPressed: _simulationEnabled
+                      ? () => _adjustSimulatedTime(const Duration(minutes: 15))
+                      : null,
                   icon: const Icon(Icons.update),
                   label: const Text('+ 15 min'),
                 ),
@@ -396,27 +439,38 @@ class _InstructorPageState extends State<InstructorPage> {
           children: <Widget>[
             Text(
               'Quick overview',
-              style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
+              style: theme.textTheme.headlineSmall?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
             ),
             if (showLoadingIndicator)
-              const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+              const SizedBox(
+                height: 18,
+                width: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
           ],
         ),
         const SizedBox(height: 16),
         if (stats.isEmpty)
           Card(
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+            ),
             child: const Padding(
               padding: EdgeInsets.all(20),
-              child: Text('No classes assigned yet. Coordinate with the admin team to get started.'),
+              child: Text(
+                'No classes assigned yet. Coordinate with the admin team to get started.',
+              ),
             ),
           )
         else
           Wrap(
             spacing: 16,
             runSpacing: 16,
-            children:
-                stats.map((_InstructorStat stat) => _InstructorStatCard(stat: stat)).toList(),
+            children: stats
+                .map((_InstructorStat stat) => _InstructorStatCard(stat: stat))
+                .toList(),
           ),
       ],
     );
@@ -483,11 +537,15 @@ class _InstructorPageState extends State<InstructorPage> {
             const SizedBox(height: 4),
             Text(_formatSectionLabel(nextSchedule)),
             const SizedBox(height: 4),
-            Text('${_formatScheduleRange(context, nextSchedule)} • ${nextSchedule.location ?? 'Location TBD'}'),
+            Text(
+              '${_formatScheduleRange(context, nextSchedule)} • ${nextSchedule.location ?? 'Location TBD'}',
+            ),
             const SizedBox(height: 6),
             Text(
               countdownLabel,
-              style: theme.textTheme.labelMedium?.copyWith(color: theme.colorScheme.primary),
+              style: theme.textTheme.labelMedium?.copyWith(
+                color: theme.colorScheme.primary,
+              ),
             ),
           ],
         ),
@@ -510,9 +568,11 @@ class _InstructorPageState extends State<InstructorPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
-                Text(
+            Text(
               'Attendance session',
-              style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
+              style: theme.textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
             ),
             const SizedBox(height: 12),
             if (showLoadingState && !hasAssignments)
@@ -543,8 +603,9 @@ class _InstructorPageState extends State<InstructorPage> {
               ),
               const SizedBox(height: 20),
               FilledButton.icon(
-                onPressed:
-                    _isLaunchingSession ? null : () => _startRecognitionSession(activeSchedule),
+                onPressed: _isLaunchingSession
+                    ? null
+                    : () => _startRecognitionSession(activeSchedule),
                 icon: _isLaunchingSession
                     ? const SizedBox(
                         width: 18,
@@ -552,7 +613,11 @@ class _InstructorPageState extends State<InstructorPage> {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                     : const Icon(Icons.play_arrow_rounded),
-                label: Text(_isLaunchingSession ? 'Launching...' : 'Start recognition session'),
+                label: Text(
+                  _isLaunchingSession
+                      ? 'Launching...'
+                      : 'Start recognition session',
+                ),
               ),
               const SizedBox(height: 8),
               OutlinedButton.icon(
@@ -596,7 +661,9 @@ class _InstructorPageState extends State<InstructorPage> {
       children: <Widget>[
         Text(
           'Weekly schedule',
-          style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
+          style: theme.textTheme.titleLarge?.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
         ),
         const SizedBox(height: 12),
         if (showLoadingState && !hasAssignments)
@@ -614,7 +681,9 @@ class _InstructorPageState extends State<InstructorPage> {
           )
         else if (!hasSchedules)
           Card(
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
+            ),
             child: const Padding(
               padding: EdgeInsets.all(20),
               child: Text('No sessions configured yet for your account.'),
@@ -630,12 +699,14 @@ class _InstructorPageState extends State<InstructorPage> {
               final Color? cardColor = isActive
                   ? theme.colorScheme.primaryContainer
                   : isNext
-                      ? theme.colorScheme.surfaceContainerHighest
-                      : null;
+                  ? theme.colorScheme.surfaceContainerHighest
+                  : null;
 
               return Card(
                 color: cardColor,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(20),
+                ),
                 margin: const EdgeInsets.symmetric(vertical: 8),
                 child: ListTile(
                   leading: Icon(
@@ -644,13 +715,17 @@ class _InstructorPageState extends State<InstructorPage> {
                         ? theme.colorScheme.primary
                         : theme.colorScheme.onSurfaceVariant,
                   ),
-                  title: Text('${schedule.subjectCode} • ${schedule.subjectName}'),
+                  title: Text(
+                    '${schedule.subjectCode} • ${schedule.subjectName}',
+                  ),
                   subtitle: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: <Widget>[
                       Text(_formatSectionLabel(schedule)),
                       const SizedBox(height: 2),
-                      Text('${_formatScheduleRange(context, schedule)} • ${schedule.location ?? 'Location TBD'}'),
+                      Text(
+                        '${_formatScheduleRange(context, schedule)} • ${schedule.location ?? 'Location TBD'}',
+                      ),
                     ],
                   ),
                   trailing: Wrap(
@@ -673,7 +748,8 @@ class _InstructorPageState extends State<InstructorPage> {
                       else if (isToday)
                         Chip(
                           label: const Text('Today'),
-                          backgroundColor: theme.colorScheme.surfaceContainerHigh,
+                          backgroundColor:
+                              theme.colorScheme.surfaceContainerHigh,
                         ),
                     ],
                   ),
@@ -702,10 +778,7 @@ class _InstructorPageState extends State<InstructorPage> {
             Text(title, style: theme.textTheme.titleMedium),
             const SizedBox(height: 8),
             Text(message, style: theme.textTheme.bodyMedium),
-            if (child != null) ...<Widget>[
-              const SizedBox(height: 12),
-              child,
-            ],
+            if (child != null) ...<Widget>[const SizedBox(height: 12), child],
           ],
         ),
       ),
@@ -713,12 +786,17 @@ class _InstructorPageState extends State<InstructorPage> {
   }
 
   String _formatSectionLabel(_InstructorSchedule schedule) {
-    final String sectionLabel = schedule.section == null ? 'Section TBD' : 'Section ${schedule.section}';
+    final String sectionLabel = schedule.section == null
+        ? 'Section TBD'
+        : 'Section ${schedule.section}';
     final String termLabel = schedule.term == null ? '' : ' • ${schedule.term}';
     return '$sectionLabel$termLabel';
   }
 
-  String _formatScheduleRange(BuildContext context, _InstructorSchedule schedule) {
+  String _formatScheduleRange(
+    BuildContext context,
+    _InstructorSchedule schedule,
+  ) {
     final String startLabel = schedule.start.format(context);
     final String endLabel = schedule.end.format(context);
     final String dayLabel = _weekdayLabel(schedule.dayOfWeek);
@@ -775,7 +853,9 @@ class _InstructorStatCard extends StatelessWidget {
               const SizedBox(height: 12),
               Text(
                 stat.value,
-                style: theme.textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.bold),
+                style: theme.textTheme.headlineMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
               ),
               const SizedBox(height: 6),
               Text(stat.label, style: theme.textTheme.bodyMedium),
@@ -788,7 +868,11 @@ class _InstructorStatCard extends StatelessWidget {
 }
 
 class _InstructorStat {
-  const _InstructorStat({required this.label, required this.value, required this.icon});
+  const _InstructorStat({
+    required this.label,
+    required this.value,
+    required this.icon,
+  });
 
   final String label;
   final String value;
@@ -820,22 +904,26 @@ class _InstructorClassAssignment {
     final Map<String, dynamic>? data = doc.data();
     if (data == null) return null;
     final String subjectCode = (data['subjectCode'] as String?) ?? 'N/A';
-    final String subjectName = (data['subjectName'] as String?) ?? 'Untitled Subject';
+    final String subjectName =
+        (data['subjectName'] as String?) ?? 'Untitled Subject';
     final String? section = (data['section'] as String?)?.trim();
     final String? term = (data['term'] as String?)?.trim();
     final String? departmentName = (data['departmentName'] as String?)?.trim();
-    final List<dynamic> rawSchedules = data['schedules'] as List<dynamic>? ?? <dynamic>[];
+    final List<dynamic> rawSchedules =
+        data['schedules'] as List<dynamic>? ?? <dynamic>[];
 
     final List<_InstructorSchedule> schedules = rawSchedules
-        .map((dynamic item) => _InstructorSchedule.fromMap(
-              classId: doc.id,
-              data: item as Map<String, dynamic>?,
-              subjectCode: subjectCode,
-              subjectName: subjectName,
-              section: section,
-              term: term,
-              departmentName: departmentName,
-            ))
+        .map(
+          (dynamic item) => _InstructorSchedule.fromMap(
+            classId: doc.id,
+            data: item as Map<String, dynamic>?,
+            subjectCode: subjectCode,
+            subjectName: subjectName,
+            section: section,
+            term: term,
+            departmentName: departmentName,
+          ),
+        )
         .whereType<_InstructorSchedule>()
         .toList();
 
@@ -890,8 +978,12 @@ class _InstructorSchedule {
     if (data == null) return null;
     final int? weekday = _dayStringToWeekday(data['day'] as String?);
     if (weekday == null) return null;
-    final TimeOfDay? startTime = _timeFromMap(data['startTime'] as Map<String, dynamic>?);
-    final TimeOfDay? endTime = _timeFromMap(data['endTime'] as Map<String, dynamic>?);
+    final TimeOfDay? startTime = _timeFromMap(
+      data['startTime'] as Map<String, dynamic>?,
+    );
+    final TimeOfDay? endTime = _timeFromMap(
+      data['endTime'] as Map<String, dynamic>?,
+    );
     if (startTime == null || endTime == null) return null;
     final String? room = (data['room'] as String?)?.trim();
     final String? type = (data['type'] as String?)?.trim();
@@ -951,9 +1043,11 @@ class _InstructorSchedule {
     if (weekdayDelta < 0) {
       weekdayDelta += 7;
     }
-    final DateTime base = DateTime(reference.year, reference.month, reference.day).add(
-      Duration(days: weekdayDelta),
-    );
+    final DateTime base = DateTime(
+      reference.year,
+      reference.month,
+      reference.day,
+    ).add(Duration(days: weekdayDelta));
     return DateTime(base.year, base.month, base.day, start.hour, start.minute);
   }
 

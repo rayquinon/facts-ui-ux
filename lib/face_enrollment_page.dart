@@ -33,6 +33,9 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   Timer? _webFrameTimer;
   bool _isProcessingFrame = false;
   bool _isSaving = false;
+  bool _enrollmentStarted = false;
+  bool _cameraReady = false;
+  bool _cameraInitializing = false;
   List<double>? _latestEmbedding;
   String? _statusMessage;
   int _currentPhaseIndex = 0;
@@ -55,11 +58,11 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
         ),
       );
     }
-    _initializePipeline();
+    _statusMessage =
+        'Tap "Allow Camera" to preview before starting enrollment.';
   }
 
   Future<void> _initializePipeline() async {
-    setState(() => _statusMessage = 'Initializing camera and model...');
     try {
       await _embeddingService.initialize();
       if (kIsWeb) {
@@ -67,10 +70,42 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       } else {
         await _initializeCamera();
       }
-      setState(() => _statusMessage = _phaseInstruction(_currentPhase));
+      setState(() {
+        _cameraReady = true;
+        _statusMessage =
+            'Camera ready. Align your face, then tap "Start Enrollment".';
+      });
     } catch (error) {
-      setState(() => _statusMessage = 'Setup failed: $error');
+      setState(() {
+        _statusMessage = 'Setup failed: $error';
+        _enrollmentStarted = false;
+        _cameraReady = false;
+      });
     }
+  }
+
+  Future<void> _startEnrollment() async {
+    if (_enrollmentStarted || !_cameraReady) return;
+    setState(() {
+      _enrollmentStarted = true;
+      for (final List<List<double>> bucket in _phaseEmbeddings.values) {
+        bucket.clear();
+      }
+      _currentPhaseIndex = 0;
+      _latestEmbedding = null;
+      _statusMessage = _phaseInstruction(_currentPhase);
+    });
+  }
+
+  Future<void> _handleAllowCamera() async {
+    if (_cameraReady || _cameraInitializing) return;
+    setState(() {
+      _cameraInitializing = true;
+      _statusMessage = 'Initializing camera and model...';
+    });
+    await _initializePipeline();
+    if (!mounted) return;
+    setState(() => _cameraInitializing = false);
   }
 
   Future<void> _initializeWebCamera() async {
@@ -91,8 +126,10 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     try {
       final List<CameraDescription> cameras = await availableCameras();
       if (cameras.isEmpty) {
-        setState(() => _statusMessage =
-            'No camera devices detected. Please connect a camera and retry.');
+        setState(
+          () => _statusMessage =
+              'No camera devices detected. Please connect a camera and retry.',
+        );
         return;
       }
 
@@ -126,12 +163,15 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       }
       setState(() => _cameraController = controller);
     } on CameraException catch (error) {
-      setState(() =>
-          _statusMessage = 'Unable to initialize camera: ${error.description}');
+      setState(
+        () => _statusMessage =
+            'Unable to initialize camera: ${error.description}',
+      );
     }
   }
 
   Future<void> _processCameraImage(CameraImage image) async {
+    if (!_enrollmentStarted) return;
     if (_isProcessingFrame || !_embeddingService.isReady) return;
     final FaceDetector? detector = _faceDetector;
     if (detector == null) {
@@ -141,14 +181,14 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     try {
       final InputImage inputImage = _buildInputImage(image);
       final List<Face> faces = await detector.processImage(inputImage);
-        if (faces.isEmpty) {
-          _updateNoFaceStatus();
-        } else {
-          final Rect bbox = faces.first.boundingBox;
-          final List<double> embedding =
-              await _embeddingService.generateEmbedding(image, bbox);
-          _recordEmbedding(embedding);
-        }
+      if (faces.isEmpty) {
+        _updateNoFaceStatus();
+      } else {
+        final Rect bbox = faces.first.boundingBox;
+        final List<double> embedding = await _embeddingService
+            .generateEmbedding(image, bbox);
+        _recordEmbedding(embedding);
+      }
     } catch (error) {
       debugPrint('Face processing error: $error');
     } finally {
@@ -157,7 +197,8 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   }
 
   Future<void> _processWebFrame() async {
-    if (!kIsWeb || _isProcessingFrame || !_embeddingService.isReady) return;
+    if (!kIsWeb || !_enrollmentStarted) return;
+    if (_isProcessingFrame || !_embeddingService.isReady) return;
     _isProcessingFrame = true;
     try {
       final frame = await _webCameraService?.captureFrame();
@@ -238,8 +279,9 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   _OrientationPhase get _currentPhase => _phaseOrder[_currentPhaseIndex];
 
   bool get _isReadyToSave =>
-      _phaseEmbeddings.values
-          .every((List<List<double>> bucket) => bucket.length >= _capturesPerPhase) &&
+      _phaseEmbeddings.values.every(
+        (List<List<double>> bucket) => bucket.length >= _capturesPerPhase,
+      ) &&
       (_latestEmbedding?.isNotEmpty ?? false);
 
   String _phaseLabel(_OrientationPhase phase) {
@@ -274,13 +316,14 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       image.width.toDouble(),
       image.height.toDouble(),
     );
-    final InputImageRotation rotation = InputImageRotationValue.fromRawValue(
+    final InputImageRotation rotation =
+        InputImageRotationValue.fromRawValue(
           _cameraController?.description.sensorOrientation ?? 0,
         ) ??
         InputImageRotation.rotation0deg;
     final InputImageFormat format =
         InputImageFormatValue.fromRawValue(image.format.raw) ??
-            InputImageFormat.nv21;
+        InputImageFormat.nv21;
     final InputImageMetadata metadata = InputImageMetadata(
       size: imageSize,
       rotation: rotation,
@@ -297,10 +340,10 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
 
     setState(() => _isSaving = true);
     try {
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .set(<String, dynamic>{'faceEmbed': embedding}, SetOptions(merge: true));
+      await FirebaseFirestore.instance.collection('users').doc(user.uid).set(
+        <String, dynamic>{'faceEmbed': embedding},
+        SetOptions(merge: true),
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Face enrolled successfully.')),
@@ -308,9 +351,9 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       Navigator.of(context).pop(true);
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to save: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to save: $error')));
     } finally {
       if (mounted) {
         setState(() => _isSaving = false);
@@ -334,13 +377,17 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     final bool isWeb = kIsWeb;
     Widget preview;
     if (isWeb) {
-      preview = _webCameraService?.buildPreview() ??
+      preview =
+          _webCameraService?.buildPreview() ??
           Center(child: Text(_statusMessage ?? 'Preparing browser camera...'));
     } else if (controller == null) {
       preview = Center(child: Text(_statusMessage ?? 'Preparing camera...'));
     } else {
       preview = CameraPreview(controller);
     }
+    final bool hasLivePreview = isWeb
+        ? _webCameraService != null
+        : controller != null;
     return Scaffold(
       appBar: AppBar(title: const Text('Enroll your face')),
       body: Column(
@@ -349,6 +396,12 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
             child: Stack(
               children: <Widget>[
                 Positioned.fill(child: preview),
+                if (hasLivePreview)
+                  Positioned.fill(
+                    child: _FaceGuideOverlay(
+                      phaseLabel: _phaseLabel(_currentPhase),
+                    ),
+                  ),
                 if (_statusMessage != null)
                   Positioned(
                     left: 16,
@@ -368,37 +421,155 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
               ],
             ),
           ),
-                Padding(
-                  padding: const EdgeInsets.all(24),
+          Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                _buildPrimaryActionButton(),
+                const SizedBox(height: 8),
+                Text(
+                  'Your facial embedding will be stored securely and used for attendance verification.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPrimaryActionButton() {
+    if (!_cameraReady) {
+      return FilledButton.icon(
+        onPressed: _cameraInitializing ? null : () => _handleAllowCamera(),
+        icon: _cameraInitializing
+            ? const SizedBox(
+                height: 16,
+                width: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Icon(Icons.videocam),
+        label: Text(
+          _cameraInitializing ? 'Requesting camera...' : 'Allow Camera',
+        ),
+      );
+    }
+    if (!_enrollmentStarted) {
+      return FilledButton.icon(
+        onPressed: () => _startEnrollment(),
+        icon: const Icon(Icons.play_arrow),
+        label: const Text('Start Enrollment'),
+      );
+    }
+    return FilledButton.icon(
+      onPressed: _isSaving || !_isReadyToSave
+          ? null
+          : () => _handleSaveEmbedding(),
+      icon: _isSaving
+          ? const SizedBox(
+              height: 16,
+              width: 16,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : const Icon(Icons.save_alt),
+      label: Text(_isSaving ? 'Saving...' : 'Save & Continue'),
+    );
+  }
+}
+
+class _FaceGuideOverlay extends StatelessWidget {
+  const _FaceGuideOverlay({required this.phaseLabel});
+
+  final String phaseLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final TextTheme textTheme = Theme.of(context).textTheme;
+    return IgnorePointer(
+      child: Stack(
+        children: <Widget>[
+          const Positioned.fill(
+            child: CustomPaint(painter: _FaceGuideMaskPainter()),
+          ),
+          Align(
+            alignment: Alignment.topCenter,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 48),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.45),
+                  borderRadius: BorderRadius.circular(24),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 24,
+                    vertical: 12,
+                  ),
                   child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    mainAxisSize: MainAxisSize.min,
                     children: <Widget>[
-                      FilledButton.icon(
-                        onPressed: _isSaving || !_isReadyToSave
-                            ? null
-                            : _handleSaveEmbedding,
-                        icon: _isSaving
-                            ? const SizedBox(
-                                height: 16,
-                                width: 16,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Icon(Icons.save_alt),
-                        label: Text(_isSaving
-                            ? 'Saving...'
-                            : 'Save & Continue'),
-                      ),
-                      const SizedBox(height: 8),
                       Text(
-                        'Your facial embedding will be stored securely and used for attendance verification.',
-                        style: Theme.of(context).textTheme.bodySmall,
+                        'Align your face inside the oval',
+                        style: textTheme.titleSmall?.copyWith(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        phaseLabel,
+                        style: textTheme.bodySmall?.copyWith(
+                          color: Colors.white70,
+                        ),
                         textAlign: TextAlign.center,
                       ),
                     ],
                   ),
                 ),
-              ],
+              ),
             ),
+          ),
+        ],
+      ),
     );
   }
+}
+
+class _FaceGuideMaskPainter extends CustomPainter {
+  const _FaceGuideMaskPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final Rect bounds = Offset.zero & size;
+    final double ovalWidth = size.width * 0.3;
+    final double ovalHeight = size.height * 0.7;
+    final Rect ovalRect = Rect.fromCenter(
+      center: size.center(Offset.zero),
+      width: ovalWidth,
+      height: ovalHeight,
+    );
+
+    final Path maskPath = Path()
+      ..fillType = PathFillType.evenOdd
+      ..addRect(bounds)
+      ..addOval(ovalRect);
+
+    final Paint dimPaint = Paint()
+      ..color = Colors.black.withOpacity(0.6)
+      ..style = PaintingStyle.fill;
+    canvas.drawPath(maskPath, dimPaint);
+
+    final Paint borderPaint = Paint()
+      ..color = Colors.white.withOpacity(0.9)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3;
+    canvas.drawOval(ovalRect, borderPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

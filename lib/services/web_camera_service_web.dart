@@ -14,9 +14,11 @@ class WebCameraFrame {
 }
 
 class WebCameraService {
-  WebCameraService();
+  WebCameraService() : _viewType = 'facts-webcam-view-${_instanceCounter++}';
 
-  static const String _viewType = 'facts-webcam-view';
+  static int _instanceCounter = 0;
+
+  final String _viewType;
 
   html.VideoElement? _videoElement;
   html.CanvasElement? _canvasElement;

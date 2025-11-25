@@ -22,6 +22,7 @@ class AttendanceSessionConfig {
     this.section,
     this.term,
     this.location,
+    this.simulatedClockOffset,
   });
 
   final String classId;
@@ -33,6 +34,7 @@ class AttendanceSessionConfig {
   final int dayOfWeek;
   final TimeOfDay start;
   final TimeOfDay end;
+  final Duration? simulatedClockOffset;
 }
 
 class AttendanceSessionPage extends StatefulWidget {
@@ -90,6 +92,12 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     _initializeSession();
   }
 
+  DateTime _now() {
+    final Duration? offset = widget.config.simulatedClockOffset;
+    final DateTime systemNow = DateTime.now();
+    return offset == null ? systemNow : systemNow.add(offset);
+  }
+
   Future<void> _initializeSession() async {
     setState(() {
       _initializing = true;
@@ -108,7 +116,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       if (!mounted) return;
       setState(() {
         _initializing = false;
-        _statusMessage = 'Session live. Keep students centered for best recognition results.';
+        _statusMessage =
+            'Session live. Keep students centered for best recognition results.';
       });
     } catch (error) {
       if (!mounted) return;
@@ -123,8 +132,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   Future<void> _ensureSessionDocument() async {
     if (_sessionDocId != null) return;
     final User? user = FirebaseAuth.instance.currentUser;
-    final DocumentReference<Map<String, dynamic>> doc =
-        _firestore.collection('attendanceSessions').doc();
+    final DocumentReference<Map<String, dynamic>> doc = _firestore
+        .collection('attendanceSessions')
+        .doc();
     await doc.set(<String, dynamic>{
       'classId': widget.config.classId,
       'subjectCode': widget.config.subjectCode,
@@ -178,7 +188,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       throw StateError('No camera devices detected.');
     }
     final CameraDescription camera = cameras.firstWhere(
-      (CameraDescription description) => description.lensDirection == CameraLensDirection.front,
+      (CameraDescription description) =>
+          description.lensDirection == CameraLensDirection.front,
       orElse: () => cameras.first,
     );
     final CameraController controller = CameraController(
@@ -208,7 +219,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       return;
     }
     _isProcessingFrame = true;
-    _lastCaptureTime = DateTime.now();
+    _lastCaptureTime = _now();
     try {
       final InputImage inputImage = _buildInputImage(image);
       final List<Face> faces = await detector.processImage(inputImage);
@@ -216,8 +227,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         _updateStatus('No face detected. Ask the student to step closer.');
       } else {
         final Rect bbox = faces.first.boundingBox;
-        final List<double> embedding =
-            await _embeddingService.generateEmbedding(image, bbox);
+        final List<double> embedding = await _embeddingService
+            .generateEmbedding(image, bbox);
         await _handleEmbeddingCapture(embedding);
       }
     } catch (error) {
@@ -228,14 +239,17 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   }
 
   Future<void> _processWebFrame() async {
-    if (!kIsWeb || !_captureEnabled || _isProcessingFrame || !_embeddingService.isReady) {
+    if (!kIsWeb ||
+        !_captureEnabled ||
+        _isProcessingFrame ||
+        !_embeddingService.isReady) {
       return;
     }
     if (_isWithinCooldown()) {
       return;
     }
     _isProcessingFrame = true;
-    _lastCaptureTime = DateTime.now();
+    _lastCaptureTime = _now();
     try {
       final WebCameraFrame? frame = await _webCameraService?.captureFrame();
       if (frame == null) return;
@@ -262,12 +276,12 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     if (last == null) {
       return false;
     }
-    return DateTime.now().difference(last) < _captureCooldown;
+    return _now().difference(last) < _captureCooldown;
   }
 
   Future<void> _handleEmbeddingCapture(List<double> embedding) async {
     final _MatchResult result = _matchEmbedding(embedding);
-    final DateTime captureTime = DateTime.now();
+    final DateTime captureTime = _now();
     if (result.student != null &&
         _shouldThrottleStudentCapture(result.student!.userId, captureTime)) {
       return;
@@ -313,7 +327,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         _recentCaptures.removeLast();
       }
       if (result.student != null) {
-        _statusMessage = 'Recognized ${result.student!.displayName} '
+        _statusMessage =
+            'Recognized ${result.student!.displayName} '
             '(${_formatConfidence(result.confidence!)})';
       } else {
         _statusMessage = 'Face detected but no match found in roster.';
@@ -321,7 +336,11 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     });
   }
 
-  Future<void> _persistCapture(_MatchResult result, List<double> embedding, DateTime captureTime) async {
+  Future<void> _persistCapture(
+    _MatchResult result,
+    List<double> embedding,
+    DateTime captureTime,
+  ) async {
     final String? sessionId = _sessionDocId;
     if (sessionId == null) {
       return;
@@ -329,8 +348,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     final String? attendanceStatus = result.student == null
         ? null
         : _classifyAttendanceStatus(captureTime);
-    final DocumentReference<Map<String, dynamic>> sessionRef =
-        _firestore.collection('attendanceSessions').doc(sessionId);
+    final DocumentReference<Map<String, dynamic>> sessionRef = _firestore
+        .collection('attendanceSessions')
+        .doc(sessionId);
     await sessionRef.collection('captures').add(<String, dynamic>{
       'capturedAt': FieldValue.serverTimestamp(),
       'capturedAtLocal': captureTime.toIso8601String(),
@@ -342,14 +362,17 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       'attendanceStatus': attendanceStatus,
     });
     if (result.student != null) {
-      await sessionRef.collection('attendees').doc(result.student!.userId).set(<String, dynamic>{
-        'displayName': result.student!.displayName,
-        'firstCapturedAt': FieldValue.serverTimestamp(),
-        'lastCapturedAt': FieldValue.serverTimestamp(),
-        'confidence': result.confidence,
-        'status': attendanceStatus,
-        'statusComputedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
+      await sessionRef
+          .collection('attendees')
+          .doc(result.student!.userId)
+          .set(<String, dynamic>{
+            'displayName': result.student!.displayName,
+            'firstCapturedAt': FieldValue.serverTimestamp(),
+            'lastCapturedAt': FieldValue.serverTimestamp(),
+            'confidence': result.confidence,
+            'status': attendanceStatus,
+            'statusComputedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
       await _updateClassAttendanceStats(
         studentId: result.student!.userId,
         newStatus: attendanceStatus,
@@ -389,7 +412,13 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   }
 
   DateTime _dateWithTime(DateTime reference, TimeOfDay time) {
-    return DateTime(reference.year, reference.month, reference.day, time.hour, time.minute);
+    return DateTime(
+      reference.year,
+      reference.month,
+      reference.day,
+      time.hour,
+      time.minute,
+    );
   }
 
   Future<void> _updateClassAttendanceStats({
@@ -447,7 +476,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         return null;
     }
   }
-  
+
   Future<void> _markUncapturedStudentsAbsent() async {
     final List<_RecognizedStudent> roster = _roster;
     if (roster.isEmpty) {
@@ -455,7 +484,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     }
     final Set<String> countedStudentIds = _recordedStatuses.keys.toSet();
     final Iterable<_RecognizedStudent> uncaptured = roster.where(
-      (_RecognizedStudent student) => !countedStudentIds.contains(student.userId),
+      (_RecognizedStudent student) =>
+          !countedStudentIds.contains(student.userId),
     );
     for (final _RecognizedStudent student in uncaptured) {
       await _updateClassAttendanceStats(
@@ -471,13 +501,18 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       buffer.putUint8List(plane.bytes);
     }
     final Uint8List bytes = buffer.done().buffer.asUint8List();
-    final Size imageSize = Size(image.width.toDouble(), image.height.toDouble());
-    final InputImageRotation rotation = InputImageRotationValue.fromRawValue(
+    final Size imageSize = Size(
+      image.width.toDouble(),
+      image.height.toDouble(),
+    );
+    final InputImageRotation rotation =
+        InputImageRotationValue.fromRawValue(
           _cameraController?.description.sensorOrientation ?? 0,
         ) ??
         InputImageRotation.rotation0deg;
     final InputImageFormat format =
-        InputImageFormatValue.fromRawValue(image.format.raw) ?? InputImageFormat.nv21;
+        InputImageFormatValue.fromRawValue(image.format.raw) ??
+        InputImageFormat.nv21;
     final InputImageMetadata metadata = InputImageMetadata(
       size: imageSize,
       rotation: rotation,
@@ -537,10 +572,12 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       return;
     }
     try {
-      await _firestore.collection('attendanceSessions').doc(sessionId).update(<String, dynamic>{
-        'status': 'completed',
-        'endedAt': FieldValue.serverTimestamp(),
-      });
+      await _firestore.collection('attendanceSessions').doc(sessionId).update(
+        <String, dynamic>{
+          'status': 'completed',
+          'endedAt': FieldValue.serverTimestamp(),
+        },
+      );
     } catch (_) {
       // Best-effort update only.
     } finally {
@@ -613,7 +650,10 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                     ),
                   ),
                   Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: <Widget>[
@@ -624,8 +664,16 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                         const SizedBox(height: 8),
                         FilledButton.icon(
                           onPressed: _initializing ? null : _toggleCapture,
-                          icon: Icon(_captureEnabled ? Icons.pause_circle : Icons.play_circle),
-                          label: Text(_captureEnabled ? 'Pause recognition' : 'Resume recognition'),
+                          icon: Icon(
+                            _captureEnabled
+                                ? Icons.pause_circle
+                                : Icons.play_circle,
+                          ),
+                          label: Text(
+                            _captureEnabled
+                                ? 'Pause recognition'
+                                : 'Resume recognition',
+                          ),
                         ),
                       ],
                     ),
@@ -660,10 +708,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
             : const Text('Camera initializing...'),
       );
     }
-    return Transform.scale(
-      scaleX: -1,
-      child: CameraPreview(controller),
-    );
+    return Transform.scale(scaleX: -1, child: CameraPreview(controller));
   }
 
   String _formatConfidence(double value) {
@@ -692,21 +737,31 @@ class _SessionHeader extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
-                  Text('${config.subjectCode} • ${config.subjectName}',
-                      style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+                  Text(
+                    '${config.subjectCode} • ${config.subjectName}',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                   const SizedBox(height: 4),
                   Text(_formatSection(config)),
                   const SizedBox(height: 8),
-                  Text(_formatSchedule(context, config),
-                      style: theme.textTheme.bodySmall),
+                  Text(
+                    _formatSchedule(context, config),
+                    style: theme.textTheme.bodySmall,
+                  ),
                 ],
               ),
             ),
             Column(
               children: <Widget>[
                 const Text('Roster embeddings'),
-                Text(rosterCount.toString(),
-                    style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
+                Text(
+                  rosterCount.toString(),
+                  style: theme.textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
               ],
             ),
           ],
@@ -716,14 +771,23 @@ class _SessionHeader extends StatelessWidget {
   }
 
   static String _formatSection(AttendanceSessionConfig config) {
-    final String sectionLabel = config.section == null ? 'Section TBD' : 'Section ${config.section}';
+    final String sectionLabel = config.section == null
+        ? 'Section TBD'
+        : 'Section ${config.section}';
     final String termLabel = config.term == null ? '' : ' • ${config.term}';
-    final String locationLabel = config.location == null ? '' : ' • ${config.location}';
+    final String locationLabel = config.location == null
+        ? ''
+        : ' • ${config.location}';
     return '$sectionLabel$termLabel$locationLabel';
   }
 
-  static String _formatSchedule(BuildContext context, AttendanceSessionConfig config) {
-    final MaterialLocalizations localizations = MaterialLocalizations.of(context);
+  static String _formatSchedule(
+    BuildContext context,
+    AttendanceSessionConfig config,
+  ) {
+    final MaterialLocalizations localizations = MaterialLocalizations.of(
+      context,
+    );
     final TimeOfDay start = config.start;
     final TimeOfDay end = config.end;
     final String day = _weekdayLabel(config.dayOfWeek);
@@ -751,10 +815,7 @@ class _SessionHeader extends StatelessWidget {
 }
 
 class _RecentCapturesList extends StatelessWidget {
-  const _RecentCapturesList({
-    required this.captures,
-    required this.controller,
-  });
+  const _RecentCapturesList({required this.captures, required this.controller});
 
   final List<_AttendanceCapture> captures;
   final ScrollController controller;
@@ -776,7 +837,9 @@ class _RecentCapturesList extends StatelessWidget {
           if (captures.isEmpty)
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 16),
-              child: Text('No captures yet. Position a student in front of the camera to begin.'),
+              child: Text(
+                'No captures yet. Position a student in front of the camera to begin.',
+              ),
             )
           else
             SizedBox(
@@ -793,14 +856,21 @@ class _RecentCapturesList extends StatelessWidget {
                     return ListTile(
                       contentPadding: EdgeInsets.zero,
                       leading: Icon(
-                        capture.matchDisplayName == null ? Icons.help_outline : Icons.verified_user_outlined,
+                        capture.matchDisplayName == null
+                            ? Icons.help_outline
+                            : Icons.verified_user_outlined,
                       ),
-                      title: Text(capture.matchDisplayName ?? 'Unrecognized face'),
-                      subtitle:
-                          Text('Captured at ${TimeOfDay.fromDateTime(capture.timestamp).format(context)}'),
+                      title: Text(
+                        capture.matchDisplayName ?? 'Unrecognized face',
+                      ),
+                      subtitle: Text(
+                        'Captured at ${TimeOfDay.fromDateTime(capture.timestamp).format(context)}',
+                      ),
                       trailing: capture.confidence == null
                           ? const Text('No match')
-                          : Text('${(capture.confidence! * 100).toStringAsFixed(1)}%'),
+                          : Text(
+                              '${(capture.confidence! * 100).toStringAsFixed(1)}%',
+                            ),
                     );
                   },
                 ),

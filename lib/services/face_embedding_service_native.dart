@@ -12,6 +12,8 @@ import 'package:onnxruntime/onnxruntime.dart';
 import 'package:onnxruntime/src/bindings/onnxruntime_bindings_generated.dart'
     as bg;
 
+import 'image_normalization_service.dart';
+
 /// Handles ONNX Runtime face embedding generation.
 class FaceEmbeddingService {
   FaceEmbeddingService._();
@@ -19,6 +21,8 @@ class FaceEmbeddingService {
   static final FaceEmbeddingService instance = FaceEmbeddingService._();
 
   static const String _modelAssetPath = 'assets/models/face_embedding.onnx';
+  final ImageNormalizationService _imageNormalizer =
+      ImageNormalizationService();
 
   OrtSession? _session;
   late String _inputName;
@@ -47,7 +51,8 @@ class FaceEmbeddingService {
       _inputShape = _readTensorShape(isInput: true);
       _outputShape = _readTensorShape(isInput: false);
       _channelsFirst =
-          _inputShape.length == 4 && (_inputShape[1] == 3 || _inputShape[1] == 1);
+          _inputShape.length == 4 &&
+          (_inputShape[1] == 3 || _inputShape[1] == 1);
       _inputSize = _resolveSpatialSize();
       _embeddingLength = _resolveEmbeddingLength();
     } catch (error, stackTrace) {
@@ -93,12 +98,14 @@ class FaceEmbeddingService {
     );
     final OrtRunOptions runOptions = OrtRunOptions();
     try {
-      final List<OrtValue?> outputs =
-          _session!.run(runOptions, {_inputName: inputTensor});
+      final List<OrtValue?> outputs = _session!.run(runOptions, {
+        _inputName: inputTensor,
+      });
       try {
         final dynamic rawOutput = outputs.first?.value;
-        final List<double> embedding =
-            _flattenToDoubleList(rawOutput).take(_embeddingLength ?? 192).toList();
+        final List<double> embedding = _flattenToDoubleList(
+          rawOutput,
+        ).take(_embeddingLength ?? 192).toList();
         return embedding;
       } finally {
         for (final OrtValue? value in outputs) {
@@ -111,7 +118,10 @@ class FaceEmbeddingService {
     }
   }
 
-  Float32List _preprocessCameraImage(CameraImage cameraImage, Rect boundingBox) {
+  Float32List _preprocessCameraImage(
+    CameraImage cameraImage,
+    Rect boundingBox,
+  ) {
     if (_inputSize == null) {
       throw StateError('Embedding model is not initialized.');
     }
@@ -138,6 +148,7 @@ class FaceEmbeddingService {
       height: _inputSize!,
       interpolation: imglib.Interpolation.cubic,
     );
+    final imglib.Image processed = _imageNormalizer.normalize(resized);
 
     final int planeSize = _inputSize! * _inputSize!;
     final Float32List buffer = Float32List(planeSize * 3);
@@ -147,7 +158,9 @@ class FaceEmbeddingService {
       for (int y = 0; y < _inputSize!; y++) {
         for (int x = 0; x < _inputSize!; x++) {
           final int idx = y * _inputSize! + x;
-          final _NormalizedPixel pixel = _normalizePixel(resized.getPixel(x, y));
+          final _NormalizedPixel pixel = _normalizePixel(
+            processed.getPixel(x, y),
+          );
           buffer[idx] = pixel.r;
           buffer[gOffset + idx] = pixel.g;
           buffer[bOffset + idx] = pixel.b;
@@ -157,7 +170,9 @@ class FaceEmbeddingService {
       int offset = 0;
       for (int y = 0; y < _inputSize!; y++) {
         for (int x = 0; x < _inputSize!; x++) {
-          final _NormalizedPixel pixel = _normalizePixel(resized.getPixel(x, y));
+          final _NormalizedPixel pixel = _normalizePixel(
+            processed.getPixel(x, y),
+          );
           buffer[offset++] = pixel.r;
           buffer[offset++] = pixel.g;
           buffer[offset++] = pixel.b;
@@ -173,8 +188,12 @@ class FaceEmbeddingService {
     }
     final int heightIndex = _channelsFirst ? 2 : 1;
     final int widthIndex = _channelsFirst ? 3 : 2;
-    final int height = heightIndex < _inputShape.length ? _inputShape[heightIndex] : -1;
-    final int width = widthIndex < _inputShape.length ? _inputShape[widthIndex] : -1;
+    final int height = heightIndex < _inputShape.length
+        ? _inputShape[heightIndex]
+        : -1;
+    final int width = widthIndex < _inputShape.length
+        ? _inputShape[widthIndex]
+        : -1;
     if (height > 0) return height;
     if (width > 0) return width;
     return 112;
@@ -195,61 +214,58 @@ class FaceEmbeddingService {
   }
 
   List<int> _readTensorShape({required bool isInput, int index = 0}) {
-    final ffi.Pointer<bg.OrtSession> sessionPtr =
-        ffi.Pointer.fromAddress(_session!.address);
+    final ffi.Pointer<bg.OrtSession> sessionPtr = ffi.Pointer.fromAddress(
+      _session!.address,
+    );
     final api = OrtEnv.instance.ortApiPtr.ref;
     final typeInfoPtr = calloc<ffi.Pointer<bg.OrtTypeInfo>>();
-    final statusPtr = (isInput
-            ? api.SessionGetInputTypeInfo
-            : api.SessionGetOutputTypeInfo)
-        .asFunction<bg.OrtStatusPtr Function(
-            ffi.Pointer<bg.OrtSession>,
-            int,
-            ffi.Pointer<ffi.Pointer<bg.OrtTypeInfo>>)>()(
-      sessionPtr,
-      index,
-      typeInfoPtr,
-    );
+    final statusPtr =
+        (isInput ? api.SessionGetInputTypeInfo : api.SessionGetOutputTypeInfo)
+            .asFunction<
+              bg.OrtStatusPtr Function(
+                ffi.Pointer<bg.OrtSession>,
+                int,
+                ffi.Pointer<ffi.Pointer<bg.OrtTypeInfo>>,
+              )
+            >()(sessionPtr, index, typeInfoPtr);
     OrtStatus.checkOrtStatus(statusPtr);
-    final tensorInfoPtrPtr = calloc<ffi.Pointer<bg.OrtTensorTypeAndShapeInfo>>();
-    final castStatus = api.CastTypeInfoToTensorInfo.asFunction<
-        bg.OrtStatusPtr Function(
+    final tensorInfoPtrPtr =
+        calloc<ffi.Pointer<bg.OrtTensorTypeAndShapeInfo>>();
+    final castStatus =
+        api.CastTypeInfoToTensorInfo.asFunction<
+          bg.OrtStatusPtr Function(
             ffi.Pointer<bg.OrtTypeInfo>,
-            ffi.Pointer<ffi.Pointer<bg.OrtTensorTypeAndShapeInfo>>)>()(
-      typeInfoPtr.value,
-      tensorInfoPtrPtr,
-    );
+            ffi.Pointer<ffi.Pointer<bg.OrtTensorTypeAndShapeInfo>>,
+          )
+        >()(typeInfoPtr.value, tensorInfoPtrPtr);
     OrtStatus.checkOrtStatus(castStatus);
     final dimsCountPtr = calloc<ffi.Size>();
-    final countStatus = api.GetDimensionsCount.asFunction<
-        bg.OrtStatusPtr Function(
+    final countStatus =
+        api.GetDimensionsCount.asFunction<
+          bg.OrtStatusPtr Function(
             ffi.Pointer<bg.OrtTensorTypeAndShapeInfo>,
-            ffi.Pointer<ffi.Size>)>()(
-      tensorInfoPtrPtr.value,
-      dimsCountPtr,
-    );
+            ffi.Pointer<ffi.Size>,
+          )
+        >()(tensorInfoPtrPtr.value, dimsCountPtr);
     OrtStatus.checkOrtStatus(countStatus);
     final int count = dimsCountPtr.value;
     final dimsPtr = calloc<ffi.Int64>(count);
-    final dimsStatus = api.GetDimensions.asFunction<
-        bg.OrtStatusPtr Function(
+    final dimsStatus =
+        api.GetDimensions.asFunction<
+          bg.OrtStatusPtr Function(
             ffi.Pointer<bg.OrtTensorTypeAndShapeInfo>,
             ffi.Pointer<ffi.Int64>,
-            int)>()(
-      tensorInfoPtrPtr.value,
-      dimsPtr,
-      count,
-    );
+            int,
+          )
+        >()(tensorInfoPtrPtr.value, dimsPtr, count);
     OrtStatus.checkOrtStatus(dimsStatus);
-    final List<int> dims =
-        List<int>.generate(count, (int i) => dimsPtr[i]);
+    final List<int> dims = List<int>.generate(count, (int i) => dimsPtr[i]);
 
     calloc.free(dimsPtr);
     calloc.free(dimsCountPtr);
-    api.ReleaseTypeInfo
-        .asFunction<void Function(ffi.Pointer<bg.OrtTypeInfo>)>()(
-      typeInfoPtr.value,
-    );
+    api.ReleaseTypeInfo.asFunction<
+      void Function(ffi.Pointer<bg.OrtTypeInfo>)
+    >()(typeInfoPtr.value);
     calloc.free(tensorInfoPtrPtr);
     calloc.free(typeInfoPtr);
     return dims;
@@ -298,9 +314,10 @@ class FaceEmbeddingService {
         final int uValue = uPlane.bytes[uvIndex];
         final int vValue = vPlane.bytes[uvIndex];
         final int r = (yValue + 1.402 * (vValue - 128)).round().clamp(0, 255);
-        final int g = (yValue - 0.344136 * (uValue - 128) - 0.714136 * (vValue - 128))
-            .round()
-            .clamp(0, 255);
+        final int g =
+            (yValue - 0.344136 * (uValue - 128) - 0.714136 * (vValue - 128))
+                .round()
+                .clamp(0, 255);
         final int b = (yValue + 1.772 * (uValue - 128)).round().clamp(0, 255);
         converted.setPixelRgb(x, y, r, g, b);
       }
