@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import 'attendance_session_page.dart';
+import 'reports/generate_report_page.dart';
 
 class InstructorPage extends StatefulWidget {
   const InstructorPage({super.key});
@@ -317,6 +318,8 @@ class _InstructorPageState extends State<InstructorPage> {
                 _assignmentError,
                 hasAssignments,
               ),
+              const SizedBox(height: 24),
+              _buildReportShortcutCard(context, hasAssignments),
               const SizedBox(height: 32),
               _buildScheduleSection(
                 context,
@@ -639,6 +642,44 @@ class _InstructorPageState extends State<InstructorPage> {
                 label: const Text('Jump +30 min'),
               ),
             ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildReportShortcutCard(
+    BuildContext context,
+    bool hasAssignments,
+  ) {
+    final ThemeData theme = Theme.of(context);
+    final String helperText = hasAssignments
+        ? 'Generate printable attendance logs for your assigned sections.'
+        : 'You need at least one assigned class before generating reports.';
+    return Card(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text(
+              'Attendance reports',
+              style: theme.textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(helperText, style: theme.textTheme.bodyMedium),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: hasAssignments
+                  ? () => Navigator.of(context)
+                      .pushNamed(GenerateReportPage.routeName)
+                  : null,
+              icon: const Icon(Icons.insights_outlined),
+              label: const Text('Generate report'),
+            ),
           ],
         ),
       ),

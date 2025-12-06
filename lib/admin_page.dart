@@ -4,6 +4,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'reports/generate_report_page.dart';
+
 enum _AdminSection { overview, departments, subjects, classes }
 
 
@@ -51,10 +53,18 @@ class _AdminPageState extends State<AdminPage> {
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
-    final List<_AdminAction> actions = const <_AdminAction>[
-      _AdminAction('Review Attendance Reports', Icons.insights_outlined),
-      _AdminAction('Manage Departments', Icons.account_tree_outlined),
-      _AdminAction('Approve Instructor Accounts', Icons.verified_user_outlined),
+    final List<_AdminAction> actions = <_AdminAction>[
+      _AdminAction(
+        'Review Attendance Reports',
+        Icons.insights_outlined,
+        onTap: () => Navigator.of(context)
+            .pushNamed(GenerateReportPage.routeName),
+      ),
+      const _AdminAction('Manage Departments', Icons.account_tree_outlined),
+      const _AdminAction(
+        'Approve Instructor Accounts',
+        Icons.verified_user_outlined,
+      ),
     ];
 
     return Scaffold(
@@ -2073,10 +2083,11 @@ extension on String {
 }
 
 class _AdminAction {
-  const _AdminAction(this.label, this.icon);
+  const _AdminAction(this.label, this.icon, {this.onTap});
 
   final String label;
   final IconData icon;
+  final VoidCallback? onTap;
 }
 
 class _AdminStatCard extends StatelessWidget {
@@ -2131,7 +2142,7 @@ class _AdminActionTile extends StatelessWidget {
         leading: Icon(action.icon),
         title: Text(action.label),
         trailing: const Icon(Icons.chevron_right),
-        onTap: () {},
+        onTap: action.onTap,
       ),
     );
   }

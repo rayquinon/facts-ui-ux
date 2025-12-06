@@ -13,6 +13,13 @@ import 'services/web_camera_service.dart';
 
 enum _OrientationPhase { front, left, right }
 
+const double _kGuideWidthRatio = 0.3;
+const double _kGuideHeightRatio = 0.7;
+const double _kGuideCenterToleranceFactor =
+    0.9; // slightly tighter than the oval edge
+const double _kGuideSizeLowerBound = 0.45;
+const double _kGuideSizeUpperBound = 1.6;
+
 class FaceEnrollmentPage extends StatefulWidget {
   const FaceEnrollmentPage({super.key});
 
@@ -36,6 +43,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   bool _enrollmentStarted = false;
   bool _cameraReady = false;
   bool _cameraInitializing = false;
+  bool _faceReadyForEnrollment = kIsWeb;
   List<double>? _latestEmbedding;
   String? _statusMessage;
   int _currentPhaseIndex = 0;
@@ -72,6 +80,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       }
       setState(() {
         _cameraReady = true;
+        _faceReadyForEnrollment = kIsWeb;
         _statusMessage =
             'Camera ready. Align your face, then tap "Start Enrollment".';
       });
@@ -80,12 +89,21 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
         _statusMessage = 'Setup failed: $error';
         _enrollmentStarted = false;
         _cameraReady = false;
+        _faceReadyForEnrollment = kIsWeb;
       });
     }
   }
 
   Future<void> _startEnrollment() async {
     if (_enrollmentStarted || !_cameraReady) return;
+    final bool alignmentRequired = _faceDetector != null;
+    if (alignmentRequired && !_faceReadyForEnrollment) {
+      setState(() {
+        _statusMessage =
+            'Align your face inside the oval before starting enrollment.';
+      });
+      return;
+    }
     setState(() {
       _enrollmentStarted = true;
       for (final List<List<double>> bucket in _phaseEmbeddings.values) {
@@ -171,8 +189,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   }
 
   Future<void> _processCameraImage(CameraImage image) async {
-    if (!_enrollmentStarted) return;
-    if (_isProcessingFrame || !_embeddingService.isReady) return;
+    if (_isProcessingFrame) return;
     final FaceDetector? detector = _faceDetector;
     if (detector == null) {
       return;
@@ -182,12 +199,27 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       final InputImage inputImage = _buildInputImage(image);
       final List<Face> faces = await detector.processImage(inputImage);
       if (faces.isEmpty) {
-        _updateNoFaceStatus();
+        _updateFaceReadyState(false);
+        if (_enrollmentStarted) {
+          _updateNoFaceStatus();
+        }
       } else {
         final Rect bbox = faces.first.boundingBox;
-        final List<double> embedding = await _embeddingService
-            .generateEmbedding(image, bbox);
-        _recordEmbedding(embedding);
+        final Size frameSize = Size(
+          image.width.toDouble(),
+          image.height.toDouble(),
+        );
+        final bool withinGuide = _isBoundingBoxWithinGuide(bbox, frameSize);
+        _updateFaceReadyState(withinGuide);
+        if (_enrollmentStarted) {
+          if (!withinGuide) {
+            _updateMisalignedStatus();
+          } else if (_embeddingService.isReady) {
+            final List<double> embedding = await _embeddingService
+                .generateEmbedding(image, bbox);
+            _recordEmbedding(embedding);
+          }
+        }
       }
     } catch (error) {
       debugPrint('Face processing error: $error');
@@ -228,6 +260,60 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       _statusMessage =
           'No face detected. Keep ${_phaseLabel(_currentPhase)} and stay within the frame.';
     });
+  }
+
+  void _updateMisalignedStatus() {
+    if (!mounted) return;
+    setState(() {
+      _latestEmbedding = null;
+      _statusMessage =
+          'Center your face inside the oval before we can capture this step.';
+    });
+  }
+
+  void _updateFaceReadyState(bool hasFaceInGuide) {
+    if (!mounted || _faceReadyForEnrollment == hasFaceInGuide) {
+      return;
+    }
+    setState(() => _faceReadyForEnrollment = hasFaceInGuide);
+  }
+
+  bool _isBoundingBoxWithinGuide(Rect bbox, Size frameSize) {
+    final double frameWidth = frameSize.width;
+    final double frameHeight = frameSize.height;
+    if (frameWidth == 0 || frameHeight == 0) {
+      return true;
+    }
+    final Offset frameCenter = Offset(frameWidth / 2, frameHeight / 2);
+    final Offset boxCenter = bbox.center;
+    final double guideHalfWidth = frameWidth * _kGuideWidthRatio / 2;
+    final double guideHalfHeight = frameHeight * _kGuideHeightRatio / 2;
+    if (guideHalfWidth == 0 || guideHalfHeight == 0) {
+      return true;
+    }
+    final double normalizedX =
+        (boxCenter.dx - frameCenter.dx) /
+        (guideHalfWidth * _kGuideCenterToleranceFactor);
+    final double normalizedY =
+        (boxCenter.dy - frameCenter.dy) /
+        (guideHalfHeight * _kGuideCenterToleranceFactor);
+    final double distanceFromCenter =
+        normalizedX * normalizedX + normalizedY * normalizedY;
+    if (distanceFromCenter > 1) {
+      return false;
+    }
+
+    final double bboxWidth = bbox.width.abs();
+    final double bboxHeight = bbox.height.abs();
+    final double minWidth = guideHalfWidth * 2 * _kGuideSizeLowerBound;
+    final double maxWidth = guideHalfWidth * 2 * _kGuideSizeUpperBound;
+    final double minHeight = guideHalfHeight * 2 * _kGuideSizeLowerBound;
+    final double maxHeight = guideHalfHeight * 2 * _kGuideSizeUpperBound;
+
+    return bboxWidth >= minWidth &&
+        bboxWidth <= maxWidth &&
+        bboxHeight >= minHeight &&
+        bboxHeight <= maxHeight;
   }
 
   void _recordEmbedding(List<double> embedding) {
@@ -458,10 +544,12 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       );
     }
     if (!_enrollmentStarted) {
+      final bool faceDetectionAvailable = _faceDetector != null;
+      final bool canStart = !faceDetectionAvailable || _faceReadyForEnrollment;
       return FilledButton.icon(
-        onPressed: () => _startEnrollment(),
+        onPressed: canStart ? () => _startEnrollment() : null,
         icon: const Icon(Icons.play_arrow),
-        label: const Text('Start Enrollment'),
+        label: Text(canStart ? 'Start Enrollment' : 'Align face to start'),
       );
     }
     return FilledButton.icon(
@@ -545,8 +633,8 @@ class _FaceGuideMaskPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final Rect bounds = Offset.zero & size;
-    final double ovalWidth = size.width * 0.3;
-    final double ovalHeight = size.height * 0.7;
+    final double ovalWidth = size.width * _kGuideWidthRatio;
+    final double ovalHeight = size.height * _kGuideHeightRatio;
     final Rect ovalRect = Rect.fromCenter(
       center: size.center(Offset.zero),
       width: ovalWidth,

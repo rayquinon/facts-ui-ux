@@ -43,6 +43,8 @@ dependencies:
   camera_macos: ^0.0.9
   onnxruntime: ^1.4.1
   image: ^4.2.0
+  pdf: ^3.11.0
+  printing: ^5.13.3
 
 dev_dependencies:
   flutter_test:

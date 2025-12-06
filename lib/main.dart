@@ -13,6 +13,7 @@ import 'student_page.dart';
 import 'attendance_session_page.dart';
 import 'constants/auth_constants.dart';
 import 'services/user_role_service.dart';
+import 'reports/generate_report_page.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -63,6 +64,8 @@ class FactsApp extends StatelessWidget {
             const InstructorPage(),
         FaceEnrollmentPage.routeName: (BuildContext context) =>
           const FaceEnrollmentPage(),
+        GenerateReportPage.routeName: (BuildContext context) =>
+          const GenerateReportPage(),
           AttendanceSessionPage.routeName: (BuildContext context) {
             final ModalRoute<dynamic>? route = ModalRoute.of(context);
             final AttendanceSessionConfig? config =
