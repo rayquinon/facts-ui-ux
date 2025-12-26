@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import 'instructor_page.dart';
 import 'student_page.dart';
+import 'verify_email_page.dart';
 
 enum UserRole { instructor, student }
 
@@ -205,8 +206,86 @@ class _SignUpPageState extends State<SignUpPage> {
   bool _isLoadingSections = false;
   String? _sectionsError;
   String? _selectedStudentSection;
+  bool _studentPrivacyConsent = false;
   bool _obscurePassword = true;
   bool _isSubmitting = false;
+
+  static const String _privacyHeader =
+      'F.A.C.T.S. Student Data Privacy Notice and Consent\n'
+      'Personal Information Controller: University of Science and Technology of Southern Philippines (USTP) – Oroquieta Campus\n\n'
+      'This notice explains how F.A.C.T.S. processes your personal data for account creation and attendance verification. By consenting, you provide your informed consent for the processing described below, consistent with the Data Privacy Act of 2012 (Republic Act No. 10173) and its Implementing Rules and Regulations.';
+
+  static const List<Map<String, String>> _privacyParts = <Map<String, String>>[
+    <String, String>{'title': 'Part 1: Overview', 'body': _privacyHeader},
+    <String, String>{
+      'title': 'Part 2: Data We Collect',
+      'body':
+          '1) Personal data we collect\n'
+          '• Identifying and account data: full name, email address, student ID, section.\n'
+          '• Attendance data: date/time of attendance, subject/class, attendance history.\n'
+          '• Face verification data (embeddings only): during enrollment/verification, the app scans your face using your device camera and generates a face embedding/template (a numeric representation) used for matching.',
+    },
+    <String, String>{
+      'title': 'Part 3: What We Do Not Store',
+      'body':
+          '2) What we do NOT store\n'
+          '• We do not store raw face photos as the primary identifier for matching. We store face embeddings/templates for verification.',
+    },
+    <String, String>{
+      'title': 'Part 4: How Embeddings Are Used',
+      'body':
+          '3) How face embeddings are used\n'
+          '• Used to confirm your identity during attendance sessions and reduce impersonation/fraud.\n'
+          '• Used only for attendance and account-related verification within F.A.C.T.S.',
+    },
+    <String, String>{
+      'title': 'Part 5: Purpose and Legal Basis',
+      'body':
+          '4) Purpose of processing\n'
+          '• Create and manage your student account.\n'
+          '• Record, validate, and summarize class attendance.\n'
+          '• Support academic reporting by authorized personnel.\n\n'
+          '5) Legal basis\n'
+          '• Consent: you voluntarily consent to face scanning and the generation/storage/use of your face embedding/template for attendance verification.',
+    },
+    <String, String>{
+      'title': 'Part 6: Access and Disclosures',
+      'body':
+          '6) Access and disclosures\n'
+          '• Access is restricted to authorized roles (e.g., you, your instructor, and designated administrators) as needed for attendance operations and support.\n'
+          '• We do not sell your personal data. Data may be processed using cloud services required to operate the system under security and access controls.\n'
+          '• Disclosure may occur if required by law or lawful orders.',
+    },
+    <String, String>{
+      'title': 'Part 7: Retention and Deletion',
+      'body':
+          '7) Retention and deletion\n'
+          '• We retain your data and face embeddings only while you are enrolled/affiliated with the school.\n'
+          '• Once you graduate, transfer, or are no longer attached to USTP, your data (including face embeddings) will be deleted in accordance with institutional policy and applicable requirements.',
+    },
+    <String, String>{
+      'title': 'Part 8: Your Rights',
+      'body':
+          '8) Your rights as a data subject\n'
+          'You may request access, correction, deletion/blocking where applicable, and withdraw consent subject to applicable rules.',
+    },
+    <String, String>{
+      'title': 'Part 9: Alternative Attendance',
+      'body':
+          '9) Alternative attendance method\n'
+          'If you do not consent to face scanning/embeddings, an alternative method of taking attendance will be used by your instructor/class procedure.\n'
+          'Note: Creating a student account in this app requires consent because face-based verification is part of the system design.',
+    },
+    <String, String>{
+      'title': 'Part 10: Ethics and Contact',
+      'body':
+          '10) Ethical considerations\n'
+          '• Face recognition may be affected by lighting, camera quality, or changes in appearance. Attendance disputes should allow human review.\n'
+          '• Face embeddings will be used only for attendance verification and related academic purposes stated here, not for surveillance or unrelated profiling.\n\n'
+          'Contact for privacy concerns/requests:\n'
+          'Academic Head Office (USTP Oroquieta Campus)',
+    },
+  ];
 
   @override
   void initState() {
@@ -233,12 +312,11 @@ class _SignUpPageState extends State<SignUpPage> {
       _sectionsError = null;
     });
     try {
-      final QuerySnapshot<Map<String, dynamic>> snapshot = await FirebaseFirestore
-          .instance
-          .collection('subjects')
-          .get();
+      final QuerySnapshot<Map<String, dynamic>> snapshot =
+          await FirebaseFirestore.instance.collection('subjects').get();
       final Set<String> uniqueSections = <String>{};
-      for (final QueryDocumentSnapshot<Map<String, dynamic>> doc in snapshot.docs) {
+      for (final QueryDocumentSnapshot<Map<String, dynamic>> doc
+          in snapshot.docs) {
         final List<dynamic> sections =
             (doc.data()['sections'] as List<dynamic>? ?? <dynamic>[]);
         for (final dynamic entry in sections) {
@@ -260,7 +338,8 @@ class _SignUpPageState extends State<SignUpPage> {
           _sectionSearchController.text = _selectedStudentSection!;
         }
         if (_availableSections.isEmpty) {
-          _sectionsError = 'No sections found. Ask an admin to add sections first.';
+          _sectionsError =
+              'No sections found. Ask an admin to add sections first.';
         }
       });
     } catch (error) {
@@ -297,6 +376,18 @@ class _SignUpPageState extends State<SignUpPage> {
         );
         return;
       }
+
+      if (!_studentPrivacyConsent) {
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text(
+              'You must agree to the Data Privacy Notice to create a student account.',
+            ),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
     }
 
     FocusScope.of(context).unfocus();
@@ -318,6 +409,7 @@ class _SignUpPageState extends State<SignUpPage> {
         };
         if (isInstructor) {
           profile['Department'] = department;
+          profile['approved'] = false;
         } else {
           profile['Student ID'] = studentId;
           profile['section'] = _selectedStudentSection;
@@ -339,6 +431,26 @@ class _SignUpPageState extends State<SignUpPage> {
         final String destinationRoute = isInstructor
             ? InstructorPage.routeName
             : StudentPage.routeName;
+
+        if (!(user?.emailVerified ?? false)) {
+          await user?.sendEmailVerification();
+          messenger.showSnackBar(
+            SnackBar(
+              content: Text(
+                'Verification email sent to ${user?.email ?? email}. Please verify to continue.',
+              ),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+          if (!mounted) return;
+          Navigator.of(context).pushNamedAndRemoveUntil(
+            VerifyEmailPage.routeName,
+            (Route<dynamic> route) => false,
+            arguments: VerifyEmailPageArgs(destinationRoute: destinationRoute),
+          );
+          return;
+        }
+
         Navigator.of(context).pushNamedAndRemoveUntil(
           destinationRoute,
           (Route<dynamic> route) => false,
@@ -352,7 +464,9 @@ class _SignUpPageState extends State<SignUpPage> {
         ),
       );
     } on FirebaseException catch (error, stackTrace) {
-      debugPrint('Firestore write failed: ${error.code} -> ${error.message}\n$stackTrace');
+      debugPrint(
+        'Firestore write failed: ${error.code} -> ${error.message}\n$stackTrace',
+      );
       messenger.showSnackBar(
         SnackBar(
           content: Text('Firestore write failed (${error.code}).'),
@@ -374,16 +488,69 @@ class _SignUpPageState extends State<SignUpPage> {
     }
   }
 
+  Future<void> _showStudentPrivacyNotice() async {
+    final bool? agreed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) {
+        int stepIndex = 0;
+        return StatefulBuilder(
+          builder: (BuildContext context, void Function(void Function()) set) {
+            final int totalSteps = _privacyParts.length;
+            final Map<String, String> step = _privacyParts[stepIndex];
+            final bool isLast = stepIndex == totalSteps - 1;
+
+            return AlertDialog(
+              title: Text('${step['title']} (${stepIndex + 1} of $totalSteps)'),
+              content: SizedBox(
+                width: 560,
+                child: SingleChildScrollView(
+                  child: SelectableText(
+                    step['body'] ?? '',
+                    textAlign: TextAlign.left,
+                  ),
+                ),
+              ),
+              actions: <Widget>[
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('Close'),
+                ),
+                if (stepIndex > 0)
+                  TextButton(
+                    onPressed: () => set(() => stepIndex -= 1),
+                    child: const Text('Back'),
+                  ),
+                FilledButton(
+                  onPressed: () {
+                    if (isLast) {
+                      Navigator.of(context).pop(true);
+                      return;
+                    }
+                    set(() => stepIndex += 1);
+                  },
+                  child: Text(isLast ? 'Finish (I Agree)' : 'I Agree'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (!mounted) return;
+    if (agreed == true) {
+      setState(() => _studentPrivacyConsent = true);
+    }
+  }
+
   Widget _buildSectionSelector() {
     final bool hasError = _sectionsError != null;
     final bool hasSections = _availableSections.isNotEmpty;
     final bool isDisabled = _isLoadingSections || !hasSections;
     final List<DropdownMenuEntry<String>> entries = _availableSections
         .map(
-          (String section) => DropdownMenuEntry<String>(
-            value: section,
-            label: section,
-          ),
+          (String section) =>
+              DropdownMenuEntry<String>(value: section, label: section),
         )
         .toList();
 
@@ -397,7 +564,9 @@ class _SignUpPageState extends State<SignUpPage> {
         label: const Text('Section'),
         hintText: _isLoadingSections
             ? 'Loading sections…'
-            : (hasSections ? 'Search or pick your section' : 'No sections available'),
+            : (hasSections
+                  ? 'Search or pick your section'
+                  : 'No sections available'),
         leadingIcon: const Icon(Icons.group_work_outlined),
         trailingIcon: _isLoadingSections
             ? const Padding(
@@ -560,6 +729,43 @@ class _SignUpPageState extends State<SignUpPage> {
                           ),
                           const SizedBox(height: 16),
                           _buildSectionSelector(),
+                          const SizedBox(height: 16),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2),
+                                child: IgnorePointer(
+                                  ignoring: true,
+                                  child: Checkbox(
+                                    value: _studentPrivacyConsent,
+                                    onChanged: null,
+                                  ),
+                                ),
+                              ),
+                              Expanded(
+                                child: Padding(
+                                  padding: const EdgeInsets.only(top: 10),
+                                  child: InkWell(
+                                    onTap: _showStudentPrivacyNotice,
+                                    child: Text(
+                                      'I agree to the Data Privacy Notice and consent to face embedding processing for attendance.',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodyMedium
+                                          ?.copyWith(
+                                            decoration:
+                                                TextDecoration.underline,
+                                            color: Theme.of(
+                                              context,
+                                            ).colorScheme.primary,
+                                          ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
                         ],
                         if (isInstructor) ...<Widget>[
                           const SizedBox(height: 16),
@@ -607,7 +813,9 @@ class _SignUpPageState extends State<SignUpPage> {
                         TextFormField(
                           controller: _passwordController,
                           textInputAction: TextInputAction.next,
-                          autofillHints: const <String>[AutofillHints.newPassword],
+                          autofillHints: const <String>[
+                            AutofillHints.newPassword,
+                          ],
                           decoration: InputDecoration(
                             labelText: 'Password',
                             prefixIcon: const Icon(Icons.lock_outline),
@@ -634,7 +842,9 @@ class _SignUpPageState extends State<SignUpPage> {
                         TextFormField(
                           controller: _confirmPasswordController,
                           textInputAction: TextInputAction.done,
-                          autofillHints: const <String>[AutofillHints.newPassword],
+                          autofillHints: const <String>[
+                            AutofillHints.newPassword,
+                          ],
                           decoration: const InputDecoration(
                             labelText: 'Confirm password',
                             prefixIcon: Icon(Icons.lock_person_outlined),
@@ -650,7 +860,11 @@ class _SignUpPageState extends State<SignUpPage> {
                         ),
                         const SizedBox(height: 24),
                         FilledButton(
-                          onPressed: _isSubmitting ? null : _handleSignUp,
+                          onPressed:
+                              _isSubmitting ||
+                                  (!isInstructor && !_studentPrivacyConsent)
+                              ? null
+                              : _handleSignUp,
                           style: FilledButton.styleFrom(
                             minimumSize: const Size.fromHeight(48),
                           ),

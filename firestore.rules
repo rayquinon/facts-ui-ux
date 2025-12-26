@@ -58,6 +58,11 @@ service cloud.firestore {
       return roleMatches(currentRole(), instructorRoleValues());
     }
 
+    function isApprovedInstructor() {
+      let snapshot = userDoc(request.auth.uid);
+      return isInstructor() && snapshot != null && snapshot.data.approved == true;
+    }
+
     function isStudent() {
       return roleMatches(currentRole(), studentRoleValues());
     }
@@ -67,7 +72,7 @@ service cloud.firestore {
     }
 
     function canViewCatalog() {
-      return isAdmin() || isRoleAdmin() || isInstructor() || isStudent();
+      return isAdmin() || isRoleAdmin() || isApprovedInstructor() || isStudent();
     }
 
     function nonEmptyString(value) {
@@ -174,22 +179,34 @@ service cloud.firestore {
         return isSignedIn() && request.auth.uid == userId;
       }
 
+      function unchanged(field) {
+        return !(field in request.resource.data) || request.resource.data[field] == resource.data[field];
+      }
+
+      function validOwnerUpdate() {
+        return isOwner() &&
+          roleMatches(
+            roleFromData(request.resource.data),
+            roleFromData(resource.data) == null ? [] : [roleFromData(resource.data)]
+          ) &&
+          // Prevent self-approval / admin-only changes.
+          unchanged('approved') &&
+          unchanged('approvedAt') &&
+          unchanged('approvedBy');
+      }
+
       allow create: if (
         isOwner() &&
         request.resource.data.role in allowedUserRoleValues() &&
         nonEmptyString(request.resource.data['Full Name']) &&
-        nonEmptyString(request.resource.data.Email)
+        nonEmptyString(request.resource.data.Email) &&
+        // Do not allow users to create themselves as approved.
+        (!('approved' in request.resource.data) || request.resource.data.approved == false)
       ) || isAdmin();
 
       allow read: if isOwner() || isAdmin() || isRoleAdmin() || isInstructor();
 
-      allow update: if isAdmin() || (
-        isOwner() &&
-        roleMatches(
-          roleFromData(request.resource.data),
-          roleFromData(resource.data) == null ? [] : [roleFromData(resource.data)]
-        )
-      );
+      allow update: if isAdmin() || validOwnerUpdate();
 
       allow delete: if isAdmin();
     }
@@ -213,16 +230,16 @@ service cloud.firestore {
 
       match /attendanceStats/{studentId} {
         allow read: if isSignedIn() && (request.auth.uid == studentId || isClassInstructor(classId) || isAdmin());
-        allow write: if isAdmin() || (isSignedIn() && isClassInstructor(classId));
+        allow write: if isAdmin() || (isSignedIn() && isClassInstructor(classId) && isApprovedInstructor());
       }
     }
 
     match /attendanceSessions/{sessionId} {
-      allow create, read, update: if isSignedIn() && (isInstructor() || isAdmin());
+      allow create, read, update: if isSignedIn() && (isApprovedInstructor() || isAdmin());
       allow delete: if isAdmin();
 
       match /{subcollection=**}/{docId} {
-        allow read, write: if isSignedIn() && (isInstructor() || isAdmin());
+        allow read, write: if isSignedIn() && (isApprovedInstructor() || isAdmin());
       }
     }
 

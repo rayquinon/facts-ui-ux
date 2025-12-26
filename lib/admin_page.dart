@@ -1,12 +1,13 @@
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import 'reports/generate_report_page.dart';
 
-enum _AdminSection { overview, departments, subjects, classes }
+enum _AdminSection { overview, users, departments, subjects, classes }
 
 
 class AdminPage extends StatefulWidget {
@@ -26,6 +27,11 @@ class _AdminPageState extends State<AdminPage> {
       _AdminSection.overview,
       'System Overview',
       Icons.space_dashboard_outlined,
+    ),
+    _SectionNavItem(
+      _AdminSection.users,
+      'User Management',
+      Icons.people_outline,
     ),
     _SectionNavItem(
       _AdminSection.departments,
@@ -61,9 +67,10 @@ class _AdminPageState extends State<AdminPage> {
             .pushNamed(GenerateReportPage.routeName),
       ),
       const _AdminAction('Manage Departments', Icons.account_tree_outlined),
-      const _AdminAction(
+      _AdminAction(
         'Approve Instructor Accounts',
         Icons.verified_user_outlined,
+        onTap: () => setState(() => _selectedSection = _AdminSection.users),
       ),
     ];
 
@@ -272,6 +279,18 @@ class _AdminPageState extends State<AdminPage> {
             ),
             SizedBox(height: 12),
             _DepartmentMaintenancePanel(),
+          ],
+        );
+      case _AdminSection.users:
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: const <Widget>[
+            Text(
+              'User management',
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
+            ),
+            SizedBox(height: 12),
+            _UserManagementPanel(),
           ],
         );
       case _AdminSection.subjects:
@@ -2154,4 +2173,411 @@ class _SectionNavItem {
   final _AdminSection section;
   final String label;
   final IconData icon;
+}
+
+class _UserManagementPanel extends StatefulWidget {
+  const _UserManagementPanel();
+
+  @override
+  State<_UserManagementPanel> createState() => _UserManagementPanelState();
+}
+
+class _UserManagementPanelState extends State<_UserManagementPanel> {
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FirebaseFunctions _functions = FirebaseFunctions.instance;
+
+  Future<void> _approveInstructor(String uid) async {
+    try {
+      await _functions.httpsCallable('adminApproveInstructor').call(<String, dynamic>{
+        'uid': uid,
+      });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Instructor approved.')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to approve: $error')),
+      );
+    }
+  }
+
+  Future<void> _clearFaceEnrollment(String uid) async {
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('Clear face enrollment?'),
+        content: const Text(
+          'This will remove the stored face embedding for this account. The student will need to re-enroll to use face recognition again.',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Clear'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    try {
+      await _functions.httpsCallable('adminClearFaceEnrollment').call(<String, dynamic>{
+        'uid': uid,
+      });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Face enrollment cleared.')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to clear enrollment: $error')),
+      );
+    }
+  }
+
+  Future<void> _deleteUser(String uid, String label) async {
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('Delete user?'),
+        content: Text(
+          'This will permanently delete the account ($label), remove their profile, and attempt to remove their attendance references. This cannot be undone.',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    try {
+      await _functions.httpsCallable('adminDeleteUser').call(<String, dynamic>{
+        'uid': uid,
+      });
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('User deleted.')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to delete: $error')),
+      );
+    }
+  }
+
+  Future<void> _editUserProfile(DocumentSnapshot<Map<String, dynamic>> doc) async {
+    final Map<String, dynamic>? data = doc.data();
+    if (data == null) return;
+    final String role = (data['role'] as String?)?.toLowerCase() ?? '';
+
+    final TextEditingController nameController = TextEditingController(
+      text: (data['displayName'] as String?) ?? (data['Full Name'] as String?) ?? '',
+    );
+    final TextEditingController departmentController = TextEditingController(
+      text: (data['Department'] as String?) ?? '',
+    );
+    final TextEditingController sectionController = TextEditingController(
+      text: (data['section'] as String?) ?? '',
+    );
+    final TextEditingController studentIdController = TextEditingController(
+      text: (data['Student ID'] as String?) ?? '',
+    );
+
+    bool saving = false;
+    final bool? saved = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) {
+        return StatefulBuilder(
+          builder: (BuildContext context, void Function(void Function()) set) {
+            return AlertDialog(
+              title: const Text('Edit user'),
+              content: SizedBox(
+                width: 520,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    TextField(
+                      controller: nameController,
+                      decoration: const InputDecoration(labelText: 'Full name'),
+                    ),
+                    if (role == 'instructor')
+                      TextField(
+                        controller: departmentController,
+                        decoration: const InputDecoration(labelText: 'Department'),
+                      ),
+                    if (role == 'student') ...<Widget>[
+                      TextField(
+                        controller: studentIdController,
+                        decoration: const InputDecoration(labelText: 'Student ID'),
+                      ),
+                      TextField(
+                        controller: sectionController,
+                        decoration: const InputDecoration(labelText: 'Section'),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              actions: <Widget>[
+                TextButton(
+                  onPressed: saving ? null : () => Navigator.of(context).pop(false),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: saving
+                      ? null
+                      : () async {
+                          set(() => saving = true);
+                          try {
+                            final Map<String, Object?> update = <String, Object?>{
+                              'displayName': nameController.text.trim(),
+                              'Full Name': nameController.text.trim(),
+                            };
+                            if (role == 'instructor') {
+                              update['Department'] = departmentController.text.trim();
+                            }
+                            if (role == 'student') {
+                              update['Student ID'] = studentIdController.text.trim();
+                              update['section'] = sectionController.text.trim();
+                            }
+                            await _firestore.collection('users').doc(doc.id).set(
+                              update,
+                              SetOptions(merge: true),
+                            );
+                            if (context.mounted) {
+                              Navigator.of(context).pop(true);
+                            }
+                          } catch (error) {
+                            set(() => saving = false);
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('Save failed: $error')),
+                              );
+                            }
+                          }
+                        },
+                  child: saving
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Save'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    nameController.dispose();
+    departmentController.dispose();
+    sectionController.dispose();
+    studentIdController.dispose();
+
+    if (saved == true && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Profile updated.')),
+      );
+    }
+  }
+
+  String _resolveDisplayName(Map<String, dynamic>? data, String fallbackId) {
+    final String? display = (data?['displayName'] as String?)?.trim();
+    if (display != null && display.isNotEmpty) return display;
+    final String? fullName = (data?['Full Name'] as String?)?.trim();
+    if (fullName != null && fullName.isNotEmpty) return fullName;
+    final String? email = (data?['Email'] as String?)?.trim();
+    if (email != null && email.isNotEmpty) return email;
+    return fallbackId;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                const Text(
+                  'Instructor approvals',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 8),
+                StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                  stream: _firestore
+                      .collection('users')
+                    .where('role', isEqualTo: 'instructor')
+                      .snapshots(),
+                  builder: (BuildContext context,
+                      AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 8),
+                        child: LinearProgressIndicator(),
+                      );
+                    }
+                    if (snapshot.hasError) {
+                      return Text('Failed to load approvals: ${snapshot.error}');
+                    }
+                    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
+                        (snapshot.data?.docs ?? <QueryDocumentSnapshot<Map<String, dynamic>>>[])
+                            .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+                              final Map<String, dynamic> data = doc.data();
+                              return data['approved'] != true;
+                            })
+                            .toList(growable: false);
+                    if (docs.isEmpty) {
+                      return const Text('No pending instructor accounts.');
+                    }
+                    return Column(
+                      children: docs.map((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+                        final Map<String, dynamic> data = doc.data();
+                        final String name = _resolveDisplayName(data, doc.id);
+                        final String email = (data['Email'] as String?) ?? '';
+                        return ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(name),
+                          subtitle: email.isEmpty ? null : Text(email),
+                          trailing: FilledButton(
+                            onPressed: () => _approveInstructor(doc.id),
+                            child: const Text('Approve'),
+                          ),
+                        );
+                      }).toList(),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                const Text(
+                  'All users',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 8),
+                StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                  stream: _firestore
+                      .collection('users')
+                      .orderBy('createdAt', descending: true)
+                      .limit(200)
+                      .snapshots(),
+                  builder: (BuildContext context,
+                      AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 8),
+                        child: LinearProgressIndicator(),
+                      );
+                    }
+                    if (snapshot.hasError) {
+                      return Text('Failed to load users: ${snapshot.error}');
+                    }
+                    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
+                        snapshot.data?.docs ?? <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+                    if (docs.isEmpty) {
+                      return const Text('No users found.');
+                    }
+
+                    return Column(
+                      children: docs.map((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+                        final Map<String, dynamic> data = doc.data();
+                        final String name = _resolveDisplayName(data, doc.id);
+                        final String role = (data['role'] as String?) ?? '';
+                        final bool hasEnrollment = (data['faceEmbed'] is List) &&
+                            (data['faceEmbed'] as List).isNotEmpty;
+                        final bool approved = data['approved'] == true;
+
+                        return ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(name),
+                          subtitle: Text(
+                            role.isEmpty
+                                ? 'No role'
+                                : (role.toLowerCase() == 'instructor'
+                                    ? (approved
+                                        ? 'Instructor (approved)'
+                                        : 'Instructor (pending)')
+                                    : role),
+                          ),
+                          trailing: PopupMenuButton<String>(
+                            onSelected: (String action) {
+                              switch (action) {
+                                case 'edit':
+                                  _editUserProfile(doc);
+                                  break;
+                                case 'approve':
+                                  _approveInstructor(doc.id);
+                                  break;
+                                case 'clearEnrollment':
+                                  _clearFaceEnrollment(doc.id);
+                                  break;
+                                case 'delete':
+                                  _deleteUser(doc.id, name);
+                                  break;
+                              }
+                            },
+                            itemBuilder: (BuildContext context) {
+                              return <PopupMenuEntry<String>>[
+                                const PopupMenuItem<String>(
+                                  value: 'edit',
+                                  child: Text('Edit profile'),
+                                ),
+                                if (role.toLowerCase() == 'instructor' && !approved)
+                                  const PopupMenuItem<String>(
+                                    value: 'approve',
+                                    child: Text('Approve instructor'),
+                                  ),
+                                if (hasEnrollment)
+                                  const PopupMenuItem<String>(
+                                    value: 'clearEnrollment',
+                                    child: Text('Clear face enrollment'),
+                                  ),
+                                const PopupMenuDivider(),
+                                const PopupMenuItem<String>(
+                                  value: 'delete',
+                                  child: Text('Delete user'),
+                                ),
+                              ];
+                            },
+                          ),
+                        );
+                      }).toList(),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 }

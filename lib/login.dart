@@ -7,6 +7,7 @@ import 'signup_pickrole.dart';
 import 'student_page.dart';
 import 'constants/auth_constants.dart';
 import 'services/user_role_service.dart';
+import 'verify_email_page.dart';
 
 /// Standalone login page with simple validation and submit feedback.
 class LoginPage extends StatefulWidget {
@@ -104,9 +105,27 @@ class _LoginPageState extends State<LoginPage> {
         ),
       );
 
-      if (mounted) {
-        Navigator.of(context).pushReplacementNamed(destinationRoute);
+      if (!mounted) return;
+
+      if (!isAdmin && !(user?.emailVerified ?? false)) {
+        await user?.sendEmailVerification();
+        if (!mounted) return;
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(
+              'We sent a verification link to ${user?.email ?? email}. Verify to continue.',
+            ),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        Navigator.of(context).pushReplacementNamed(
+          VerifyEmailPage.routeName,
+          arguments: VerifyEmailPageArgs(destinationRoute: destinationRoute),
+        );
+        return;
       }
+
+      Navigator.of(context).pushReplacementNamed(destinationRoute);
     } on FirebaseAuthException catch (error) {
       messenger.showSnackBar(
         SnackBar(

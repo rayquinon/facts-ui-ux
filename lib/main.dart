@@ -14,6 +14,7 @@ import 'attendance_session_page.dart';
 import 'constants/auth_constants.dart';
 import 'services/user_role_service.dart';
 import 'reports/generate_report_page.dart';
+import 'verify_email_page.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -58,25 +59,36 @@ class FactsApp extends StatelessWidget {
         LoginPage.routeName: (BuildContext context) => const LoginPage(),
         SignupPickRolePage.routeName: (BuildContext context) =>
             const SignupPickRolePage(),
+        VerifyEmailPage.routeName: (BuildContext context) {
+          final ModalRoute<dynamic>? route = ModalRoute.of(context);
+          final VerifyEmailPageArgs? args =
+              route?.settings.arguments as VerifyEmailPageArgs?;
+          if (args == null) {
+            return const UnknownRouteScreen(
+              unknownRouteName: VerifyEmailPage.routeName,
+            );
+          }
+          return VerifyEmailPage(destinationRoute: args.destinationRoute);
+        },
         AdminPage.routeName: (BuildContext context) => const AdminPage(),
         StudentPage.routeName: (BuildContext context) => const StudentPage(),
         InstructorPage.routeName: (BuildContext context) =>
             const InstructorPage(),
         FaceEnrollmentPage.routeName: (BuildContext context) =>
-          const FaceEnrollmentPage(),
+            const FaceEnrollmentPage(),
         GenerateReportPage.routeName: (BuildContext context) =>
-          const GenerateReportPage(),
-          AttendanceSessionPage.routeName: (BuildContext context) {
-            final ModalRoute<dynamic>? route = ModalRoute.of(context);
-            final AttendanceSessionConfig? config =
-                route?.settings.arguments as AttendanceSessionConfig?;
-            if (config == null) {
-              return const UnknownRouteScreen(
-                unknownRouteName: AttendanceSessionPage.routeName,
-              );
-            }
-            return AttendanceSessionPage(config: config);
-          },
+            const GenerateReportPage(),
+        AttendanceSessionPage.routeName: (BuildContext context) {
+          final ModalRoute<dynamic>? route = ModalRoute.of(context);
+          final AttendanceSessionConfig? config =
+              route?.settings.arguments as AttendanceSessionConfig?;
+          if (config == null) {
+            return const UnknownRouteScreen(
+              unknownRouteName: AttendanceSessionPage.routeName,
+            );
+          }
+          return AttendanceSessionPage(config: config);
+        },
       },
       onUnknownRoute: (RouteSettings settings) => MaterialPageRoute<void>(
         builder: (BuildContext context) =>
@@ -125,6 +137,22 @@ class AuthGate extends StatelessWidget {
               );
             }
             final String? role = roleSnapshot.data;
+            if (!user.emailVerified) {
+              final String? destinationRoute = switch (role) {
+                'student' => StudentPage.routeName,
+                'instructor' => InstructorPage.routeName,
+                _ => null,
+              };
+
+              if (destinationRoute == null) {
+                return const _AuthErrorView(
+                  message:
+                      'Your account is missing a role assignment. Please contact support.',
+                );
+              }
+
+              return VerifyEmailPage(destinationRoute: destinationRoute);
+            }
             switch (role) {
               case 'student':
                 return const StudentPage();
