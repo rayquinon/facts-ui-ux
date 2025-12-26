@@ -66,7 +66,11 @@ class _AdminPageState extends State<AdminPage> {
         onTap: () => Navigator.of(context)
             .pushNamed(GenerateReportPage.routeName),
       ),
-      const _AdminAction('Manage Departments', Icons.account_tree_outlined),
+      _AdminAction(
+        'Manage Departments',
+        Icons.account_tree_outlined,
+        onTap: () => setState(() => _selectedSection = _AdminSection.departments),
+      ),
       _AdminAction(
         'Approve Instructor Accounts',
         Icons.verified_user_outlined,
@@ -2185,6 +2189,151 @@ class _UserManagementPanel extends StatefulWidget {
 class _UserManagementPanelState extends State<_UserManagementPanel> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseFunctions _functions = FirebaseFunctions.instance;
+  final ScrollController _allUsersScrollController = ScrollController();
+  final TextEditingController _userSearchController = TextEditingController();
+
+  bool _showStudents = true;
+  bool _showInstructors = true;
+  String _searchQuery = '';
+
+  static const int _usersPageSize = 50;
+  bool _loadingUsers = false;
+  bool _loadingMore = false;
+  bool _hasMoreUsers = true;
+  QueryDocumentSnapshot<Map<String, dynamic>>? _lastUserDoc;
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _loadedUserDocs =
+      <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+
+  @override
+  void dispose() {
+    _allUsersScrollController.dispose();
+    _userSearchController.dispose();
+    super.dispose();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshUsers();
+  }
+
+  Query<Map<String, dynamic>> _buildUsersPageQuery() {
+    Query<Map<String, dynamic>> q = _firestore
+        .collection('users')
+      .orderBy(FieldPath.documentId);
+    if (_lastUserDoc != null) {
+      q = q.startAfterDocument(_lastUserDoc!);
+    }
+    return q.limit(_usersPageSize);
+  }
+
+  Future<void> _refreshUsers() async {
+    if (_loadingUsers) return;
+    setState(() {
+      _loadingUsers = true;
+      _hasMoreUsers = true;
+      _lastUserDoc = null;
+      _loadedUserDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+    });
+
+    try {
+      final QuerySnapshot<Map<String, dynamic>> snap =
+          await _buildUsersPageQuery().get();
+      final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = snap.docs;
+      setState(() {
+        _loadedUserDocs = docs;
+        _lastUserDoc = docs.isEmpty ? null : docs.last;
+        _hasMoreUsers = docs.length == _usersPageSize;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to load users: $error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _loadingUsers = false);
+      }
+    }
+  }
+
+  Future<void> _loadMoreUsers() async {
+    if (_loadingMore || _loadingUsers || !_hasMoreUsers) return;
+    setState(() => _loadingMore = true);
+    try {
+      final QuerySnapshot<Map<String, dynamic>> snap =
+          await _buildUsersPageQuery().get();
+      final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = snap.docs;
+      setState(() {
+        _loadedUserDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>[
+          ..._loadedUserDocs,
+          ...docs,
+        ];
+        _lastUserDoc = docs.isEmpty ? _lastUserDoc : docs.last;
+        _hasMoreUsers = docs.length == _usersPageSize;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to load more users: $error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _loadingMore = false);
+      }
+    }
+  }
+
+
+  String _buildSearchHaystack(Map<String, dynamic> data, String docId) {
+    final List<String> parts = <String>[
+      docId,
+      _resolveDisplayName(data, docId),
+    ];
+
+    void addValue(dynamic value, {required int depth}) {
+      if (value == null) {
+        return;
+      }
+      if (value is String) {
+        final String v = value.trim();
+        if (v.isNotEmpty) {
+          parts.add(v);
+        }
+        return;
+      }
+      if (value is num || value is bool) {
+        parts.add(value.toString());
+        return;
+      }
+      if (value is Timestamp) {
+        parts.add(value.toDate().toIso8601String());
+        return;
+      }
+      if (depth <= 0) {
+        return;
+      }
+      if (value is Map) {
+        for (final dynamic v in value.values) {
+          addValue(v, depth: depth - 1);
+        }
+        return;
+      }
+      if (value is Iterable) {
+        for (final dynamic v in value) {
+          addValue(v, depth: depth - 1);
+        }
+        return;
+      }
+    }
+
+    // Collect all primitive-ish values to make search resilient to legacy schemas.
+    for (final dynamic v in data.values) {
+      addValue(v, depth: 2);
+    }
+
+    return parts.join(' ').toLowerCase();
+  }
 
   Future<void> _approveInstructor(String uid) async {
     try {
@@ -2398,12 +2547,60 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
   }
 
   String _resolveDisplayName(Map<String, dynamic>? data, String fallbackId) {
-    final String? display = (data?['displayName'] as String?)?.trim();
-    if (display != null && display.isNotEmpty) return display;
-    final String? fullName = (data?['Full Name'] as String?)?.trim();
-    if (fullName != null && fullName.isNotEmpty) return fullName;
-    final String? email = (data?['Email'] as String?)?.trim();
-    if (email != null && email.isNotEmpty) return email;
+    if (data == null) {
+      return fallbackId;
+    }
+
+    const List<String> nameCandidates = <String>[
+      'displayName',
+      'display_name',
+      'Full Name',
+      'fullName',
+      'FullName',
+      'full_name',
+      'fullname',
+      'name',
+      'studentName',
+      'student_name',
+    ];
+    for (final String key in nameCandidates) {
+      final String? raw = (data[key] as String?)?.trim();
+      if (raw != null && raw.isNotEmpty) {
+        return raw;
+      }
+    }
+
+    // Handle legacy/variant field names like "Full name", "full name", etc.
+    for (final MapEntry<String, dynamic> entry in data.entries) {
+      final String key = entry.key.toLowerCase();
+      final dynamic value = entry.value;
+      if (value is! String) continue;
+      final String raw = value.trim();
+      if (raw.isEmpty) continue;
+      if (key.contains('name')) {
+        return raw;
+      }
+    }
+
+    const List<String> emailCandidates = <String>['Email', 'email'];
+    for (final String key in emailCandidates) {
+      final String? raw = (data[key] as String?)?.trim();
+      if (raw != null && raw.isNotEmpty) {
+        return raw;
+      }
+    }
+
+    for (final MapEntry<String, dynamic> entry in data.entries) {
+      final String key = entry.key.toLowerCase();
+      final dynamic value = entry.value;
+      if (value is! String) continue;
+      final String raw = value.trim();
+      if (raw.isEmpty) continue;
+      if (key.contains('email')) {
+        return raw;
+      }
+    }
+
     return fallbackId;
   }
 
@@ -2478,98 +2675,214 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                const Text(
-                  'All users',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                Row(
+                  children: <Widget>[
+                    const Expanded(
+                      child: Text(
+                        'All users',
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                    TextButton.icon(
+                      onPressed: _loadingUsers ? null : _refreshUsers,
+                      icon: const Icon(Icons.refresh, size: 18),
+                      label: const Text('Refresh'),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 8),
-                StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: _firestore
-                      .collection('users')
-                      .orderBy('createdAt', descending: true)
-                      .limit(200)
-                      .snapshots(),
-                  builder: (BuildContext context,
-                      AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) {
+                TextField(
+                  controller: _userSearchController,
+                  onChanged: (String value) {
+                    setState(() => _searchQuery = value.trim().toLowerCase());
+                  },
+                  decoration: InputDecoration(
+                    prefixIcon: const Icon(Icons.search),
+                    hintText: 'Search users',
+                    suffixIcon: _searchQuery.isEmpty
+                        ? null
+                        : IconButton(
+                            tooltip: 'Clear search',
+                            onPressed: () {
+                              _userSearchController.clear();
+                              setState(() => _searchQuery = '');
+                            },
+                            icon: const Icon(Icons.clear),
+                          ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: <Widget>[
+                    FilterChip(
+                      label: const Text('Students'),
+                      selected: _showStudents,
+                      onSelected: (bool value) {
+                        setState(() => _showStudents = value);
+                      },
+                    ),
+                    FilterChip(
+                      label: const Text('Instructors'),
+                      selected: _showInstructors,
+                      onSelected: (bool value) {
+                        setState(() => _showInstructors = value);
+                      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Builder(
+                  builder: (BuildContext context) {
+                    if (_loadingUsers) {
                       return const Padding(
                         padding: EdgeInsets.symmetric(vertical: 8),
                         child: LinearProgressIndicator(),
                       );
                     }
-                    if (snapshot.hasError) {
-                      return Text('Failed to load users: ${snapshot.error}');
+
+                    final List<QueryDocumentSnapshot<Map<String, dynamic>>> filteredDocs =
+                        _loadedUserDocs
+                        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+                          final Map<String, dynamic> data = doc.data();
+                          final String role =
+                              ((data['role'] as String?) ?? '').toLowerCase();
+                          if (role == 'student') {
+                            return _showStudents;
+                          }
+                          if (role == 'instructor') {
+                            return _showInstructors;
+                          }
+                          return true;
+                        })
+                        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+                          final String q = _searchQuery;
+                          if (q.isEmpty) {
+                            return true;
+                          }
+                          final Map<String, dynamic> data = doc.data();
+                          return _buildSearchHaystack(data, doc.id).contains(q);
+                        })
+                        .toList(growable: false);
+
+                    if (!_showStudents && !_showInstructors) {
+                      return const Text(
+                        'Select Students and/or Instructors to filter the list.',
+                      );
                     }
-                    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
-                        snapshot.data?.docs ?? <QueryDocumentSnapshot<Map<String, dynamic>>>[];
-                    if (docs.isEmpty) {
+                    if (filteredDocs.isEmpty) {
                       return const Text('No users found.');
                     }
 
-                    return Column(
-                      children: docs.map((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-                        final Map<String, dynamic> data = doc.data();
-                        final String name = _resolveDisplayName(data, doc.id);
-                        final String role = (data['role'] as String?) ?? '';
-                        final bool hasEnrollment = (data['faceEmbed'] is List) &&
-                            (data['faceEmbed'] as List).isNotEmpty;
-                        final bool approved = data['approved'] == true;
-
-                        return ListTile(
-                          contentPadding: EdgeInsets.zero,
-                          title: Text(name),
-                          subtitle: Text(
-                            role.isEmpty
-                                ? 'No role'
-                                : (role.toLowerCase() == 'instructor'
-                                    ? (approved
-                                        ? 'Instructor (approved)'
-                                        : 'Instructor (pending)')
-                                    : role),
-                          ),
-                          trailing: PopupMenuButton<String>(
-                            onSelected: (String action) {
-                              switch (action) {
-                                case 'edit':
-                                  _editUserProfile(doc);
-                                  break;
-                                case 'approve':
-                                  _approveInstructor(doc.id);
-                                  break;
-                                case 'clearEnrollment':
-                                  _clearFaceEnrollment(doc.id);
-                                  break;
-                                case 'delete':
-                                  _deleteUser(doc.id, name);
-                                  break;
+                    return SizedBox(
+                      height: 420,
+                      child: Scrollbar(
+                        controller: _allUsersScrollController,
+                        thumbVisibility: true,
+                        child: ListView.separated(
+                          controller: _allUsersScrollController,
+                          itemCount: filteredDocs.length + 1,
+                          separatorBuilder: (_, __) => const Divider(height: 1),
+                          itemBuilder: (BuildContext context, int index) {
+                            if (index >= filteredDocs.length) {
+                              if (_loadingMore) {
+                                return const Padding(
+                                  padding: EdgeInsets.symmetric(vertical: 12),
+                                  child: Center(
+                                    child: SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    ),
+                                  ),
+                                );
                               }
-                            },
-                            itemBuilder: (BuildContext context) {
-                              return <PopupMenuEntry<String>>[
-                                const PopupMenuItem<String>(
-                                  value: 'edit',
-                                  child: Text('Edit profile'),
-                                ),
-                                if (role.toLowerCase() == 'instructor' && !approved)
-                                  const PopupMenuItem<String>(
-                                    value: 'approve',
-                                    child: Text('Approve instructor'),
+                              if (!_hasMoreUsers) {
+                                return const Padding(
+                                  padding: EdgeInsets.symmetric(vertical: 12),
+                                  child: Center(child: Text('End of list.')),
+                                );
+                              }
+                              return Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 8),
+                                child: Center(
+                                  child: OutlinedButton.icon(
+                                    onPressed: _loadMoreUsers,
+                                    icon: const Icon(Icons.expand_more),
+                                    label: const Text('Load more'),
                                   ),
-                                if (hasEnrollment)
-                                  const PopupMenuItem<String>(
-                                    value: 'clearEnrollment',
-                                    child: Text('Clear face enrollment'),
-                                  ),
-                                const PopupMenuDivider(),
-                                const PopupMenuItem<String>(
-                                  value: 'delete',
-                                  child: Text('Delete user'),
                                 ),
-                              ];
-                            },
-                          ),
-                        );
-                      }).toList(),
+                              );
+                            }
+
+                            final QueryDocumentSnapshot<Map<String, dynamic>> doc =
+                                filteredDocs[index];
+                            final Map<String, dynamic> data = doc.data();
+                            final String name = _resolveDisplayName(data, doc.id);
+                            final String role = (data['role'] as String?) ?? '';
+                            final bool hasEnrollment = (data['faceEmbed'] is List) &&
+                                (data['faceEmbed'] as List).isNotEmpty;
+                            final bool approved = data['approved'] == true;
+
+                            return ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: Text(name),
+                              subtitle: Text(
+                                role.isEmpty
+                                    ? 'No role'
+                                    : (role.toLowerCase() == 'instructor'
+                                        ? (approved
+                                            ? 'Instructor (approved)'
+                                            : 'Instructor (pending)')
+                                        : role),
+                              ),
+                              trailing: PopupMenuButton<String>(
+                                onSelected: (String action) {
+                                  switch (action) {
+                                    case 'edit':
+                                      _editUserProfile(doc);
+                                      break;
+                                    case 'approve':
+                                      _approveInstructor(doc.id);
+                                      break;
+                                    case 'clearEnrollment':
+                                      _clearFaceEnrollment(doc.id);
+                                      break;
+                                    case 'delete':
+                                      _deleteUser(doc.id, name);
+                                      break;
+                                  }
+                                },
+                                itemBuilder: (BuildContext context) {
+                                  return <PopupMenuEntry<String>>[
+                                    const PopupMenuItem<String>(
+                                      value: 'edit',
+                                      child: Text('Edit profile'),
+                                    ),
+                                    if (role.toLowerCase() == 'instructor' &&
+                                        !approved)
+                                      const PopupMenuItem<String>(
+                                        value: 'approve',
+                                        child: Text('Approve instructor'),
+                                      ),
+                                    if (hasEnrollment)
+                                      const PopupMenuItem<String>(
+                                        value: 'clearEnrollment',
+                                        child: Text('Clear face enrollment'),
+                                      ),
+                                    const PopupMenuDivider(),
+                                    const PopupMenuItem<String>(
+                                      value: 'delete',
+                                      child: Text('Delete user'),
+                                    ),
+                                  ];
+                                },
+                              ),
+                            );
+                          },
+                        ),
+                      ),
                     );
                   },
                 ),

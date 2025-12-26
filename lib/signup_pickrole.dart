@@ -196,6 +196,7 @@ class _SignUpPageState extends State<SignUpPage> {
       TextEditingController();
   final TextEditingController _sectionSearchController =
       TextEditingController();
+  final MenuController _sectionMenuController = MenuController();
   static const List<String> _departments = <String>[
     'Department of Information Technology',
     'Department of Technology Livelihood and Education',
@@ -547,43 +548,113 @@ class _SignUpPageState extends State<SignUpPage> {
     final bool hasError = _sectionsError != null;
     final bool hasSections = _availableSections.isNotEmpty;
     final bool isDisabled = _isLoadingSections || !hasSections;
-    final List<DropdownMenuEntry<String>> entries = _availableSections
-        .map(
-          (String section) =>
-              DropdownMenuEntry<String>(value: section, label: section),
-        )
-        .toList();
+    final String searchText = _sectionSearchController.text
+        .trim()
+        .toLowerCase();
+    final List<String> visibleSections = searchText.isEmpty
+        ? _availableSections
+        : _availableSections
+              .where(
+                (String section) => section.toLowerCase().contains(searchText),
+              )
+              .toList(growable: false);
 
     final List<Widget> children = <Widget>[
-      DropdownMenu<String>(
-        controller: _sectionSearchController,
-        initialSelection: _selectedStudentSection,
-        enabled: !isDisabled,
-        menuHeight: 260,
-        requestFocusOnTap: true,
-        label: const Text('Section'),
-        hintText: _isLoadingSections
-            ? 'Loading sections…'
-            : (hasSections
-                  ? 'Search or pick your section'
-                  : 'No sections available'),
-        leadingIcon: const Icon(Icons.group_work_outlined),
-        trailingIcon: _isLoadingSections
-            ? const Padding(
-                padding: EdgeInsets.only(right: 12),
-                child: SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              )
-            : null,
-        dropdownMenuEntries: entries,
-        onSelected: (String? value) {
-          setState(() {
-            _selectedStudentSection = value;
-            _sectionSearchController.text = value ?? '';
-          });
+      LayoutBuilder(
+        builder: (BuildContext context, BoxConstraints constraints) {
+          final double fieldWidth = constraints.hasBoundedWidth
+              ? constraints.maxWidth
+              : MediaQuery.sizeOf(context).width;
+
+          return MenuAnchor(
+            controller: _sectionMenuController,
+            alignmentOffset: const Offset(0, 6),
+            style: MenuStyle(
+              minimumSize: WidgetStatePropertyAll<Size>(Size(fieldWidth, 0)),
+              maximumSize: WidgetStatePropertyAll<Size>(Size(fieldWidth, 260)),
+            ),
+            menuChildren: visibleSections
+                .map(
+                  (String section) => MenuItemButton(
+                    onPressed: isDisabled
+                        ? null
+                        : () {
+                            setState(() {
+                              _selectedStudentSection = section;
+                              _sectionSearchController.text = section;
+                            });
+                            _sectionMenuController.close();
+                            FocusScope.of(context).unfocus();
+                          },
+                    child: Text(section),
+                  ),
+                )
+                .toList(growable: false),
+            builder:
+                (BuildContext context, MenuController controller, Widget? _) {
+                  return TextField(
+                    controller: _sectionSearchController,
+                    enabled: !isDisabled,
+                    decoration: InputDecoration(
+                      labelText: 'Section',
+                      hintText: _isLoadingSections
+                          ? 'Loading sections…'
+                          : (hasSections
+                                ? 'Search or pick your section'
+                                : 'No sections available'),
+                      prefixIcon: const Icon(Icons.group_work_outlined),
+                      suffixIcon: _isLoadingSections
+                          ? const Padding(
+                              padding: EdgeInsets.only(right: 12),
+                              child: SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              ),
+                            )
+                          : IconButton(
+                              tooltip: controller.isOpen
+                                  ? 'Close sections'
+                                  : 'Open sections',
+                              onPressed: isDisabled
+                                  ? null
+                                  : () {
+                                      if (controller.isOpen) {
+                                        controller.close();
+                                      } else {
+                                        controller.open();
+                                      }
+                                    },
+                              icon: Icon(
+                                controller.isOpen
+                                    ? Icons.arrow_drop_up
+                                    : Icons.arrow_drop_down,
+                              ),
+                            ),
+                    ),
+                    onTap: isDisabled
+                        ? null
+                        : () {
+                            if (!controller.isOpen) {
+                              controller.open();
+                            }
+                          },
+                    onChanged: (String value) {
+                      setState(() {
+                        if (_selectedStudentSection != null &&
+                            value.trim() != _selectedStudentSection) {
+                          _selectedStudentSection = null;
+                        }
+                      });
+                      if (!controller.isOpen && !isDisabled) {
+                        controller.open();
+                      }
+                    },
+                  );
+                },
+          );
         },
       ),
     ];
