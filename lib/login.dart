@@ -20,25 +20,11 @@ class LoginPage extends StatefulWidget {
 }
 
 class _LoginPageState extends State<LoginPage> {
-  static const String _factsDescription =
-      'The F.A.C.T.S. project (Facial Attendance for Compliance and Tracking of '
-      'Students) is an innovative attendance information system designed to replace '
-      'time-consuming, error-prone manual processes. The core application is an '
-      'integrated mobile app for instructors to use facial recognition to scan '
-      'students and log attendance, absences, and lateness in real-time, ensuring '
-      'superior accuracy and eliminating proxy attendance. This is complemented by '
-      'a web platform that enables the creation of reports in the official school '
-      'format for compliance and provides faculty and administrators with actionable '
-      'analytics to track attendance patterns, which is critical for student '
-      'performance and retention. The system features real-time data synchronization, '
-      'role-based access, and a key "Online Synch capability" for reliable attendance '
-      'taking even when the internet is initially unavailable.';
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   bool _obscurePassword = true;
   bool _isSubmitting = false;
-  final ScrollController _promoScrollController = ScrollController();
 
   void _openSignUpPage() {
     Navigator.of(context).pushNamed(SignupPickRolePage.routeName);
@@ -48,7 +34,6 @@ class _LoginPageState extends State<LoginPage> {
   void dispose() {
     _emailController.dispose();
     _passwordController.dispose();
-    _promoScrollController.dispose();
     super.dispose();
   }
 
@@ -390,102 +375,20 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Widget _buildPromoPanel(ThemeData theme) {
-    final Color onPrimary = theme.colorScheme.onPrimary;
-    final TextStyle? bodyStyle = theme.textTheme.bodyLarge?.copyWith(
-      color: onPrimary.withValues(alpha: 0.95),
-      height: 1.45,
-    );
-    return LayoutBuilder(
-      builder: (BuildContext context, BoxConstraints constraints) {
-        final double minHeight = constraints.maxHeight.isFinite
-            ? constraints.maxHeight
-            : 0;
-        final bool showThumb =
-            constraints.maxHeight.isFinite && constraints.maxHeight < 640;
-
-        return ClipRRect(
-          borderRadius: BorderRadius.circular(28),
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: <Color>[
-                  theme.colorScheme.primary,
-                  theme.colorScheme.secondary,
-                ],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-            ),
-            child: Scrollbar(
-              thumbVisibility: showThumb,
-              controller: _promoScrollController,
-              child: SingleChildScrollView(
-                controller: _promoScrollController,
-                padding: const EdgeInsets.all(40),
-                child: ConstrainedBox(
-                  constraints: BoxConstraints(minHeight: minHeight),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      _buildLogoPlaceholder(onPrimary),
-                      const SizedBox(height: 24),
-                      Text(
-                        'F.A.C.T.S.',
-                        style: theme.textTheme.headlineMedium?.copyWith(
-                          color: onPrimary,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Facial Attendance for Compliance and Tracking of Students',
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          color: onPrimary.withValues(alpha: 0.9),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      Text(_factsDescription, style: bodyStyle),
-                      const SizedBox(height: 28),
-                      Wrap(
-                        spacing: 12,
-                        runSpacing: 12,
-                        children: <Widget>[
-                          _buildPlatformChip('Windows', onPrimary),
-                          _buildPlatformChip('macOS', onPrimary),
-                          _buildPlatformChip('iOS', onPrimary),
-                          _buildPlatformChip('Android', onPrimary),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ),
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(28),
+      child: DecoratedBox(
+        decoration: BoxDecoration(color: Colors.white),
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(40),
+            child: Opacity(
+              opacity: 0.9,
+              child: Image.asset('../assets/logo.png', fit: BoxFit.contain),
             ),
           ),
-        );
-      },
-    );
-  }
-
-  Widget _buildPlatformChip(String label, Color textColor) {
-    return Chip(
-      backgroundColor: Colors.white.withValues(alpha: 0.15),
-      label: Text(label, style: TextStyle(color: textColor)),
-    );
-  }
-
-  Widget _buildLogoPlaceholder(Color accentColor) {
-    return Container(
-      width: 96,
-      height: 96,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        color: accentColor.withValues(alpha: 0.08),
-        border: Border.all(color: accentColor.withValues(alpha: 0.4), width: 2),
+        ),
       ),
-      alignment: Alignment.center,
-      child: Icon(Icons.photo_library_outlined, color: accentColor, size: 40),
     );
   }
 }

@@ -96,6 +96,11 @@ exports.adminDeleteUser = onCall({ cors: true, timeoutSeconds: 120 }, async (req
     db.collectionGroup('captures').where('matchUserId', '==', uid)
   );
 
+  // Release any claimed Student ID index entries.
+  await deleteQueryInBatches(
+    db.collection('studentIdIndex').where('uid', '==', uid)
+  );
+
   // Delete the user profile doc.
   try {
     await db.collection('users').doc(uid).delete();

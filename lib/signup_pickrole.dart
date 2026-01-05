@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'instructor_page.dart';
 import 'student_page.dart';
 import 'verify_email_page.dart';
+import 'services/user_role_service.dart';
 
 enum UserRole { instructor, student }
 
@@ -416,29 +417,38 @@ class _SignUpPageState extends State<SignUpPage> {
           profile['section'] = _selectedStudentSection;
         }
         profile.removeWhere((_, Object? value) => value == null);
-        await FirebaseFirestore.instance
-            .collection('users')
-            .doc(user.uid)
-            .set(profile, SetOptions(merge: true));
-      }
+        if (isInstructor) {
+          await FirebaseFirestore.instance
+              .collection('users')
+              .doc(user.uid)
+              .set(profile, SetOptions(merge: true));
+        } else {
+          await UserRoleService.upsertStudentProfileWithUniqueStudentId(
+            uid: user.uid,
+            studentId: studentId ?? '',
+            profile: profile,
+          );
+        }
 
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text('Welcome aboard, $fullName!'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      if (mounted) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text('Welcome aboard, $fullName!'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+
+        if (!mounted) return;
+
         final String destinationRoute = isInstructor
             ? InstructorPage.routeName
             : StudentPage.routeName;
 
-        if (!(user?.emailVerified ?? false)) {
-          await user?.sendEmailVerification();
+        if (!(user.emailVerified)) {
+          await user.sendEmailVerification();
           messenger.showSnackBar(
             SnackBar(
               content: Text(
-                'Verification email sent to ${user?.email ?? email}. Please verify to continue.',
+                'Verification email sent to ${user.email ?? email}. Please verify to continue.',
               ),
               behavior: SnackBarBehavior.floating,
             ),
@@ -468,11 +478,11 @@ class _SignUpPageState extends State<SignUpPage> {
       debugPrint(
         'Firestore write failed: ${error.code} -> ${error.message}\n$stackTrace',
       );
+      final String message = error.code == 'student-id-already-in-use'
+          ? 'That Student ID is already registered. Please check your ID or contact support.'
+          : 'Sign-up failed. ${error.message ?? error.code}';
       messenger.showSnackBar(
-        SnackBar(
-          content: Text('Firestore write failed (${error.code}).'),
-          behavior: SnackBarBehavior.floating,
-        ),
+        SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
       );
     } catch (error, stackTrace) {
       debugPrint('Unexpected signup error: $error\n$stackTrace');

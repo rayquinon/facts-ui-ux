@@ -248,6 +248,31 @@ service cloud.firestore {
       allow create, update, delete: if isAdmin();
     }
 
+    // Unique Student ID index.
+    // Each document ID is the normalized Student ID and stores the owning uid.
+    match /studentIdIndex/{studentId} {
+      // Keep index mostly private.
+      allow read: if isAdmin() || isRoleAdmin();
+
+      // Students can claim an ID for themselves as part of signup.
+      // Uses existsAfter/getAfter so a batched/transactional write that also
+      // creates/updates the user's profile can pass validation.
+      allow create: if isSignedIn() &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.studentId == studentId &&
+        !exists(/databases/$(database)/documents/studentIdIndex/$(studentId)) &&
+        existsAfter(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        roleMatches(
+          roleFromData(
+            getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data
+          ),
+          studentRoleValues()
+        );
+
+      // Admins can manage the index when fixing profiles.
+      allow create, update, delete: if isAdmin() || isRoleAdmin();
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }

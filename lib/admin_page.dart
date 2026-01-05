@@ -6,9 +6,9 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import 'reports/generate_report_page.dart';
+import 'services/user_role_service.dart';
 
 enum _AdminSection { overview, users, departments, subjects, classes }
-
 
 class AdminPage extends StatefulWidget {
   const AdminPage({super.key});
@@ -63,13 +63,14 @@ class _AdminPageState extends State<AdminPage> {
       _AdminAction(
         'Review Attendance Reports',
         Icons.insights_outlined,
-        onTap: () => Navigator.of(context)
-            .pushNamed(GenerateReportPage.routeName),
+        onTap: () =>
+            Navigator.of(context).pushNamed(GenerateReportPage.routeName),
       ),
       _AdminAction(
         'Manage Departments',
         Icons.account_tree_outlined,
-        onTap: () => setState(() => _selectedSection = _AdminSection.departments),
+        onTap: () =>
+            setState(() => _selectedSection = _AdminSection.departments),
       ),
       _AdminAction(
         'Approve Instructor Accounts',
@@ -181,97 +182,100 @@ class _AdminPageState extends State<AdminPage> {
         return FutureBuilder<_AdminOverviewStats>(
           future: _overviewFuture,
           builder:
-              (BuildContext context, AsyncSnapshot<_AdminOverviewStats> snapshot) {
-            Widget statsContent;
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              statsContent = Wrap(
-                spacing: 16,
-                runSpacing: 16,
-                children: List<Widget>.generate(
-                  3,
-                  (int index) => _AdminStatPlaceholder(isWide: isWide),
-                ),
-              );
-            } else if (snapshot.hasError) {
-              statsContent = Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      const Text('Unable to load overview stats.'),
-                      const SizedBox(height: 8),
-                      Text(
-                        snapshot.error.toString(),
-                        style: theme.textTheme.bodySmall,
+              (
+                BuildContext context,
+                AsyncSnapshot<_AdminOverviewStats> snapshot,
+              ) {
+                Widget statsContent;
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  statsContent = Wrap(
+                    spacing: 16,
+                    runSpacing: 16,
+                    children: List<Widget>.generate(
+                      3,
+                      (int index) => _AdminStatPlaceholder(isWide: isWide),
+                    ),
+                  );
+                } else if (snapshot.hasError) {
+                  statsContent = Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          const Text('Unable to load overview stats.'),
+                          const SizedBox(height: 8),
+                          Text(
+                            snapshot.error.toString(),
+                            style: theme.textTheme.bodySmall,
+                          ),
+                          const SizedBox(height: 12),
+                          TextButton.icon(
+                            onPressed: _refreshOverviewStats,
+                            icon: const Icon(Icons.refresh),
+                            label: const Text('Retry'),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 12),
-                      TextButton.icon(
-                        onPressed: _refreshOverviewStats,
-                        icon: const Icon(Icons.refresh),
-                        label: const Text('Retry'),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            } else {
-              final _AdminOverviewStats data =
-                  snapshot.data ?? const _AdminOverviewStats();
-              final List<_AdminStat> stats = <_AdminStat>[
-                _AdminStat(
-                  label: 'Instructors',
-                  value: data.instructors.toString(),
-                  icon: Icons.school_outlined,
-                ),
-                _AdminStat(
-                  label: 'Students',
-                  value: data.students.toString(),
-                  icon: Icons.people_outline,
-                ),
-                _AdminStat(
-                  label: 'Alerts',
-                  value: data.alerts.toString(),
-                  icon: Icons.warning_amber_rounded,
-                ),
-              ];
-              statsContent = Wrap(
-                spacing: 16,
-                runSpacing: 16,
-                children: stats
-                    .map(
-                      (_AdminStat stat) =>
-                          _AdminStatCard(stat: stat, isWide: isWide),
-                    )
-                    .toList(),
-              );
-            }
+                    ),
+                  );
+                } else {
+                  final _AdminOverviewStats data =
+                      snapshot.data ?? const _AdminOverviewStats();
+                  final List<_AdminStat> stats = <_AdminStat>[
+                    _AdminStat(
+                      label: 'Instructors',
+                      value: data.instructors.toString(),
+                      icon: Icons.school_outlined,
+                    ),
+                    _AdminStat(
+                      label: 'Students',
+                      value: data.students.toString(),
+                      icon: Icons.people_outline,
+                    ),
+                    _AdminStat(
+                      label: 'Alerts',
+                      value: data.alerts.toString(),
+                      icon: Icons.warning_amber_rounded,
+                    ),
+                  ];
+                  statsContent = Wrap(
+                    spacing: 16,
+                    runSpacing: 16,
+                    children: stats
+                        .map(
+                          (_AdminStat stat) =>
+                              _AdminStatCard(stat: stat, isWide: isWide),
+                        )
+                        .toList(),
+                  );
+                }
 
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Text(
-                  'System overview',
-                  style: theme.textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 24),
-                statsContent,
-                const SizedBox(height: 32),
-                Text(
-                  'Quick actions',
-                  style: theme.textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                ...actions.map(
-                  (_AdminAction action) => _AdminActionTile(action: action),
-                ),
-              ],
-            );
-          },
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      'System overview',
+                      style: theme.textTheme.headlineSmall?.copyWith(
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    statsContent,
+                    const SizedBox(height: 32),
+                    Text(
+                      'Quick actions',
+                      style: theme.textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    ...actions.map(
+                      (_AdminAction action) => _AdminActionTile(action: action),
+                    ),
+                  ],
+                );
+              },
         );
       case _AdminSection.departments:
         return Column(
@@ -326,14 +330,18 @@ class _AdminPageState extends State<AdminPage> {
 
   Future<_AdminOverviewStats> _loadOverviewStats() async {
     final FirebaseFirestore firestore = FirebaseFirestore.instance;
-    final Query<Map<String, dynamic>> usersCollection =
-        firestore.collection('users');
-    final Future<int> instructorsFuture =
-        _countDocuments(usersCollection.where('role', isEqualTo: 'instructor'));
-    final Future<int> studentsFuture =
-        _countDocuments(usersCollection.where('role', isEqualTo: 'student'));
-    final Future<int> alertsFuture =
-        _countDocuments(firestore.collection('alerts'));
+    final Query<Map<String, dynamic>> usersCollection = firestore.collection(
+      'users',
+    );
+    final Future<int> instructorsFuture = _countDocuments(
+      usersCollection.where('role', isEqualTo: 'instructor'),
+    );
+    final Future<int> studentsFuture = _countDocuments(
+      usersCollection.where('role', isEqualTo: 'student'),
+    );
+    final Future<int> alertsFuture = _countDocuments(
+      firestore.collection('alerts'),
+    );
     final List<int> counts = await Future.wait(<Future<int>>[
       instructorsFuture,
       studentsFuture,
@@ -408,8 +416,9 @@ class _AdminStatPlaceholder extends StatelessWidget {
               ),
               const SizedBox(height: 16),
               LinearProgressIndicator(
-                backgroundColor:
-                    Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
+                backgroundColor: Theme.of(
+                  context,
+                ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
               ),
             ],
           ),
@@ -431,13 +440,13 @@ class _DepartmentMaintenancePanelState
     extends State<_DepartmentMaintenancePanel> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  Future<void> _openDepartmentDialog(
-      [DocumentSnapshot<Map<String, dynamic>>? existing]) async {
+  Future<void> _openDepartmentDialog([
+    DocumentSnapshot<Map<String, dynamic>>? existing,
+  ]) async {
     await showDialog<void>(
       context: context,
       barrierDismissible: false,
-      builder: (BuildContext context) =>
-          _DepartmentDialog(existing: existing),
+      builder: (BuildContext context) => _DepartmentDialog(existing: existing),
     );
   }
 
@@ -445,9 +454,9 @@ class _DepartmentMaintenancePanelState
     try {
       await _firestore.collection('departments').doc(id).delete();
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Department removed.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Department removed.')));
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -483,61 +492,69 @@ class _DepartmentMaintenancePanelState
                   .collection('departments')
                   .orderBy('name')
                   .snapshots(),
-              builder: (
-                BuildContext context,
-                AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot,
-              ) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                  return const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 24),
-                    child: Text('No departments found. Add one to get started.'),
-                  );
-                }
-                return ListView.separated(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  itemCount: snapshot.data!.docs.length,
-                  separatorBuilder: (_, __) => const Divider(height: 1),
-                  itemBuilder: (BuildContext context, int index) {
-                    final DocumentSnapshot<Map<String, dynamic>> doc =
-                      snapshot.data!.docs[index];
-                    final Map<String, dynamic> data =
-                      doc.data() ?? <String, dynamic>{};
-                    final bool isActive = (data['isActive'] as bool?) ?? true;
-                    final String abbr = (data['abbr'] as String?) ?? '';
-                    return ListTile(
-                      title: Text(data['name'] as String? ?? 'Unnamed department'),
-                      subtitle:
-                          abbr.isEmpty ? null : Text('Abbreviation: $abbr'),
-                      trailing: Wrap(
-                        spacing: 4,
-                        children: <Widget>[
-                          IconButton(
-                            icon: const Icon(Icons.edit_outlined),
-                            tooltip: 'Edit',
-                            onPressed: () => _openDepartmentDialog(doc),
+              builder:
+                  (
+                    BuildContext context,
+                    AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot,
+                  ) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+                    if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                      return const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 24),
+                        child: Text(
+                          'No departments found. Add one to get started.',
+                        ),
+                      );
+                    }
+                    return ListView.separated(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: snapshot.data!.docs.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (BuildContext context, int index) {
+                        final DocumentSnapshot<Map<String, dynamic>> doc =
+                            snapshot.data!.docs[index];
+                        final Map<String, dynamic> data =
+                            doc.data() ?? <String, dynamic>{};
+                        final bool isActive =
+                            (data['isActive'] as bool?) ?? true;
+                        final String abbr = (data['abbr'] as String?) ?? '';
+                        return ListTile(
+                          title: Text(
+                            data['name'] as String? ?? 'Unnamed department',
                           ),
-                          IconButton(
-                            icon: const Icon(Icons.delete_outline),
-                            tooltip: 'Delete',
-                            onPressed: () => _deleteDepartment(doc.id),
+                          subtitle: abbr.isEmpty
+                              ? null
+                              : Text('Abbreviation: $abbr'),
+                          trailing: Wrap(
+                            spacing: 4,
+                            children: <Widget>[
+                              IconButton(
+                                icon: const Icon(Icons.edit_outlined),
+                                tooltip: 'Edit',
+                                onPressed: () => _openDepartmentDialog(doc),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.delete_outline),
+                                tooltip: 'Delete',
+                                onPressed: () => _deleteDepartment(doc.id),
+                              ),
+                            ],
                           ),
-                        ],
-                      ),
-                      leading: Icon(
-                        isActive
-                            ? Icons.check_circle_outline
-                            : Icons.pause_circle_outline,
-                        color:
-                            isActive ? Colors.green : Colors.orange.shade700,
-                      ),
+                          leading: Icon(
+                            isActive
+                                ? Icons.check_circle_outline
+                                : Icons.pause_circle_outline,
+                            color: isActive
+                                ? Colors.green
+                                : Colors.orange.shade700,
+                          ),
+                        );
+                      },
                     );
                   },
-                );
-              },
             ),
           ],
         ),
@@ -699,10 +716,10 @@ class _SubjectCatalogPanelState extends State<_SubjectCatalogPanel> {
           .map(
             (QueryDocumentSnapshot<Map<String, dynamic>> doc) =>
                 _DepartmentOption(
-              id: doc.id,
-              name: (doc.data()['name'] as String?) ?? 'Unnamed department',
-              abbr: doc.data()['abbr'] as String?,
-            ),
+                  id: doc.id,
+                  name: (doc.data()['name'] as String?) ?? 'Unnamed department',
+                  abbr: doc.data()['abbr'] as String?,
+                ),
           )
           .toList();
       if (!mounted) return;
@@ -719,21 +736,22 @@ class _SubjectCatalogPanelState extends State<_SubjectCatalogPanel> {
     }
   }
 
-  Future<void> _openSubjectDialog(
-      [DocumentSnapshot<Map<String, dynamic>>? existing]) async {
+  Future<void> _openSubjectDialog([
+    DocumentSnapshot<Map<String, dynamic>>? existing,
+  ]) async {
     if (_departments.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Add a department before creating subjects.')),
+        const SnackBar(
+          content: Text('Add a department before creating subjects.'),
+        ),
       );
       return;
     }
     await showDialog<void>(
       context: context,
       barrierDismissible: false,
-      builder: (BuildContext context) => _SubjectDialog(
-        departments: _departments,
-        existing: existing,
-      ),
+      builder: (BuildContext context) =>
+          _SubjectDialog(departments: _departments, existing: existing),
     );
   }
 
@@ -749,7 +767,9 @@ class _SubjectCatalogPanelState extends State<_SubjectCatalogPanel> {
             Row(
               children: <Widget>[
                 const Expanded(
-                  child: Text('Catalogue subjects along with sections and terms.'),
+                  child: Text(
+                    'Catalogue subjects along with sections and terms.',
+                  ),
                 ),
                 FilledButton.icon(
                   onPressed: _isLoadingDepartments
@@ -782,85 +802,89 @@ class _SubjectCatalogPanelState extends State<_SubjectCatalogPanel> {
                   .collection('subjects')
                   .orderBy('subjectCode')
                   .snapshots(),
-              builder: (
-                BuildContext context,
-                AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot,
-              ) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                  return const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 24),
-                    child: Text('No subjects yet. Add one to begin scheduling.'),
-                  );
-                }
-                return ListView.separated(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  itemCount: snapshot.data!.docs.length,
-                  separatorBuilder: (_, __) => const Divider(height: 1),
-                  itemBuilder: (BuildContext context, int index) {
-                    final DocumentSnapshot<Map<String, dynamic>> doc =
-                        snapshot.data!.docs[index];
-                    final Map<String, dynamic> data =
-                        doc.data() ?? <String, dynamic>{};
-                    final bool isActive = (data['isActive'] as bool?) ?? true;
-                    final List<dynamic> sections =
-                        data['sections'] as List<dynamic>? ?? <dynamic>[];
-                    final List<dynamic> terms =
-                        data['terms'] as List<dynamic>? ?? <dynamic>[];
-                    return ListTile(
-                      title: Text(
-                        '${data['subjectCode'] ?? 'N/A'} • ${data['subjectName'] ?? ''}',
-                      ),
-                      subtitle: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: <Widget>[
-                          if (data['departmentName'] != null)
-                            Text(data['departmentName'] as String),
-                          if (sections.isNotEmpty)
-                            Wrap(
-                              spacing: 6,
-                              runSpacing: -8,
-                              children: sections
-                                  .map(
-                                    (dynamic value) => Chip(
-                                      label: Text(value.toString()),
-                                      visualDensity: VisualDensity.compact,
-                                    ),
-                                  )
-                                  .toList(),
-                            ),
-                          if (terms.isNotEmpty)
-                            Wrap(
-                              spacing: 6,
-                              runSpacing: -8,
-                              children: terms
-                                  .map(
-                                    (dynamic value) => Chip(
-                                      label: Text(value.toString()),
-                                      visualDensity: VisualDensity.compact,
-                                    ),
-                                  )
-                                  .toList(),
-                            ),
-                        ],
-                      ),
-                      leading: Icon(
-                        isActive
-                            ? Icons.book_outlined
-                            : Icons.bookmark_remove_outlined,
-                        color: isActive ? Colors.indigo : Colors.grey,
-                      ),
-                      trailing: IconButton(
-                        icon: const Icon(Icons.edit_note_outlined),
-                        onPressed: () => _openSubjectDialog(doc),
-                      ),
+              builder:
+                  (
+                    BuildContext context,
+                    AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot,
+                  ) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+                    if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                      return const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 24),
+                        child: Text(
+                          'No subjects yet. Add one to begin scheduling.',
+                        ),
+                      );
+                    }
+                    return ListView.separated(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: snapshot.data!.docs.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (BuildContext context, int index) {
+                        final DocumentSnapshot<Map<String, dynamic>> doc =
+                            snapshot.data!.docs[index];
+                        final Map<String, dynamic> data =
+                            doc.data() ?? <String, dynamic>{};
+                        final bool isActive =
+                            (data['isActive'] as bool?) ?? true;
+                        final List<dynamic> sections =
+                            data['sections'] as List<dynamic>? ?? <dynamic>[];
+                        final List<dynamic> terms =
+                            data['terms'] as List<dynamic>? ?? <dynamic>[];
+                        return ListTile(
+                          title: Text(
+                            '${data['subjectCode'] ?? 'N/A'} • ${data['subjectName'] ?? ''}',
+                          ),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              if (data['departmentName'] != null)
+                                Text(data['departmentName'] as String),
+                              if (sections.isNotEmpty)
+                                Wrap(
+                                  spacing: 6,
+                                  runSpacing: -8,
+                                  children: sections
+                                      .map(
+                                        (dynamic value) => Chip(
+                                          label: Text(value.toString()),
+                                          visualDensity: VisualDensity.compact,
+                                        ),
+                                      )
+                                      .toList(),
+                                ),
+                              if (terms.isNotEmpty)
+                                Wrap(
+                                  spacing: 6,
+                                  runSpacing: -8,
+                                  children: terms
+                                      .map(
+                                        (dynamic value) => Chip(
+                                          label: Text(value.toString()),
+                                          visualDensity: VisualDensity.compact,
+                                        ),
+                                      )
+                                      .toList(),
+                                ),
+                            ],
+                          ),
+                          leading: Icon(
+                            isActive
+                                ? Icons.book_outlined
+                                : Icons.bookmark_remove_outlined,
+                            color: isActive ? Colors.indigo : Colors.grey,
+                          ),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.edit_note_outlined),
+                            onPressed: () => _openSubjectDialog(doc),
+                          ),
+                        );
+                      },
                     );
                   },
-                );
-              },
             ),
           ],
         ),
@@ -945,14 +969,15 @@ class _SubjectDialogState extends State<_SubjectDialog> {
       return;
     }
     if (_terms.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Add at least one term.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Add at least one term.')));
       return;
     }
     setState(() => _isSaving = true);
-    final _DepartmentOption department = widget.departments
-      .firstWhere((_DepartmentOption option) => option.id == _selectedDepartmentId!);
+    final _DepartmentOption department = widget.departments.firstWhere(
+      (_DepartmentOption option) => option.id == _selectedDepartmentId!,
+    );
     final Map<String, dynamic> payload = <String, dynamic>{
       'subjectCode': _subjectCodeController.text.trim(),
       'subjectName': _subjectNameController.text.trim(),
@@ -1048,10 +1073,11 @@ class _SubjectDialogState extends State<_SubjectDialog> {
                 decoration: const InputDecoration(labelText: 'Department'),
                 items: widget.departments
                     .map(
-                      (_DepartmentOption department) => DropdownMenuItem<String>(
-                        value: department.id,
-                        child: Text(department.name),
-                      ),
+                      (_DepartmentOption department) =>
+                          DropdownMenuItem<String>(
+                            value: department.id,
+                            child: Text(department.name),
+                          ),
                     )
                     .toList(),
                 onChanged: (String? value) =>
@@ -1171,16 +1197,17 @@ class _ClassMaintenancePanelState extends State<_ClassMaintenancePanel> {
           .collection('users')
           .where('role', isEqualTo: 'instructor')
           .get();
-      final List<_InstructorOption> options = snapshot.docs
-          .map(
-            (QueryDocumentSnapshot<Map<String, dynamic>> doc) =>
-                _InstructorOption(
-              id: doc.id,
-              displayName: _resolveDisplayName(doc.data()),
-            ),
-          )
-          .toList()
-        ..sort((a, b) => a.displayName.compareTo(b.displayName));
+      final List<_InstructorOption> options =
+          snapshot.docs
+              .map(
+                (QueryDocumentSnapshot<Map<String, dynamic>> doc) =>
+                    _InstructorOption(
+                      id: doc.id,
+                      displayName: _resolveDisplayName(doc.data()),
+                    ),
+              )
+              .toList()
+            ..sort((a, b) => a.displayName.compareTo(b.displayName));
       if (!mounted) return;
       setState(() {
         _instructors = options;
@@ -1207,20 +1234,21 @@ class _ClassMaintenancePanelState extends State<_ClassMaintenancePanel> {
           .get();
       final List<_SubjectOption> options = snapshot.docs
           .map(
-            (QueryDocumentSnapshot<Map<String, dynamic>> doc) =>
-                _SubjectOption(
+            (QueryDocumentSnapshot<Map<String, dynamic>> doc) => _SubjectOption(
               id: doc.id,
               subjectCode:
                   (doc.data()['subjectCode'] as String?) ?? 'Uncoded subject',
               subjectName:
                   (doc.data()['subjectName'] as String?) ?? 'Unnamed subject',
               sections: List<String>.from(
-                (doc.data()['sections'] as List<dynamic>? ?? <dynamic>[])
-                    .map((dynamic value) => value.toString()),
+                (doc.data()['sections'] as List<dynamic>? ?? <dynamic>[]).map(
+                  (dynamic value) => value.toString(),
+                ),
               ),
               terms: List<String>.from(
-                (doc.data()['terms'] as List<dynamic>? ?? <dynamic>[])
-                    .map((dynamic value) => value.toString()),
+                (doc.data()['terms'] as List<dynamic>? ?? <dynamic>[]).map(
+                  (dynamic value) => value.toString(),
+                ),
               ),
               departmentName:
                   (doc.data()['departmentName'] as String?) ?? 'Unknown dept',
@@ -1289,9 +1317,11 @@ class _ClassMaintenancePanelState extends State<_ClassMaintenancePanel> {
     if (updated == true && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(existing == null
-              ? 'Class created successfully.'
-              : 'Class updated successfully.'),
+          content: Text(
+            existing == null
+                ? 'Class created successfully.'
+                : 'Class updated successfully.',
+          ),
         ),
       );
     }
@@ -1314,7 +1344,8 @@ class _ClassMaintenancePanelState extends State<_ClassMaintenancePanel> {
                   ),
                 ),
                 FilledButton.icon(
-                  onPressed: (_isLoadingInstructors ||
+                  onPressed:
+                      (_isLoadingInstructors ||
                           _isLoadingSubjects ||
                           _subjects.isEmpty)
                       ? null
@@ -1353,87 +1384,91 @@ class _ClassMaintenancePanelState extends State<_ClassMaintenancePanel> {
                   .collection('classes')
                   .orderBy('subjectCode')
                   .snapshots(),
-              builder: (
-                BuildContext context,
-                AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot,
-              ) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                  return const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 24),
-                    child: Text('No classes configured yet.'),
-                  );
-                }
-                final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
-                    snapshot.data!.docs;
-                return ListView.separated(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  itemCount: docs.length,
-                  separatorBuilder: (_, __) => const Divider(height: 1),
-                  itemBuilder: (BuildContext context, int index) {
-                    final QueryDocumentSnapshot<Map<String, dynamic>> doc =
-                        docs[index];
-                    final Map<String, dynamic> data = doc.data();
-                    final String subjectCode =
-                        (data['subjectCode'] as String?) ?? 'N/A';
-                    final String subjectName =
-                        (data['subjectName'] as String?) ?? '';
-                    final String section =
-                        (data['section'] as String?) ?? 'Unknown';
-                    final String term = (data['term'] as String?) ?? 'Unknown';
-                    final String instructorId =
-                        (data['instructorId'] as String?) ?? 'Unassigned';
-                    final String departmentName =
-                      (data['departmentName'] as String?) ?? '';
-                    final List<dynamic> schedules =
-                        (data['schedules'] as List<dynamic>? ?? <dynamic>[]);
-                    final Iterable<String> scheduleSummaries = schedules.map(
-                      (dynamic entry) {
-                        final Map<String, dynamic> schedule =
-                            entry as Map<String, dynamic>;
-                        final String type =
-                            (schedule['type'] as String?)?.toUpperCase() ?? '';
-                        final String day =
-                            (schedule['day'] as String?) ?? 'Unspecified';
-                        final Map<String, dynamic>? start = schedule['startTime']
-                            as Map<String, dynamic>?;
-                        final Map<String, dynamic>? end = schedule['endTime']
-                            as Map<String, dynamic>?;
-                        final String formattedStart = start == null
-                            ? '--:--'
-                            : '${start['hour']}:${(start['minute'] as int?)?.toString().padLeft(2, '0') ?? '00'} ${start['period'] ?? ''}';
-                        final String formattedEnd = end == null
-                            ? '--:--'
-                            : '${end['hour']}:${(end['minute'] as int?)?.toString().padLeft(2, '0') ?? '00'} ${end['period'] ?? ''}';
-                        return '$type • $day • $formattedStart - $formattedEnd';
+              builder:
+                  (
+                    BuildContext context,
+                    AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot,
+                  ) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+                    if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                      return const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 24),
+                        child: Text('No classes configured yet.'),
+                      );
+                    }
+                    final List<QueryDocumentSnapshot<Map<String, dynamic>>>
+                    docs = snapshot.data!.docs;
+                    return ListView.separated(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: docs.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (BuildContext context, int index) {
+                        final QueryDocumentSnapshot<Map<String, dynamic>> doc =
+                            docs[index];
+                        final Map<String, dynamic> data = doc.data();
+                        final String subjectCode =
+                            (data['subjectCode'] as String?) ?? 'N/A';
+                        final String subjectName =
+                            (data['subjectName'] as String?) ?? '';
+                        final String section =
+                            (data['section'] as String?) ?? 'Unknown';
+                        final String term =
+                            (data['term'] as String?) ?? 'Unknown';
+                        final String instructorId =
+                            (data['instructorId'] as String?) ?? 'Unassigned';
+                        final String departmentName =
+                            (data['departmentName'] as String?) ?? '';
+                        final List<dynamic> schedules =
+                            (data['schedules'] as List<dynamic>? ??
+                            <dynamic>[]);
+                        final Iterable<String>
+                        scheduleSummaries = schedules.map((dynamic entry) {
+                          final Map<String, dynamic> schedule =
+                              entry as Map<String, dynamic>;
+                          final String type =
+                              (schedule['type'] as String?)?.toUpperCase() ??
+                              '';
+                          final String day =
+                              (schedule['day'] as String?) ?? 'Unspecified';
+                          final Map<String, dynamic>? start =
+                              schedule['startTime'] as Map<String, dynamic>?;
+                          final Map<String, dynamic>? end =
+                              schedule['endTime'] as Map<String, dynamic>?;
+                          final String formattedStart = start == null
+                              ? '--:--'
+                              : '${start['hour']}:${(start['minute'] as int?)?.toString().padLeft(2, '0') ?? '00'} ${start['period'] ?? ''}';
+                          final String formattedEnd = end == null
+                              ? '--:--'
+                              : '${end['hour']}:${(end['minute'] as int?)?.toString().padLeft(2, '0') ?? '00'} ${end['period'] ?? ''}';
+                          return '$type • $day • $formattedStart - $formattedEnd';
+                        });
+                        return ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: Text('$subjectCode • $section'),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              if (subjectName.isNotEmpty) Text(subjectName),
+                              if (departmentName.isNotEmpty)
+                                Text(departmentName),
+                              Text('Term: $term'),
+                              Text(
+                                'Instructor: ${_instructorLookup[instructorId] ?? instructorId}',
+                              ),
+                              ...scheduleSummaries.map(Text.new),
+                            ],
+                          ),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.edit_note_outlined),
+                            onPressed: () => _openClassDialog(existing: doc),
+                          ),
+                        );
                       },
                     );
-                    return ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: Text('$subjectCode • $section'),
-                      subtitle: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: <Widget>[
-                          if (subjectName.isNotEmpty) Text(subjectName),
-                          if (departmentName.isNotEmpty) Text(departmentName),
-                          Text('Term: $term'),
-                          Text(
-                            'Instructor: ${_instructorLookup[instructorId] ?? instructorId}',
-                          ),
-                          ...scheduleSummaries.map(Text.new),
-                        ],
-                      ),
-                      trailing: IconButton(
-                        icon: const Icon(Icons.edit_note_outlined),
-                        onPressed: () => _openClassDialog(existing: doc),
-                      ),
-                    );
                   },
-                );
-              },
             ),
           ],
         ),
@@ -1492,9 +1527,8 @@ class _ClassEditorDialogState extends State<_ClassEditorDialog> {
           (data['schedules'] as List<dynamic>? ?? <dynamic>[]);
       _schedules = rawSchedules
           .map(
-            (dynamic item) => _ScheduleDraft.fromMap(
-              item as Map<String, dynamic>,
-            ),
+            (dynamic item) =>
+                _ScheduleDraft.fromMap(item as Map<String, dynamic>),
           )
           .toList();
     }
@@ -1505,7 +1539,8 @@ class _ClassEditorDialogState extends State<_ClassEditorDialog> {
       _availableTerms = <String>[_selectedTerm!];
     }
     final _SubjectOption? initialSubject =
-        _resolveInitialSubject(data) ?? _resolveSubjectByCode(_subjectCodeController.text);
+        _resolveInitialSubject(data) ??
+        _resolveSubjectByCode(_subjectCodeController.text);
     if (initialSubject != null) {
       _applySubjectSelection(
         initialSubject,
@@ -1549,8 +1584,9 @@ class _ClassEditorDialogState extends State<_ClassEditorDialog> {
     final String normalized = code?.trim() ?? '';
     if (normalized.isEmpty) return null;
     try {
-      return widget.subjects
-          .firstWhere((subject) => subject.subjectCode == normalized);
+      return widget.subjects.firstWhere(
+        (subject) => subject.subjectCode == normalized,
+      );
     } catch (_) {
       return null;
     }
@@ -1566,11 +1602,13 @@ class _ClassEditorDialogState extends State<_ClassEditorDialog> {
     _subjectNameController.text = subject.subjectName;
     _availableSections = List<String>.from(subject.sections);
     _availableTerms = List<String>.from(subject.terms);
-    if (preferredSection != null && _availableSections.contains(preferredSection)) {
+    if (preferredSection != null &&
+        _availableSections.contains(preferredSection)) {
       _selectedSection = preferredSection;
     } else {
-      _selectedSection =
-          _availableSections.isNotEmpty ? _availableSections.first : null;
+      _selectedSection = _availableSections.isNotEmpty
+          ? _availableSections.first
+          : null;
     }
     if (preferredTerm != null && _availableTerms.contains(preferredTerm)) {
       _selectedTerm = preferredTerm;
@@ -1584,9 +1622,9 @@ class _ClassEditorDialogState extends State<_ClassEditorDialog> {
       return;
     }
     if (_selectedSubjectId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please select a subject.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Please select a subject.')));
       return;
     }
     if (_selectedSection == null) {
@@ -1654,9 +1692,9 @@ class _ClassEditorDialogState extends State<_ClassEditorDialog> {
       }
     } catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to save class: $error')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Failed to save class: $error')));
       }
     } finally {
       if (mounted) {
@@ -1694,121 +1732,129 @@ class _ClassEditorDialogState extends State<_ClassEditorDialog> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: <Widget>[
-              DropdownButtonFormField<String>(
-                initialValue: _selectedSubjectId,
-                decoration: const InputDecoration(labelText: 'Subject'),
-                items: widget.subjects
-                    .map(
-                      (_SubjectOption option) => DropdownMenuItem<String>(
-                        value: option.id,
-                        child: Text(
-                          '${option.subjectCode} • ${option.subjectName}',
+                DropdownButtonFormField<String>(
+                  initialValue: _selectedSubjectId,
+                  decoration: const InputDecoration(labelText: 'Subject'),
+                  items: widget.subjects
+                      .map(
+                        (_SubjectOption option) => DropdownMenuItem<String>(
+                          value: option.id,
+                          child: Text(
+                            '${option.subjectCode} • ${option.subjectName}',
+                          ),
                         ),
-                      ),
-                    )
-                    .toList(),
-                onChanged: (String? value) {
-                  if (value == null) return;
-                  final _SubjectOption? selection = _resolveSubjectById(value);
-                  setState(() {
-                    if (selection != null) {
-                      _applySubjectSelection(selection);
-                    }
-                  });
-                },
-                validator: (String? value) => value == null ? 'Required' : null,
-              ),
-              const SizedBox(height: 12),
-              TextFormField(
-                controller: _subjectCodeController,
-                readOnly: true,
-                decoration: const InputDecoration(labelText: 'Subject code'),
-              ),
-              const SizedBox(height: 12),
-              TextFormField(
-                controller: _subjectNameController,
-                readOnly: true,
-                decoration: const InputDecoration(labelText: 'Subject name'),
-              ),
-              const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                initialValue: _selectedSection,
-                decoration: const InputDecoration(labelText: 'Section'),
-                items: _availableSections
-                    .map(
-                      (String section) => DropdownMenuItem<String>(
-                        value: section,
-                        child: Text(section),
-                      ),
-                    )
-                    .toList(),
-                onChanged: (String? value) =>
-                    setState(() => _selectedSection = value),
-                validator: (String? value) => value == null ? 'Required' : null,
-              ),
-              const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                initialValue: _selectedTerm,
-                decoration: const InputDecoration(labelText: 'Term'),
-                items: _availableTerms
-                    .map(
-                      (String term) => DropdownMenuItem<String>(
-                        value: term,
-                        child: Text(term),
-                      ),
-                    )
-                    .toList(),
-                onChanged: (String? value) =>
-                    setState(() => _selectedTerm = value),
-                validator: (String? value) => value == null ? 'Required' : null,
-              ),
-              const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                initialValue: _selectedInstructor,
-                decoration: const InputDecoration(labelText: 'Instructor'),
-                items: widget.instructors
-                    .map(
-                      (_InstructorOption instructor) => DropdownMenuItem<String>(
-                        value: instructor.id,
-                        child: Text(instructor.displayName),
-                      ),
-                    )
-                    .toList(),
-                onChanged: (String? value) =>
-                    setState(() => _selectedInstructor = value),
-                validator: (String? value) => value == null ? 'Required' : null,
-              ),
-              const SizedBox(height: 16),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  'Schedules',
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleMedium
-                      ?.copyWith(fontWeight: FontWeight.w600),
+                      )
+                      .toList(),
+                  onChanged: (String? value) {
+                    if (value == null) return;
+                    final _SubjectOption? selection = _resolveSubjectById(
+                      value,
+                    );
+                    setState(() {
+                      if (selection != null) {
+                        _applySubjectSelection(selection);
+                      }
+                    });
+                  },
+                  validator: (String? value) =>
+                      value == null ? 'Required' : null,
                 ),
-              ),
-              const SizedBox(height: 8),
-              Column(
-                children: List<Widget>.generate(_schedules.length, (int index) {
-                  final _ScheduleDraft draft = _schedules[index];
-                  return _ScheduleCard(
-                    draft: draft,
-                    onChanged: () => setState(() {}),
-                    onRemove: () => _removeSchedule(index),
-                  );
-                }),
-              ),
-              const SizedBox(height: 12),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  onPressed: _addSchedule,
-                  icon: const Icon(Icons.add_circle_outline),
-                  label: const Text('Add schedule entry'),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _subjectCodeController,
+                  readOnly: true,
+                  decoration: const InputDecoration(labelText: 'Subject code'),
                 ),
-              ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _subjectNameController,
+                  readOnly: true,
+                  decoration: const InputDecoration(labelText: 'Subject name'),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: _selectedSection,
+                  decoration: const InputDecoration(labelText: 'Section'),
+                  items: _availableSections
+                      .map(
+                        (String section) => DropdownMenuItem<String>(
+                          value: section,
+                          child: Text(section),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (String? value) =>
+                      setState(() => _selectedSection = value),
+                  validator: (String? value) =>
+                      value == null ? 'Required' : null,
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: _selectedTerm,
+                  decoration: const InputDecoration(labelText: 'Term'),
+                  items: _availableTerms
+                      .map(
+                        (String term) => DropdownMenuItem<String>(
+                          value: term,
+                          child: Text(term),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (String? value) =>
+                      setState(() => _selectedTerm = value),
+                  validator: (String? value) =>
+                      value == null ? 'Required' : null,
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: _selectedInstructor,
+                  decoration: const InputDecoration(labelText: 'Instructor'),
+                  items: widget.instructors
+                      .map(
+                        (_InstructorOption instructor) =>
+                            DropdownMenuItem<String>(
+                              value: instructor.id,
+                              child: Text(instructor.displayName),
+                            ),
+                      )
+                      .toList(),
+                  onChanged: (String? value) =>
+                      setState(() => _selectedInstructor = value),
+                  validator: (String? value) =>
+                      value == null ? 'Required' : null,
+                ),
+                const SizedBox(height: 16),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Schedules',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Column(
+                  children: List<Widget>.generate(_schedules.length, (
+                    int index,
+                  ) {
+                    final _ScheduleDraft draft = _schedules[index];
+                    return _ScheduleCard(
+                      draft: draft,
+                      onChanged: () => setState(() {}),
+                      onRemove: () => _removeSchedule(index),
+                    );
+                  }),
+                ),
+                const SizedBox(height: 12),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: _addSchedule,
+                    icon: const Icon(Icons.add_circle_outline),
+                    label: const Text('Add schedule entry'),
+                  ),
+                ),
               ],
             ),
           ),
@@ -1855,9 +1901,12 @@ class _ScheduleCard extends StatelessWidget {
     'Thursday',
     'Friday',
     'Saturday',
-    'Sunday'
+    'Sunday',
   ];
-  static final List<int> _hours = List<int>.generate(12, (int index) => index + 1);
+  static final List<int> _hours = List<int>.generate(
+    12,
+    (int index) => index + 1,
+  );
   static const List<int> _minutes = <int>[0, 15, 30, 45];
   static const List<String> _periods = <String>['AM', 'PM'];
 
@@ -2048,8 +2097,8 @@ class _ScheduleDraft {
     _ScheduleTime? start,
     _ScheduleTime? end,
     this.room = '',
-  })  : startTime = start ?? _ScheduleTime(hour: 8, minute: 0, period: 'AM'),
-        endTime = end ?? _ScheduleTime(hour: 9, minute: 0, period: 'AM');
+  }) : startTime = start ?? _ScheduleTime(hour: 8, minute: 0, period: 'AM'),
+       endTime = end ?? _ScheduleTime(hour: 9, minute: 0, period: 'AM');
 
   factory _ScheduleDraft.fromMap(Map<String, dynamic> map) {
     return _ScheduleDraft(
@@ -2068,16 +2117,20 @@ class _ScheduleDraft {
   String room;
 
   Map<String, dynamic> toJson() => <String, dynamic>{
-        'type': type,
-        'day': day,
-        'startTime': startTime.toJson(),
-        'endTime': endTime.toJson(),
-        'room': room,
-      };
+    'type': type,
+    'day': day,
+    'startTime': startTime.toJson(),
+    'endTime': endTime.toJson(),
+    'room': room,
+  };
 }
 
 class _ScheduleTime {
-  _ScheduleTime({required this.hour, required this.minute, required this.period});
+  _ScheduleTime({
+    required this.hour,
+    required this.minute,
+    required this.period,
+  });
 
   factory _ScheduleTime.fromMap(Map<String, dynamic>? map) {
     if (map == null) {
@@ -2095,14 +2148,15 @@ class _ScheduleTime {
   String period;
 
   Map<String, dynamic> toJson() => <String, dynamic>{
-        'hour': hour,
-        'minute': minute,
-        'period': period,
-      };
+    'hour': hour,
+    'minute': minute,
+    'period': period,
+  };
 }
 
 extension on String {
-  String capitalize() => isEmpty ? this : '${this[0].toUpperCase()}${substring(1)}';
+  String capitalize() =>
+      isEmpty ? this : '${this[0].toUpperCase()}${substring(1)}';
 }
 
 class _AdminAction {
@@ -2220,7 +2274,7 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
   Query<Map<String, dynamic>> _buildUsersPageQuery() {
     Query<Map<String, dynamic>> q = _firestore
         .collection('users')
-      .orderBy(FieldPath.documentId);
+        .orderBy(FieldPath.documentId);
     if (_lastUserDoc != null) {
       q = q.startAfterDocument(_lastUserDoc!);
     }
@@ -2247,9 +2301,9 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
       });
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to load users: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to load users: $error')));
     } finally {
       if (mounted) {
         setState(() => _loadingUsers = false);
@@ -2283,7 +2337,6 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
       }
     }
   }
-
 
   String _buildSearchHaystack(Map<String, dynamic> data, String docId) {
     final List<String> parts = <String>[
@@ -2337,18 +2390,18 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
 
   Future<void> _approveInstructor(String uid) async {
     try {
-      await _functions.httpsCallable('adminApproveInstructor').call(<String, dynamic>{
-        'uid': uid,
-      });
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Instructor approved.')),
+      await _functions.httpsCallable('adminApproveInstructor').call(
+        <String, dynamic>{'uid': uid},
       );
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Instructor approved.')));
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to approve: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to approve: $error')));
     }
   }
 
@@ -2375,13 +2428,13 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     if (confirmed != true) return;
 
     try {
-      await _functions.httpsCallable('adminClearFaceEnrollment').call(<String, dynamic>{
-        'uid': uid,
-      });
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Face enrollment cleared.')),
+      await _functions.httpsCallable('adminClearFaceEnrollment').call(
+        <String, dynamic>{'uid': uid},
       );
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Face enrollment cleared.')));
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -2417,24 +2470,29 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
         'uid': uid,
       });
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('User deleted.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('User deleted.')));
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to delete: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to delete: $error')));
     }
   }
 
-  Future<void> _editUserProfile(DocumentSnapshot<Map<String, dynamic>> doc) async {
+  Future<void> _editUserProfile(
+    DocumentSnapshot<Map<String, dynamic>> doc,
+  ) async {
     final Map<String, dynamic>? data = doc.data();
     if (data == null) return;
     final String role = (data['role'] as String?)?.toLowerCase() ?? '';
 
     final TextEditingController nameController = TextEditingController(
-      text: (data['displayName'] as String?) ?? (data['Full Name'] as String?) ?? '',
+      text:
+          (data['displayName'] as String?) ??
+          (data['Full Name'] as String?) ??
+          '',
     );
     final TextEditingController departmentController = TextEditingController(
       text: (data['Department'] as String?) ?? '',
@@ -2466,12 +2524,16 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                     if (role == 'instructor')
                       TextField(
                         controller: departmentController,
-                        decoration: const InputDecoration(labelText: 'Department'),
+                        decoration: const InputDecoration(
+                          labelText: 'Department',
+                        ),
                       ),
                     if (role == 'student') ...<Widget>[
                       TextField(
                         controller: studentIdController,
-                        decoration: const InputDecoration(labelText: 'Student ID'),
+                        decoration: const InputDecoration(
+                          labelText: 'Student ID',
+                        ),
                       ),
                       TextField(
                         controller: sectionController,
@@ -2483,7 +2545,9 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
               ),
               actions: <Widget>[
                 TextButton(
-                  onPressed: saving ? null : () => Navigator.of(context).pop(false),
+                  onPressed: saving
+                      ? null
+                      : () => Navigator.of(context).pop(false),
                   child: const Text('Cancel'),
                 ),
                 FilledButton(
@@ -2492,21 +2556,47 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                       : () async {
                           set(() => saving = true);
                           try {
-                            final Map<String, Object?> update = <String, Object?>{
-                              'displayName': nameController.text.trim(),
-                              'Full Name': nameController.text.trim(),
-                            };
+                            final Map<String, Object?> update =
+                                <String, Object?>{
+                                  'displayName': nameController.text.trim(),
+                                  'Full Name': nameController.text.trim(),
+                                };
                             if (role == 'instructor') {
-                              update['Department'] = departmentController.text.trim();
+                              update['Department'] = departmentController.text
+                                  .trim();
                             }
                             if (role == 'student') {
-                              update['Student ID'] = studentIdController.text.trim();
-                              update['section'] = sectionController.text.trim();
+                              final String newStudentId = studentIdController
+                                  .text
+                                  .trim();
+                              if (newStudentId.isEmpty) {
+                                throw FirebaseException(
+                                  plugin: 'cloud_firestore',
+                                  code: 'invalid-student-id',
+                                  message: 'Student ID is required.',
+                                );
+                              }
+                              final String? oldStudentId =
+                                  (data['studentId'] as String?) ??
+                                  (data['Student ID'] as String?);
+                              await UserRoleService.adminSwapStudentId(
+                                uid: doc.id,
+                                newStudentId: newStudentId,
+                                oldStudentId: oldStudentId,
+                                otherUpdates: <String, Object?>{
+                                  ...update,
+                                  'section': sectionController.text.trim(),
+                                },
+                              );
+                              if (context.mounted) {
+                                Navigator.of(context).pop(true);
+                              }
+                              return;
                             }
-                            await _firestore.collection('users').doc(doc.id).set(
-                              update,
-                              SetOptions(merge: true),
-                            );
+                            await _firestore
+                                .collection('users')
+                                .doc(doc.id)
+                                .set(update, SetOptions(merge: true));
                             if (context.mounted) {
                               Navigator.of(context).pop(true);
                             }
@@ -2540,9 +2630,9 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     studentIdController.dispose();
 
     if (saved == true && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Profile updated.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Profile updated.')));
     }
   }
 
@@ -2623,46 +2713,68 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                 StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                   stream: _firestore
                       .collection('users')
-                    .where('role', isEqualTo: 'instructor')
+                      .where('role', isEqualTo: 'instructor')
                       .snapshots(),
-                  builder: (BuildContext context,
-                      AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) {
-                      return const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 8),
-                        child: LinearProgressIndicator(),
-                      );
-                    }
-                    if (snapshot.hasError) {
-                      return Text('Failed to load approvals: ${snapshot.error}');
-                    }
-                    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
-                        (snapshot.data?.docs ?? <QueryDocumentSnapshot<Map<String, dynamic>>>[])
-                            .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-                              final Map<String, dynamic> data = doc.data();
-                              return data['approved'] != true;
-                            })
-                            .toList(growable: false);
-                    if (docs.isEmpty) {
-                      return const Text('No pending instructor accounts.');
-                    }
-                    return Column(
-                      children: docs.map((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-                        final Map<String, dynamic> data = doc.data();
-                        final String name = _resolveDisplayName(data, doc.id);
-                        final String email = (data['Email'] as String?) ?? '';
-                        return ListTile(
-                          contentPadding: EdgeInsets.zero,
-                          title: Text(name),
-                          subtitle: email.isEmpty ? null : Text(email),
-                          trailing: FilledButton(
-                            onPressed: () => _approveInstructor(doc.id),
-                            child: const Text('Approve'),
-                          ),
+                  builder:
+                      (
+                        BuildContext context,
+                        AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>>
+                        snapshot,
+                      ) {
+                        if (snapshot.connectionState ==
+                            ConnectionState.waiting) {
+                          return const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 8),
+                            child: LinearProgressIndicator(),
+                          );
+                        }
+                        if (snapshot.hasError) {
+                          return Text(
+                            'Failed to load approvals: ${snapshot.error}',
+                          );
+                        }
+                        final List<QueryDocumentSnapshot<Map<String, dynamic>>>
+                        docs =
+                            (snapshot.data?.docs ??
+                                    <
+                                      QueryDocumentSnapshot<
+                                        Map<String, dynamic>
+                                      >
+                                    >[])
+                                .where((
+                                  QueryDocumentSnapshot<Map<String, dynamic>>
+                                  doc,
+                                ) {
+                                  final Map<String, dynamic> data = doc.data();
+                                  return data['approved'] != true;
+                                })
+                                .toList(growable: false);
+                        if (docs.isEmpty) {
+                          return const Text('No pending instructor accounts.');
+                        }
+                        return Column(
+                          children: docs.map((
+                            QueryDocumentSnapshot<Map<String, dynamic>> doc,
+                          ) {
+                            final Map<String, dynamic> data = doc.data();
+                            final String name = _resolveDisplayName(
+                              data,
+                              doc.id,
+                            );
+                            final String email =
+                                (data['Email'] as String?) ?? '';
+                            return ListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: Text(name),
+                              subtitle: email.isEmpty ? null : Text(email),
+                              trailing: FilledButton(
+                                onPressed: () => _approveInstructor(doc.id),
+                                child: const Text('Approve'),
+                              ),
+                            );
+                          }).toList(),
                         );
-                      }).toList(),
-                    );
-                  },
+                      },
                 ),
               ],
             ),
@@ -2680,7 +2792,10 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                     const Expanded(
                       child: Text(
                         'All users',
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                     ),
                     TextButton.icon(
@@ -2742,12 +2857,14 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                       );
                     }
 
-                    final List<QueryDocumentSnapshot<Map<String, dynamic>>> filteredDocs =
-                        _loadedUserDocs
-                        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+                    final List<QueryDocumentSnapshot<Map<String, dynamic>>>
+                    filteredDocs = _loadedUserDocs
+                        .where((
+                          QueryDocumentSnapshot<Map<String, dynamic>> doc,
+                        ) {
                           final Map<String, dynamic> data = doc.data();
-                          final String role =
-                              ((data['role'] as String?) ?? '').toLowerCase();
+                          final String role = ((data['role'] as String?) ?? '')
+                              .toLowerCase();
                           if (role == 'student') {
                             return _showStudents;
                           }
@@ -2756,7 +2873,9 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                           }
                           return true;
                         })
-                        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+                        .where((
+                          QueryDocumentSnapshot<Map<String, dynamic>> doc,
+                        ) {
                           final String q = _searchQuery;
                           if (q.isEmpty) {
                             return true;
@@ -2793,7 +2912,9 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                     child: SizedBox(
                                       width: 18,
                                       height: 18,
-                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
                                     ),
                                   ),
                                 );
@@ -2805,7 +2926,9 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                 );
                               }
                               return Padding(
-                                padding: const EdgeInsets.symmetric(vertical: 8),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 8,
+                                ),
                                 child: Center(
                                   child: OutlinedButton.icon(
                                     onPressed: _loadMoreUsers,
@@ -2816,12 +2939,16 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                               );
                             }
 
-                            final QueryDocumentSnapshot<Map<String, dynamic>> doc =
-                                filteredDocs[index];
+                            final QueryDocumentSnapshot<Map<String, dynamic>>
+                            doc = filteredDocs[index];
                             final Map<String, dynamic> data = doc.data();
-                            final String name = _resolveDisplayName(data, doc.id);
+                            final String name = _resolveDisplayName(
+                              data,
+                              doc.id,
+                            );
                             final String role = (data['role'] as String?) ?? '';
-                            final bool hasEnrollment = (data['faceEmbed'] is List) &&
+                            final bool hasEnrollment =
+                                (data['faceEmbed'] is List) &&
                                 (data['faceEmbed'] as List).isNotEmpty;
                             final bool approved = data['approved'] == true;
 
@@ -2832,10 +2959,10 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                 role.isEmpty
                                     ? 'No role'
                                     : (role.toLowerCase() == 'instructor'
-                                        ? (approved
-                                            ? 'Instructor (approved)'
-                                            : 'Instructor (pending)')
-                                        : role),
+                                          ? (approved
+                                                ? 'Instructor (approved)'
+                                                : 'Instructor (pending)')
+                                          : role),
                               ),
                               trailing: PopupMenuButton<String>(
                                 onSelected: (String action) {
