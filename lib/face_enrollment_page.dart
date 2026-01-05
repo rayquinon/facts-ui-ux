@@ -588,7 +588,7 @@ class _FaceGuideOverlay extends StatelessWidget {
               padding: const EdgeInsets.only(top: 48),
               child: DecoratedBox(
                 decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.45),
+                  color: Colors.black.withValues(alpha: 0.45),
                   borderRadius: BorderRadius.circular(24),
                 ),
                 child: Padding(
@@ -647,12 +647,12 @@ class _FaceGuideMaskPainter extends CustomPainter {
       ..addOval(ovalRect);
 
     final Paint dimPaint = Paint()
-      ..color = Colors.black.withOpacity(0.6)
+      ..color = Colors.black.withValues(alpha: 0.6)
       ..style = PaintingStyle.fill;
     canvas.drawPath(maskPath, dimPaint);
 
     final Paint borderPaint = Paint()
-      ..color = Colors.white.withOpacity(0.9)
+      ..color = Colors.white.withValues(alpha: 0.9)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 3;
     canvas.drawOval(ovalRect, borderPaint);

@@ -266,9 +266,9 @@ class _AdminPageState extends State<AdminPage> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                ...actions
-                    .map((_AdminAction action) => _AdminActionTile(action: action))
-                    .toList(),
+                ...actions.map(
+                  (_AdminAction action) => _AdminActionTile(action: action),
+                ),
               ],
             );
           },
@@ -409,7 +409,7 @@ class _AdminStatPlaceholder extends StatelessWidget {
               const SizedBox(height: 16),
               LinearProgressIndicator(
                 backgroundColor:
-                    Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.6),
+                    Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
               ),
             ],
           ),
@@ -1044,7 +1044,7 @@ class _SubjectDialogState extends State<_SubjectDialog> {
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
               DropdownButtonFormField<String>(
-                value: _selectedDepartmentId,
+                initialValue: _selectedDepartmentId,
                 decoration: const InputDecoration(labelText: 'Department'),
                 items: widget.departments
                     .map(
@@ -1695,7 +1695,7 @@ class _ClassEditorDialogState extends State<_ClassEditorDialog> {
               mainAxisSize: MainAxisSize.min,
               children: <Widget>[
               DropdownButtonFormField<String>(
-                value: _selectedSubjectId,
+                initialValue: _selectedSubjectId,
                 decoration: const InputDecoration(labelText: 'Subject'),
                 items: widget.subjects
                     .map(
@@ -1732,7 +1732,7 @@ class _ClassEditorDialogState extends State<_ClassEditorDialog> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<String>(
-                value: _selectedSection,
+                initialValue: _selectedSection,
                 decoration: const InputDecoration(labelText: 'Section'),
                 items: _availableSections
                     .map(
@@ -1748,7 +1748,7 @@ class _ClassEditorDialogState extends State<_ClassEditorDialog> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<String>(
-                value: _selectedTerm,
+                initialValue: _selectedTerm,
                 decoration: const InputDecoration(labelText: 'Term'),
                 items: _availableTerms
                     .map(
@@ -1764,7 +1764,7 @@ class _ClassEditorDialogState extends State<_ClassEditorDialog> {
               ),
               const SizedBox(height: 12),
               DropdownButtonFormField<String>(
-                value: _selectedInstructor,
+                initialValue: _selectedInstructor,
                 decoration: const InputDecoration(labelText: 'Instructor'),
                 items: widget.instructors
                     .map(
@@ -1873,7 +1873,7 @@ class _ScheduleCard extends StatelessWidget {
               children: <Widget>[
                 Expanded(
                   child: DropdownButtonFormField<String>(
-                    value: draft.type,
+                    initialValue: draft.type,
                     decoration: const InputDecoration(labelText: 'Type'),
                     items: _types
                         .map(
@@ -1893,7 +1893,7 @@ class _ScheduleCard extends StatelessWidget {
                 const SizedBox(width: 16),
                 Expanded(
                   child: DropdownButtonFormField<String>(
-                    value: draft.day,
+                    initialValue: draft.day,
                     decoration: const InputDecoration(labelText: 'Day'),
                     items: _days
                         .map(
@@ -1979,7 +1979,7 @@ class _TimeRow extends StatelessWidget {
       children: <Widget>[
         Expanded(
           child: DropdownButtonFormField<int>(
-            value: time.hour,
+            initialValue: time.hour,
             decoration: InputDecoration(labelText: label),
             items: hours
                 .map(
@@ -1999,7 +1999,7 @@ class _TimeRow extends StatelessWidget {
         const SizedBox(width: 8),
         Expanded(
           child: DropdownButtonFormField<int>(
-            value: time.minute,
+            initialValue: time.minute,
             decoration: const InputDecoration(labelText: 'Minute'),
             items: minutes
                 .map(
@@ -2019,7 +2019,7 @@ class _TimeRow extends StatelessWidget {
         const SizedBox(width: 8),
         Expanded(
           child: DropdownButtonFormField<String>(
-            value: time.period,
+            initialValue: time.period,
             decoration: const InputDecoration(labelText: 'Period'),
             items: periods
                 .map(

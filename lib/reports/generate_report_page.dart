@@ -4,7 +4,6 @@ import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
-import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
@@ -1136,7 +1135,7 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
             ),
             const SizedBox(height: 16),
             DropdownButtonFormField<String>(
-              value: _selectedClassId,
+              initialValue: _selectedClassId,
               isExpanded: true,
               decoration: const InputDecoration(labelText: 'Subject section'),
               items: _classes
@@ -1233,7 +1232,7 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
-        color: colors.surfaceVariant,
+        color: colors.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: colors.outlineVariant),
       ),
@@ -1339,7 +1338,7 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
       case AttendanceMark.excused:
         background = colors.secondaryContainer;
       case null:
-        background = colors.surfaceVariant;
+        background = colors.surfaceContainerHighest;
     }
     return Container(
       alignment: Alignment.center,
@@ -1426,8 +1425,7 @@ class _ClassOption {
   static _ClassOption? fromDoc(
     QueryDocumentSnapshot<Map<String, dynamic>> doc,
   ) {
-    final Map<String, dynamic>? data = doc.data();
-    if (data == null) return null;
+    final Map<String, dynamic> data = doc.data();
     final String subjectCode = (data['subjectCode'] as String?) ?? 'N/A';
     final String subjectName = (data['subjectName'] as String?) ?? 'Untitled Subject';
     final String section = ((data['section'] as String?) ?? 'Section').trim();
@@ -1795,7 +1793,7 @@ class _MonthYearRangePickerState extends State<_MonthYearRangePicker> {
                       children: <Widget>[
                         Expanded(
                           child: DropdownButtonFormField<int>(
-                            value: _displayMonth,
+                            initialValue: _displayMonth,
                             decoration: const InputDecoration(labelText: 'Month'),
                             items: months
                                 .map(
@@ -1814,7 +1812,7 @@ class _MonthYearRangePickerState extends State<_MonthYearRangePicker> {
                         const SizedBox(width: 12),
                         Expanded(
                           child: DropdownButtonFormField<int>(
-                            value: _displayYear,
+                            initialValue: _displayYear,
                             decoration: const InputDecoration(labelText: 'Year'),
                             items: _yearOptions
                                 .map(
@@ -1930,7 +1928,7 @@ class _MonthYearRangePickerState extends State<_MonthYearRangePicker> {
       background = colors.primaryContainer;
       foreground = colors.onPrimaryContainer;
     } else {
-      background = selectable ? colors.surfaceVariant : colors.surface;
+      background = selectable ? colors.surfaceContainerHighest : colors.surface;
       foreground = selectable ? theme.textTheme.bodyMedium?.color ?? colors.onSurface : theme.disabledColor;
     }
 

@@ -1,11 +1,11 @@
-// ignore_for_file: avoid_web_libraries_in_flutter
-
 import 'dart:async';
-import 'dart:html' as html;
+import 'dart:js_interop';
+import 'dart:typed_data';
 import 'dart:ui_web' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:image/image.dart' as imglib;
+import 'package:web/web.dart' as web;
 
 class WebCameraFrame {
   WebCameraFrame({required this.image, required this.size});
@@ -20,9 +20,9 @@ class WebCameraService {
 
   final String _viewType;
 
-  html.VideoElement? _videoElement;
-  html.CanvasElement? _canvasElement;
-  html.MediaStream? _mediaStream;
+  web.HTMLVideoElement? _videoElement;
+  web.HTMLCanvasElement? _canvasElement;
+  web.MediaStream? _mediaStream;
   bool _viewRegistered = false;
 
   bool get isSupported => true;
@@ -30,7 +30,7 @@ class WebCameraService {
   Future<void> initialize() async {
     if (_videoElement != null) return;
 
-    _videoElement = html.VideoElement()
+    _videoElement = web.HTMLVideoElement()
       ..autoplay = true
       ..muted = true
       ..style.objectFit = 'contain'
@@ -39,25 +39,26 @@ class WebCameraService {
       ..style.backgroundColor = '#000'
       ..style.transform = 'scaleX(-1)'
       ..style.transformOrigin = 'center';
-    _canvasElement = html.CanvasElement();
+    _canvasElement = web.HTMLCanvasElement();
 
-    final mediaDevices = html.window.navigator.mediaDevices;
-    if (mediaDevices == null) {
-      throw UnsupportedError('Camera access is not available in this browser');
-    }
+    final web.MediaDevices mediaDevices = web.window.navigator.mediaDevices;
 
-    _mediaStream = await mediaDevices.getUserMedia({
-      'video': {
-        'facingMode': 'user',
-        'width': {'ideal': 640},
-        'height': {'ideal': 480},
-      },
-      'audio': false,
-    });
+    final JSAny videoConstraints = <String, Object?>{
+      'facingMode': 'user',
+      'width': <String, Object?>{'ideal': 640},
+      'height': <String, Object?>{'ideal': 480},
+    }.jsify() as JSAny;
+
+    final web.MediaStreamConstraints constraints = web.MediaStreamConstraints(
+      video: videoConstraints,
+      audio: false.toJS,
+    );
+
+    _mediaStream = await mediaDevices.getUserMedia(constraints).toDart;
     _videoElement!
       ..srcObject = _mediaStream
       ..setAttribute('playsinline', 'true');
-    await _videoElement!.play();
+    await _videoElement!.play().toDart;
 
     if (!_viewRegistered) {
       ui.platformViewRegistry.registerViewFactory(
@@ -86,10 +87,10 @@ class WebCameraService {
     canvas
       ..width = width
       ..height = height;
-    final context = canvas.context2D;
-    context.drawImageScaled(video, 0, 0, width.toDouble(), height.toDouble());
-    final imageData = context.getImageData(0, 0, width, height);
-    final data = imageData.data;
+    final web.CanvasRenderingContext2D context = canvas.context2D;
+    context.drawImage(video, 0, 0, width.toDouble(), height.toDouble());
+    final web.ImageData imageData = context.getImageData(0, 0, width, height);
+    final Uint8ClampedList data = imageData.data.toDart;
 
     final imglib.Image rgbImage = imglib.Image(width: width, height: height);
     int offset = 0;
@@ -110,7 +111,12 @@ class WebCameraService {
   }
 
   void dispose() {
-    _mediaStream?.getTracks().forEach((track) => track.stop());
+    final web.MediaStream? stream = _mediaStream;
+    if (stream != null) {
+      for (final web.MediaStreamTrack track in stream.getTracks().toDart) {
+        track.stop();
+      }
+    }
     _mediaStream = null;
     _videoElement?.pause();
     _videoElement?.srcObject = null;
