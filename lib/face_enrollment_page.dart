@@ -6,6 +6,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 
 import 'services/face_embedding_service.dart';
@@ -514,23 +515,64 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   }
 
   InputImage _buildInputImage(CameraImage image) {
-    final WriteBuffer allBytes = WriteBuffer();
-    for (final Plane plane in image.planes) {
-      allBytes.putUint8List(plane.bytes);
-    }
-    final Uint8List bytes = allBytes.done().buffer.asUint8List();
+    final CameraController? controller = _cameraController;
+
     final Size imageSize = Size(
       image.width.toDouble(),
       image.height.toDouble(),
     );
+
+    int deviceRotationDegrees = 0;
+    if (controller != null) {
+      deviceRotationDegrees = switch (controller.value.deviceOrientation) {
+        DeviceOrientation.portraitUp => 0,
+        DeviceOrientation.landscapeLeft => 90,
+        DeviceOrientation.portraitDown => 180,
+        DeviceOrientation.landscapeRight => 270,
+      };
+    }
+
+    final int sensorOrientation = controller?.description.sensorOrientation ?? 0;
+    final bool isFront =
+        controller?.description.lensDirection == CameraLensDirection.front;
+
+    final int rotationCompensation = isFront
+        ? (sensorOrientation + deviceRotationDegrees) % 360
+        : (sensorOrientation - deviceRotationDegrees + 360) % 360;
+
     final InputImageRotation rotation =
-        InputImageRotationValue.fromRawValue(
-          _cameraController?.description.sensorOrientation ?? 0,
-        ) ??
+        InputImageRotationValue.fromRawValue(rotationCompensation) ??
         InputImageRotation.rotation0deg;
+
+    // On Android the camera plugin provides YUV_420_888 (3 planes).
+    // MLKit is reliable with NV21 bytes + nv21 metadata.
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      final Uint8List nv21 = _yuv420ToNv21(image);
+      final InputImageMetadata metadata = InputImageMetadata(
+        size: imageSize,
+        rotation: rotation,
+        format: InputImageFormat.nv21,
+        bytesPerRow: image.width,
+      );
+      return InputImage.fromBytes(bytes: nv21, metadata: metadata);
+    }
+
+    // Fallback for other platforms.
     final InputImageFormat format =
         InputImageFormatValue.fromRawValue(image.format.raw) ??
         InputImageFormat.nv21;
+
+    final Uint8List bytes;
+    if (image.planes.length == 1) {
+      bytes = image.planes.first.bytes;
+    } else {
+      final WriteBuffer allBytes = WriteBuffer();
+      for (final Plane plane in image.planes) {
+        allBytes.putUint8List(plane.bytes);
+      }
+      bytes = allBytes.done().buffer.asUint8List();
+    }
+
     final InputImageMetadata metadata = InputImageMetadata(
       size: imageSize,
       rotation: rotation,
@@ -538,6 +580,47 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       bytesPerRow: image.planes.first.bytesPerRow,
     );
     return InputImage.fromBytes(bytes: bytes, metadata: metadata);
+  }
+
+  Uint8List _yuv420ToNv21(CameraImage image) {
+    final int width = image.width;
+    final int height = image.height;
+    final int ySize = width * height;
+    final int uvSize = ySize ~/ 4;
+    final Uint8List nv21 = Uint8List(ySize + uvSize * 2);
+
+    final Plane yPlane = image.planes[0];
+    final Plane uPlane = image.planes[1];
+    final Plane vPlane = image.planes[2];
+
+    // Copy Y plane (accounting for row stride).
+    int outIndex = 0;
+    for (int row = 0; row < height; row++) {
+      final int rowStart = row * yPlane.bytesPerRow;
+      nv21.setRange(outIndex, outIndex + width, yPlane.bytes, rowStart);
+      outIndex += width;
+    }
+
+    final int uvHeight = height ~/ 2;
+    final int uvWidth = width ~/ 2;
+    final int uRowStride = uPlane.bytesPerRow;
+    final int vRowStride = vPlane.bytesPerRow;
+    final int uPixelStride = uPlane.bytesPerPixel ?? 1;
+    final int vPixelStride = vPlane.bytesPerPixel ?? 1;
+
+    for (int row = 0; row < uvHeight; row++) {
+      final int uRow = row * uRowStride;
+      final int vRow = row * vRowStride;
+      for (int col = 0; col < uvWidth; col++) {
+        final int uIndex = uRow + col * uPixelStride;
+        final int vIndex = vRow + col * vPixelStride;
+        // NV21 stores V then U.
+        nv21[outIndex++] = vPlane.bytes[vIndex];
+        nv21[outIndex++] = uPlane.bytes[uIndex];
+      }
+    }
+
+    return nv21;
   }
 
   Future<void> _handleSaveEmbedding() async {
