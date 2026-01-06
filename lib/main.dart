@@ -161,6 +161,13 @@ class AuthGate extends StatelessWidget {
                 final bool isAdmin = data?['isAdmin'] == true;
                 final String? role = data?['role'] as String?;
 
+                if (kIsWeb && !isAdmin && role != 'instructor') {
+                  return const _AuthErrorView(
+                    message:
+                        'Web access is available only for admin and instructor accounts.\n\nPlease use the mobile app for student access.',
+                  );
+                }
+
                 if (isAdmin) return const AdminPage();
 
                 if (!user.emailVerified) {
