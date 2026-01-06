@@ -226,6 +226,10 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
         _updateFaceReadyState(false);
         if (_enrollmentStarted) {
           _updateNoFaceStatus();
+        } else {
+          _updateStatusWhenNotStarted(
+            'No face detected. Make sure your face is well-lit and facing the camera.',
+          );
         }
       } else {
         final Rect bbox = faces.first.boundingBox;
@@ -239,10 +243,27 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
                 image.height.toDouble(),
               ))
             : _evaluateGuideMatchInPreview(bbox, image, previewRect);
-        final bool withinGuide = guideMatch == _GuideMatch.ok;
-        _updateFaceReadyState(withinGuide);
+        // IMPORTANT: MLKit's boundingBox is typically the face region, not the full head.
+        // The original size thresholds were tuned for a full-head guide and can be
+        // too strict, preventing the user from ever starting enrollment.
+        // For the Start button, require only that a face is centered (not off-center).
+        final bool readyToStart = guideMatch != _GuideMatch.offCenter;
+        final bool withinGuideForCapture = guideMatch == _GuideMatch.ok;
+
         if (_enrollmentStarted) {
-          if (!withinGuide) {
+          _updateFaceReadyState(withinGuideForCapture);
+        } else {
+          _updateFaceReadyState(readyToStart);
+          if (guideMatch != _GuideMatch.ok) {
+            _updateGuideStatus(guideMatch);
+          } else {
+            _updateStatusWhenNotStarted(
+              'Face detected. Tap "Start Enrollment" to begin.',
+            );
+          }
+        }
+        if (_enrollmentStarted) {
+          if (!withinGuideForCapture) {
             _updateGuideStatus(guideMatch);
           } else if (_embeddingService.isReady) {
             final List<double> embedding = await _embeddingService
@@ -256,6 +277,11 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     } finally {
       _isProcessingFrame = false;
     }
+  }
+
+  void _updateStatusWhenNotStarted(String message) {
+    if (!mounted || _enrollmentStarted || !_cameraReady) return;
+    setState(() => _statusMessage = message);
   }
 
   Rect? _currentPreviewRect({required Size imageSize}) {
@@ -375,11 +401,11 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
           break;
         case _GuideMatch.tooSmall:
           _statusMessage =
-              'Move closer so your full head fills the oval.';
+              'Move closer so your face fills more of the oval.';
           break;
         case _GuideMatch.tooLarge:
           _statusMessage =
-              'Move farther so your full head fits inside the oval.';
+              'Move farther so your face fits inside the oval.';
           break;
         case _GuideMatch.ok:
           // No-op; the caller should not request a status update.
