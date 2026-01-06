@@ -66,6 +66,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   bool _cameraReady = false;
   bool _cameraInitializing = false;
   bool _faceReadyForEnrollment = kIsWeb;
+  Size? _lastPreviewContainerSize;
   List<double>? _latestEmbedding;
   String? _statusMessage;
   int _currentPhaseIndex = 0;
@@ -227,11 +228,16 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
         }
       } else {
         final Rect bbox = faces.first.boundingBox;
-        final Size frameSize = Size(
+        final Rect? previewRect = _currentPreviewRect(imageSize: Size(
           image.width.toDouble(),
           image.height.toDouble(),
-        );
-        final _GuideMatch guideMatch = _evaluateGuideMatch(bbox, frameSize);
+        ));
+        final _GuideMatch guideMatch = previewRect == null
+            ? _evaluateGuideMatch(bbox, Size(
+                image.width.toDouble(),
+                image.height.toDouble(),
+              ))
+            : _evaluateGuideMatchInPreview(bbox, image, previewRect);
         final bool withinGuide = guideMatch == _GuideMatch.ok;
         _updateFaceReadyState(withinGuide);
         if (_enrollmentStarted) {
@@ -249,6 +255,78 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     } finally {
       _isProcessingFrame = false;
     }
+  }
+
+  Rect? _currentPreviewRect({required Size imageSize}) {
+    final Size? container = _lastPreviewContainerSize;
+    final CameraController? controller = _cameraController;
+    if (container == null || controller == null || !controller.value.isInitialized) {
+      return null;
+    }
+
+    // CameraPreview behaves like a "contain" fit: it preserves aspect ratio and
+    // may letterbox inside the available space. Compute the actual drawn rect.
+    final double aspect = controller.value.aspectRatio;
+    if (aspect <= 0 || container.width == 0 || container.height == 0) {
+      return null;
+    }
+
+    double previewWidth;
+    double previewHeight;
+    if (container.width / container.height > aspect) {
+      previewHeight = container.height;
+      previewWidth = previewHeight * aspect;
+    } else {
+      previewWidth = container.width;
+      previewHeight = previewWidth / aspect;
+    }
+
+    final Offset topLeft = Offset(
+      (container.width - previewWidth) / 2,
+      (container.height - previewHeight) / 2,
+    );
+    return topLeft & Size(previewWidth, previewHeight);
+  }
+
+  _GuideMatch _evaluateGuideMatchInPreview(
+    Rect bbox,
+    CameraImage image,
+    Rect previewRect,
+  ) {
+    // Map MLKit bbox (image coordinates) into the preview rect (screen coords).
+    final double imageW = image.width.toDouble();
+    final double imageH = image.height.toDouble();
+    if (imageW <= 0 || imageH <= 0) return _GuideMatch.ok;
+
+    Rect mapped = bbox;
+
+    // Front camera preview is typically mirrored for a selfie experience.
+    // Mirror horizontally so the bbox lines up with what the user sees.
+    final bool isFront =
+        _cameraController?.description.lensDirection == CameraLensDirection.front;
+    if (isFront) {
+      mapped = Rect.fromLTRB(
+        imageW - mapped.right,
+        mapped.top,
+        imageW - mapped.left,
+        mapped.bottom,
+      );
+    }
+
+    final double sx = previewRect.width / imageW;
+    final double sy = previewRect.height / imageH;
+    final Rect bboxScreen = Rect.fromLTRB(
+      previewRect.left + (mapped.left * sx),
+      previewRect.top + (mapped.top * sy),
+      previewRect.left + (mapped.right * sx),
+      previewRect.top + (mapped.bottom * sy),
+    );
+
+    final Rect guideRect = _computeGuideRect(previewRect.size).shift(
+      previewRect.topLeft,
+    );
+
+    return _evaluateGuideMatchRects(bboxScreen, guideRect);
   }
 
   Future<void> _processWebFrame() async {
@@ -322,6 +400,10 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     final Rect guideRect = _computeGuideRect(frameSize);
     if (guideRect.width == 0 || guideRect.height == 0) return _GuideMatch.ok;
 
+    return _evaluateGuideMatchRects(bbox, guideRect);
+  }
+
+  _GuideMatch _evaluateGuideMatchRects(Rect bbox, Rect guideRect) {
     // Strict center check using ellipse math.
     final Offset guideCenter = guideRect.center;
     final Offset boxCenter = bbox.center;
@@ -518,16 +600,33 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       body: Column(
         children: <Widget>[
           Expanded(
-            child: Stack(
-              children: <Widget>[
-                Positioned.fill(child: preview),
-                if (hasLivePreview)
-                  Positioned.fill(
-                    child: _FaceGuideOverlay(
-                      phaseLabel: _phaseLabel(_currentPhase),
-                    ),
-                  ),
-              ],
+            child: LayoutBuilder(
+              builder: (BuildContext context, BoxConstraints constraints) {
+                _lastPreviewContainerSize = constraints.biggest;
+                final Rect? previewRect = (!isWeb && controller != null)
+                    ? _currentPreviewRect(
+                        imageSize: controller.value.previewSize == null
+                            ? const Size(0, 0)
+                            : Size(
+                                controller.value.previewSize!.width,
+                                controller.value.previewSize!.height,
+                              ),
+                      )
+                    : null;
+
+                return Stack(
+                  children: <Widget>[
+                    Positioned.fill(child: preview),
+                    if (hasLivePreview)
+                      Positioned.fill(
+                        child: _FaceGuideOverlay(
+                          phaseLabel: _phaseLabel(_currentPhase),
+                          previewRect: previewRect,
+                        ),
+                      ),
+                  ],
+                );
+              },
             ),
           ),
           if (_statusMessage != null)
@@ -606,9 +705,10 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
 }
 
 class _FaceGuideOverlay extends StatelessWidget {
-  const _FaceGuideOverlay({required this.phaseLabel});
+  const _FaceGuideOverlay({required this.phaseLabel, required this.previewRect});
 
   final String phaseLabel;
+  final Rect? previewRect;
 
   @override
   Widget build(BuildContext context) {
@@ -616,8 +716,8 @@ class _FaceGuideOverlay extends StatelessWidget {
     return IgnorePointer(
       child: Stack(
         children: <Widget>[
-          const Positioned.fill(
-            child: CustomPaint(painter: _FaceGuideMaskPainter()),
+          Positioned.fill(
+            child: CustomPaint(painter: _FaceGuideMaskPainter(previewRect: previewRect)),
           ),
           Align(
             alignment: Alignment.topCenter,
@@ -665,12 +765,15 @@ class _FaceGuideOverlay extends StatelessWidget {
 }
 
 class _FaceGuideMaskPainter extends CustomPainter {
-  const _FaceGuideMaskPainter();
+  const _FaceGuideMaskPainter({required this.previewRect});
+
+  final Rect? previewRect;
 
   @override
   void paint(Canvas canvas, Size size) {
     final Rect bounds = Offset.zero & size;
-    final Rect guideRect = _computeGuideRect(size);
+    final Rect baseRect = previewRect ?? bounds;
+    final Rect guideRect = _computeGuideRect(baseRect.size).shift(baseRect.topLeft);
 
     final Path maskPath = Path()
       ..fillType = PathFillType.evenOdd
