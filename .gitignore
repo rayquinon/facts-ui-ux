@@ -17,6 +17,7 @@ migrate_working_dir/
 
 # Hosted build artifacts
 public/downloads/*.apk
+public/app/
 
 # Firebase deploy cache
 .firebase/
