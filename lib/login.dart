@@ -403,7 +403,13 @@ class _LoginPageState extends State<LoginPage> {
             padding: const EdgeInsets.all(40),
             child: Opacity(
               opacity: 0.9,
-              child: Image.asset('../assets/logo.png', fit: BoxFit.contain),
+              child: Image.asset(
+                'assets/logo.png',
+                fit: BoxFit.contain,
+                errorBuilder: (BuildContext context, Object error, StackTrace? stackTrace) {
+                  return const SizedBox.shrink();
+                },
+              ),
             ),
           ),
         ),
