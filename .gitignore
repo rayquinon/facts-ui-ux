@@ -51,3 +51,5 @@ app.*.map.json
 # Large model files managed outside git
 assets/models/w600k_r50.onnx
 weights/w600k_r50.onnx
+assets/models/
+weights/
