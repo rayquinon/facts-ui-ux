@@ -16,7 +16,19 @@ enum _OrientationPhase { front, left, right }
 
 const double _kGuideAspectRatio = 0.68; // width / height (head-like)
 const double _kGuideCenterToleranceFactor =
-    0.90; // strictness factor (smaller = stricter)
+    1.05; // strictness factor (smaller = stricter)
+
+const Duration _kMinCaptureInterval = Duration(milliseconds: 700);
+
+// MLKit's Face bounding box typically covers the face region (not full head),
+// so size gating must be fairly tolerant to avoid breaking capture when the
+// user moves closer/farther.
+const double _kMinFaceAreaVsGuide = 0.10;
+const double _kMaxFaceAreaVsGuide = 0.95;
+const double _kMinFaceWidthVsGuide = 0.18;
+const double _kMinFaceHeightVsGuide = 0.18;
+const double _kMaxFaceWidthVsGuide = 1.15;
+const double _kMaxFaceHeightVsGuide = 1.10;
 
 Rect _computeGuideRect(Size size) {
   final double minSide = math.min(size.width, size.height);
@@ -32,7 +44,10 @@ Rect _computeGuideRect(Size size) {
   final double maxWidth = size.width * 0.75;
 
   final double width = targetWidth.clamp(minWidth, maxWidth);
-  final double height = (width / _kGuideAspectRatio).clamp(minHeight, maxHeight);
+  final double height = (width / _kGuideAspectRatio).clamp(
+    minHeight,
+    maxHeight,
+  );
 
   return Rect.fromCenter(
     center: size.center(Offset.zero),
@@ -67,7 +82,9 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   bool _cameraReady = false;
   bool _cameraInitializing = false;
   bool _faceReadyForEnrollment = kIsWeb;
+  DateTime? _lastCaptureAt;
   Size? _lastPreviewContainerSize;
+  int _lastRotationCompensation = 0;
   List<double>? _latestEmbedding;
   String? _statusMessage;
   int _currentPhaseIndex = 0;
@@ -130,6 +147,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     }
     setState(() {
       _enrollmentStarted = true;
+      _lastCaptureAt = null;
       for (final List<List<double>> bucket in _phaseEmbeddings.values) {
         bucket.clear();
       }
@@ -233,16 +251,20 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
         }
       } else {
         final Rect bbox = faces.first.boundingBox;
-        final Rect? previewRect = _currentPreviewRect(imageSize: Size(
-          image.width.toDouble(),
-          image.height.toDouble(),
-        ));
+        final Rect? previewRect = _currentPreviewRect(
+          imageSize: Size(image.width.toDouble(), image.height.toDouble()),
+        );
         final _GuideMatch guideMatch = previewRect == null
-            ? _evaluateGuideMatch(bbox, Size(
-                image.width.toDouble(),
-                image.height.toDouble(),
-              ))
-            : _evaluateGuideMatchInPreview(bbox, image, previewRect);
+            ? _evaluateGuideMatch(
+                bbox,
+                Size(image.width.toDouble(), image.height.toDouble()),
+              )
+            : _evaluateGuideMatchInPreview(
+                bbox,
+                image,
+                previewRect,
+                rotationCompensation: _lastRotationCompensation,
+              );
         // IMPORTANT: MLKit's boundingBox is typically the face region, not the full head.
         // The original size thresholds were tuned for a full-head guide and can be
         // too strict, preventing the user from ever starting enrollment.
@@ -266,9 +288,21 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
           if (!withinGuideForCapture) {
             _updateGuideStatus(guideMatch);
           } else if (_embeddingService.isReady) {
+            final DateTime now = DateTime.now();
+            final DateTime? last = _lastCaptureAt;
+            if (last != null && now.difference(last) < _kMinCaptureInterval) {
+              return;
+            }
+            final Rect embeddingBbox = _mapMlKitBboxToRaw(
+              bbox,
+              rotationCompensation: _lastRotationCompensation,
+              rawWidth: image.width.toDouble(),
+              rawHeight: image.height.toDouble(),
+            );
             final List<double> embedding = await _embeddingService
-                .generateEmbedding(image, bbox);
+                .generateEmbedding(image, embeddingBbox);
             _recordEmbedding(embedding);
+            _lastCaptureAt = now;
           }
         }
       }
@@ -287,7 +321,9 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   Rect? _currentPreviewRect({required Size imageSize}) {
     final Size? container = _lastPreviewContainerSize;
     final CameraController? controller = _cameraController;
-    if (container == null || controller == null || !controller.value.isInitialized) {
+    if (container == null ||
+        controller == null ||
+        !controller.value.isInitialized) {
       return null;
     }
 
@@ -318,19 +354,28 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   _GuideMatch _evaluateGuideMatchInPreview(
     Rect bbox,
     CameraImage image,
-    Rect previewRect,
-  ) {
-    // Map MLKit bbox (image coordinates) into the preview rect (screen coords).
-    final double imageW = image.width.toDouble();
-    final double imageH = image.height.toDouble();
-    if (imageW <= 0 || imageH <= 0) return _GuideMatch.ok;
+    Rect previewRect, {
+    required int rotationCompensation,
+  }) {
+    // Map MLKit bbox (upright image coordinates) into the preview rect (screen coords).
+    // When rotation is 90/270, MLKit returns bounding boxes in a coordinate
+    // system where width/height are swapped versus the raw camera buffer.
+    final double rawW = image.width.toDouble();
+    final double rawH = image.height.toDouble();
+    if (rawW <= 0 || rawH <= 0) return _GuideMatch.ok;
+
+    final bool rotated =
+        rotationCompensation == 90 || rotationCompensation == 270;
+    final double imageW = rotated ? rawH : rawW;
+    final double imageH = rotated ? rawW : rawH;
 
     Rect mapped = bbox;
 
     // Front camera preview is typically mirrored for a selfie experience.
     // Mirror horizontally so the bbox lines up with what the user sees.
     final bool isFront =
-        _cameraController?.description.lensDirection == CameraLensDirection.front;
+        _cameraController?.description.lensDirection ==
+        CameraLensDirection.front;
     if (isFront) {
       mapped = Rect.fromLTRB(
         imageW - mapped.right,
@@ -349,9 +394,9 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       previewRect.top + (mapped.bottom * sy),
     );
 
-    final Rect guideRect = _computeGuideRect(previewRect.size).shift(
-      previewRect.topLeft,
-    );
+    final Rect guideRect = _computeGuideRect(
+      previewRect.size,
+    ).shift(previewRect.topLeft);
 
     return _evaluateGuideMatchRects(bboxScreen, guideRect);
   }
@@ -359,6 +404,13 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   Future<void> _processWebFrame() async {
     if (!kIsWeb || !_enrollmentStarted) return;
     if (_isProcessingFrame || !_embeddingService.isReady) return;
+
+    final DateTime now = DateTime.now();
+    final DateTime? last = _lastCaptureAt;
+    if (last != null && now.difference(last) < _kMinCaptureInterval) {
+      return;
+    }
+
     _isProcessingFrame = true;
     try {
       final frame = await _webCameraService?.captureFrame();
@@ -374,6 +426,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       final List<double> embedding = await _embeddingService
           .generateEmbeddingFromImage(frame.image, boundingBox);
       _recordEmbedding(embedding);
+      _lastCaptureAt = now;
     } catch (error) {
       debugPrint('Web frame processing error: $error');
     } finally {
@@ -400,12 +453,10 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
               'Center your face inside the oval before we can capture this step.';
           break;
         case _GuideMatch.tooSmall:
-          _statusMessage =
-              'Move closer so your face fills more of the oval.';
+          _statusMessage = 'Move closer so your face fills more of the oval.';
           break;
         case _GuideMatch.tooLarge:
-          _statusMessage =
-              'Move farther so your face fits inside the oval.';
+          _statusMessage = 'Move farther so your face fits inside the oval.';
           break;
         case _GuideMatch.ok:
           // No-op; the caller should not request a status update.
@@ -446,20 +497,28 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       }
     }
 
-    // Strict size bounds (full head) based on the same guide oval.
+    // Size gating tuned for MLKit face boxes (more tolerant than a full-head guide).
     final double bboxWidth = bbox.width.abs();
     final double bboxHeight = bbox.height.abs();
-    final double minWidth = guideRect.width * 0.45;
-    final double maxWidth = guideRect.width * 0.95;
-    final double minHeight = guideRect.height * 0.55;
-    final double maxHeight = guideRect.height * 0.95;
+    final double guideW = guideRect.width;
+    final double guideH = guideRect.height;
+    if (guideW <= 0 || guideH <= 0) return _GuideMatch.ok;
 
-    if (bboxWidth < minWidth || bboxHeight < minHeight) {
-      return _GuideMatch.tooSmall;
-    }
-    if (bboxWidth > maxWidth || bboxHeight > maxHeight) {
-      return _GuideMatch.tooLarge;
-    }
+    final double bboxArea = bboxWidth * bboxHeight;
+    final double guideArea = guideW * guideH;
+    final double areaRatio = guideArea <= 0 ? 0 : (bboxArea / guideArea);
+
+    final bool tooSmall =
+        areaRatio < _kMinFaceAreaVsGuide ||
+        bboxWidth < guideW * _kMinFaceWidthVsGuide ||
+        bboxHeight < guideH * _kMinFaceHeightVsGuide;
+    if (tooSmall) return _GuideMatch.tooSmall;
+
+    final bool tooLarge =
+        areaRatio > _kMaxFaceAreaVsGuide ||
+        bboxWidth > guideW * _kMaxFaceWidthVsGuide ||
+        bboxHeight > guideH * _kMaxFaceHeightVsGuide;
+    if (tooLarge) return _GuideMatch.tooLarge;
 
     return _GuideMatch.ok;
   }
@@ -476,6 +535,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       if (captured >= _capturesPerPhase) {
         if (_currentPhaseIndex < _phaseOrder.length - 1) {
           _currentPhaseIndex++;
+          _lastCaptureAt = null;
           _statusMessage =
               'Great! ${_phaseLabel(phase)} captures complete. ${_phaseInstruction(_currentPhase)}';
         } else {
@@ -558,13 +618,17 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       };
     }
 
-    final int sensorOrientation = controller?.description.sensorOrientation ?? 0;
+    final int sensorOrientation =
+        controller?.description.sensorOrientation ?? 0;
     final bool isFront =
         controller?.description.lensDirection == CameraLensDirection.front;
 
     final int rotationCompensation = isFront
         ? (sensorOrientation + deviceRotationDegrees) % 360
         : (sensorOrientation - deviceRotationDegrees + 360) % 360;
+
+    // Persist for bbox→preview mapping.
+    _lastRotationCompensation = rotationCompensation;
 
     final InputImageRotation rotation =
         InputImageRotationValue.fromRawValue(rotationCompensation) ??
@@ -649,15 +713,83 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     return nv21;
   }
 
+  Rect _mapMlKitBboxToRaw(
+    Rect bbox, {
+    required int rotationCompensation,
+    required double rawWidth,
+    required double rawHeight,
+  }) {
+    if (rawWidth <= 0 || rawHeight <= 0) return bbox;
+
+    Rect mapped;
+    switch (rotationCompensation % 360) {
+      case 90:
+        mapped = Rect.fromLTRB(
+          rawWidth - bbox.bottom,
+          bbox.left,
+          rawWidth - bbox.top,
+          bbox.right,
+        );
+        break;
+      case 180:
+        mapped = Rect.fromLTRB(
+          rawWidth - bbox.right,
+          rawHeight - bbox.bottom,
+          rawWidth - bbox.left,
+          rawHeight - bbox.top,
+        );
+        break;
+      case 270:
+        mapped = Rect.fromLTRB(
+          bbox.top,
+          rawHeight - bbox.right,
+          bbox.bottom,
+          rawHeight - bbox.left,
+        );
+        break;
+      case 0:
+      default:
+        mapped = bbox;
+        break;
+    }
+
+    final double left = mapped.left.clamp(0.0, rawWidth);
+    final double top = mapped.top.clamp(0.0, rawHeight);
+    final double right = mapped.right.clamp(0.0, rawWidth);
+    final double bottom = mapped.bottom.clamp(0.0, rawHeight);
+    return Rect.fromLTRB(
+      math.min(left, right),
+      math.min(top, bottom),
+      math.max(left, right),
+      math.max(top, bottom),
+    );
+  }
+
   Future<void> _handleSaveEmbedding() async {
     final List<double>? embedding = _latestEmbedding;
     final User? user = FirebaseAuth.instance.currentUser;
     if (embedding == null || user == null) return;
 
+    if (kIsWeb) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Face enrollment must be done in the Android app for recognition to work.',
+          ),
+        ),
+      );
+      return;
+    }
+
     setState(() => _isSaving = true);
     try {
       await FirebaseFirestore.instance.collection('users').doc(user.uid).set(
-        <String, dynamic>{'faceEmbed': embedding},
+        <String, dynamic>{
+          'faceEmbed': embedding,
+          'faceEmbedProvider': 'onnx_v1',
+          'faceEmbedUpdatedAt': FieldValue.serverTimestamp(),
+        },
         SetOptions(merge: true),
       );
       if (!mounted) return;
@@ -730,6 +862,8 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
                       Positioned.fill(
                         child: _FaceGuideOverlay(
                           phaseLabel: _phaseLabel(_currentPhase),
+                          phase: _currentPhase,
+                          showDirectionArrow: _enrollmentStarted,
                           previewRect: previewRect,
                         ),
                       ),
@@ -745,10 +879,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
                 elevation: 4,
                 child: Padding(
                   padding: const EdgeInsets.all(16),
-                  child: Text(
-                    _statusMessage!,
-                    textAlign: TextAlign.center,
-                  ),
+                  child: Text(_statusMessage!, textAlign: TextAlign.center),
                 ),
               ),
             ),
@@ -814,9 +945,16 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
 }
 
 class _FaceGuideOverlay extends StatelessWidget {
-  const _FaceGuideOverlay({required this.phaseLabel, required this.previewRect});
+  const _FaceGuideOverlay({
+    required this.phaseLabel,
+    required this.phase,
+    required this.showDirectionArrow,
+    required this.previewRect,
+  });
 
   final String phaseLabel;
+  final _OrientationPhase phase;
+  final bool showDirectionArrow;
   final Rect? previewRect;
 
   @override
@@ -826,7 +964,9 @@ class _FaceGuideOverlay extends StatelessWidget {
       child: Stack(
         children: <Widget>[
           Positioned.fill(
-            child: CustomPaint(painter: _FaceGuideMaskPainter(previewRect: previewRect)),
+            child: CustomPaint(
+              painter: _FaceGuideMaskPainter(previewRect: previewRect),
+            ),
           ),
           Align(
             alignment: Alignment.topCenter,
@@ -861,6 +1001,19 @@ class _FaceGuideOverlay extends StatelessWidget {
                         ),
                         textAlign: TextAlign.center,
                       ),
+                      if (showDirectionArrow &&
+                          (phase == _OrientationPhase.left ||
+                              phase == _OrientationPhase.right))
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Icon(
+                            phase == _OrientationPhase.left
+                                ? Icons.arrow_back
+                                : Icons.arrow_forward,
+                            color: Colors.white,
+                            size: 40,
+                          ),
+                        ),
                     ],
                   ),
                 ),
@@ -882,7 +1035,9 @@ class _FaceGuideMaskPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final Rect bounds = Offset.zero & size;
     final Rect baseRect = previewRect ?? bounds;
-    final Rect guideRect = _computeGuideRect(baseRect.size).shift(baseRect.topLeft);
+    final Rect guideRect = _computeGuideRect(
+      baseRect.size,
+    ).shift(baseRect.topLeft);
 
     final Path maskPath = Path()
       ..fillType = PathFillType.evenOdd

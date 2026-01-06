@@ -6,6 +6,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 
 import 'services/face_embedding_service.dart';
@@ -49,9 +50,10 @@ class AttendanceSessionPage extends StatefulWidget {
 }
 
 class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
-  static const double _similarityThreshold = 0.78;
+  static const double _similarityThreshold = 0.45;
   static const Duration _captureCooldown = Duration(seconds: 2);
   static const Duration _duplicateCaptureCooldown = Duration(seconds: 10);
+  static const Duration _unrecognizedCooldown = Duration(seconds: 4);
 
   final FaceEmbeddingService _embeddingService = FaceEmbeddingService.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -69,11 +71,14 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   String? _sessionDocId;
   bool _sessionClosed = false;
   DateTime? _lastCaptureTime;
+  DateTime? _lastUnrecognizedTime;
+  int _lastRotationCompensation = 0;
 
   List<_RecognizedStudent> _roster = <_RecognizedStudent>[];
   final List<_AttendanceCapture> _recentCaptures = <_AttendanceCapture>[];
   final Map<String, String> _recordedStatuses = <String, String>{};
   final Map<String, DateTime> _lastStudentCaptureTimes = <String, DateTime>{};
+  final Set<String> _capturedStudentIds = <String>{};
   final ScrollController _captureListController = ScrollController();
 
   @override
@@ -219,16 +224,21 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       return;
     }
     _isProcessingFrame = true;
-    _lastCaptureTime = _now();
     try {
       final InputImage inputImage = _buildInputImage(image);
       final List<Face> faces = await detector.processImage(inputImage);
       if (faces.isEmpty) {
         _updateStatus('No face detected. Ask the student to step closer.');
       } else {
-        final Rect bbox = faces.first.boundingBox;
+        final Rect bbox = _mapMlKitBboxToRaw(
+          faces.first.boundingBox,
+          rotationCompensation: _lastRotationCompensation,
+          rawWidth: image.width.toDouble(),
+          rawHeight: image.height.toDouble(),
+        );
         final List<double> embedding = await _embeddingService
             .generateEmbedding(image, bbox);
+        _lastCaptureTime = _now();
         await _handleEmbeddingCapture(embedding);
       }
     } catch (error) {
@@ -249,7 +259,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       return;
     }
     _isProcessingFrame = true;
-    _lastCaptureTime = _now();
     try {
       final WebCameraFrame? frame = await _webCameraService?.captureFrame();
       if (frame == null) return;
@@ -263,6 +272,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       );
       final List<double> embedding = await _embeddingService
           .generateEmbeddingFromImage(frame.image, bbox);
+      _lastCaptureTime = _now();
       await _handleEmbeddingCapture(embedding);
     } catch (error) {
       debugPrint('Web frame processing error: $error');
@@ -282,12 +292,53 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   Future<void> _handleEmbeddingCapture(List<double> embedding) async {
     final _MatchResult result = _matchEmbedding(embedding);
     final DateTime captureTime = _now();
-    if (result.student != null &&
-        _shouldThrottleStudentCapture(result.student!.userId, captureTime)) {
+
+    if (result.student == null) {
+      final DateTime? last = _lastUnrecognizedTime;
+      if (last != null &&
+          captureTime.difference(last) < _unrecognizedCooldown) {
+        return;
+      }
+      _lastUnrecognizedTime = captureTime;
+      final double? similarity = result.similarity;
+      if (similarity == null || similarity.isNaN) {
+        _updateStatus('Face detected but no match found in roster.');
+      } else {
+        final String hint = similarity < 0.30
+            ? ' Re-enroll this student in the Android app.'
+            : '';
+        _updateStatus(
+          'Face detected but no match found in roster. '
+          '(best similarity ${similarity.toStringAsFixed(2)}, '
+          'threshold ${_similarityThreshold.toStringAsFixed(2)})$hint',
+        );
+      }
       return;
     }
-    _recordLocalCapture(result, captureTime);
-    await _persistCapture(result, embedding, captureTime);
+
+    if (result.student != null) {
+      final String studentId = result.student!.userId;
+
+      // Only recognize/persist a student once per session to avoid spam.
+      if (_capturedStudentIds.contains(studentId)) {
+        return;
+      }
+
+      if (_shouldThrottleStudentCapture(studentId, captureTime)) {
+        return;
+      }
+
+      _recordLocalCapture(result, captureTime);
+      _capturedStudentIds.add(studentId);
+      try {
+        await _persistCapture(result, embedding, captureTime);
+      } catch (_) {
+        // If persistence fails, allow re-capture.
+        _capturedStudentIds.remove(studentId);
+        rethrow;
+      }
+      return;
+    }
   }
 
   _MatchResult _matchEmbedding(List<double> embedding) {
@@ -304,7 +355,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       }
     }
     if (bestCandidate == null || bestSimilarity < _similarityThreshold) {
-      return _MatchResult(embedding: embedding);
+      return _MatchResult(embedding: embedding, similarity: bestSimilarity);
     }
     final double confidence = _normalizeConfidence(bestSimilarity);
     return _MatchResult(
@@ -316,6 +367,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   }
 
   void _recordLocalCapture(_MatchResult result, DateTime captureTime) {
+    if (result.student == null) {
+      return;
+    }
     final _AttendanceCapture capture = _AttendanceCapture(
       timestamp: captureTime,
       matchDisplayName: result.student?.displayName,
@@ -326,13 +380,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       if (_recentCaptures.length > 6) {
         _recentCaptures.removeLast();
       }
-      if (result.student != null) {
-        _statusMessage =
-            'Recognized ${result.student!.displayName} '
-            '(${_formatConfidence(result.confidence!)})';
-      } else {
-        _statusMessage = 'Face detected but no match found in roster.';
-      }
+      _statusMessage =
+          'Recognized ${result.student!.displayName} '
+          '(${_formatConfidence(result.confidence!)})';
     });
   }
 
@@ -496,23 +546,68 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   }
 
   InputImage _buildInputImage(CameraImage image) {
-    final WriteBuffer buffer = WriteBuffer();
-    for (final Plane plane in image.planes) {
-      buffer.putUint8List(plane.bytes);
-    }
-    final Uint8List bytes = buffer.done().buffer.asUint8List();
+    final CameraController? controller = _cameraController;
+
     final Size imageSize = Size(
       image.width.toDouble(),
       image.height.toDouble(),
     );
+
+    int deviceRotationDegrees = 0;
+    if (controller != null) {
+      deviceRotationDegrees = switch (controller.value.deviceOrientation) {
+        DeviceOrientation.portraitUp => 0,
+        DeviceOrientation.landscapeLeft => 90,
+        DeviceOrientation.portraitDown => 180,
+        DeviceOrientation.landscapeRight => 270,
+      };
+    }
+
+    final int sensorOrientation =
+        controller?.description.sensorOrientation ?? 0;
+    final bool isFront =
+        controller?.description.lensDirection == CameraLensDirection.front;
+
+    final int rotationCompensation = isFront
+        ? (sensorOrientation + deviceRotationDegrees) % 360
+        : (sensorOrientation - deviceRotationDegrees + 360) % 360;
+
+    // Persist for embedding bbox mapping.
+    _lastRotationCompensation = rotationCompensation;
+
     final InputImageRotation rotation =
-        InputImageRotationValue.fromRawValue(
-          _cameraController?.description.sensorOrientation ?? 0,
-        ) ??
+        InputImageRotationValue.fromRawValue(rotationCompensation) ??
         InputImageRotation.rotation0deg;
+
+    // On Android the camera plugin provides YUV_420_888 (3 planes).
+    // MLKit is reliable with NV21 bytes + nv21 metadata.
+    if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+      final Uint8List nv21 = _yuv420ToNv21(image);
+      final InputImageMetadata metadata = InputImageMetadata(
+        size: imageSize,
+        rotation: rotation,
+        format: InputImageFormat.nv21,
+        bytesPerRow: image.width,
+      );
+      return InputImage.fromBytes(bytes: nv21, metadata: metadata);
+    }
+
+    // Fallback for other platforms.
     final InputImageFormat format =
         InputImageFormatValue.fromRawValue(image.format.raw) ??
         InputImageFormat.nv21;
+
+    final Uint8List bytes;
+    if (image.planes.length == 1) {
+      bytes = image.planes.first.bytes;
+    } else {
+      final WriteBuffer allBytes = WriteBuffer();
+      for (final Plane plane in image.planes) {
+        allBytes.putUint8List(plane.bytes);
+      }
+      bytes = allBytes.done().buffer.asUint8List();
+    }
+
     final InputImageMetadata metadata = InputImageMetadata(
       size: imageSize,
       rotation: rotation,
@@ -520,6 +615,100 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       bytesPerRow: image.planes.first.bytesPerRow,
     );
     return InputImage.fromBytes(bytes: bytes, metadata: metadata);
+  }
+
+  Rect _mapMlKitBboxToRaw(
+    Rect bbox, {
+    required int rotationCompensation,
+    required double rawWidth,
+    required double rawHeight,
+  }) {
+    if (rawWidth <= 0 || rawHeight <= 0) return bbox;
+
+    Rect mapped;
+    switch (rotationCompensation % 360) {
+      case 90:
+        mapped = Rect.fromLTRB(
+          rawWidth - bbox.bottom,
+          bbox.left,
+          rawWidth - bbox.top,
+          bbox.right,
+        );
+        break;
+      case 180:
+        mapped = Rect.fromLTRB(
+          rawWidth - bbox.right,
+          rawHeight - bbox.bottom,
+          rawWidth - bbox.left,
+          rawHeight - bbox.top,
+        );
+        break;
+      case 270:
+        mapped = Rect.fromLTRB(
+          bbox.top,
+          rawHeight - bbox.right,
+          bbox.bottom,
+          rawHeight - bbox.left,
+        );
+        break;
+      case 0:
+      default:
+        mapped = bbox;
+        break;
+    }
+
+    // Clamp into the raw buffer bounds.
+    final double left = mapped.left.clamp(0.0, rawWidth);
+    final double top = mapped.top.clamp(0.0, rawHeight);
+    final double right = mapped.right.clamp(0.0, rawWidth);
+    final double bottom = mapped.bottom.clamp(0.0, rawHeight);
+    return Rect.fromLTRB(
+      math.min(left, right),
+      math.min(top, bottom),
+      math.max(left, right),
+      math.max(top, bottom),
+    );
+  }
+
+  Uint8List _yuv420ToNv21(CameraImage image) {
+    final int width = image.width;
+    final int height = image.height;
+    final int ySize = width * height;
+    final int uvSize = ySize ~/ 4;
+    final Uint8List nv21 = Uint8List(ySize + uvSize * 2);
+
+    final Plane yPlane = image.planes[0];
+    final Plane uPlane = image.planes[1];
+    final Plane vPlane = image.planes[2];
+
+    // Copy Y plane (accounting for row stride).
+    int outIndex = 0;
+    for (int row = 0; row < height; row++) {
+      final int rowStart = row * yPlane.bytesPerRow;
+      nv21.setRange(outIndex, outIndex + width, yPlane.bytes, rowStart);
+      outIndex += width;
+    }
+
+    final int uvHeight = height ~/ 2;
+    final int uvWidth = width ~/ 2;
+    final int uRowStride = uPlane.bytesPerRow;
+    final int vRowStride = vPlane.bytesPerRow;
+    final int uPixelStride = uPlane.bytesPerPixel ?? 1;
+    final int vPixelStride = vPlane.bytesPerPixel ?? 1;
+
+    for (int row = 0; row < uvHeight; row++) {
+      final int uRow = row * uRowStride;
+      final int vRow = row * vRowStride;
+      for (int col = 0; col < uvWidth; col++) {
+        final int uIndex = uRow + col * uPixelStride;
+        final int vIndex = vRow + col * vPixelStride;
+        // NV21 stores V then U.
+        nv21[outIndex++] = vPlane.bytes[vIndex];
+        nv21[outIndex++] = uPlane.bytes[uIndex];
+      }
+    }
+
+    return nv21;
   }
 
   double _cosineSimilarity(List<double> a, List<double> b) {
@@ -588,6 +777,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
   void _updateStatus(String message) {
     if (!mounted) return;
+    if (_statusMessage == message) {
+      return;
+    }
     setState(() => _statusMessage = message);
   }
 
@@ -640,7 +832,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                 children: <Widget>[
                   Expanded(
                     child: Container(
-                      margin: const EdgeInsets.all(16),
+                      margin: const EdgeInsets.fromLTRB(8, 8, 8, 4),
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(24),
                         color: theme.colorScheme.surfaceContainerHighest,
@@ -660,6 +852,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                         Text(
                           _statusMessage ?? 'Initializing session... hold on.',
                           style: theme.textTheme.bodyMedium,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
                         ),
                         const SizedBox(height: 8),
                         FilledButton.icon(
@@ -708,7 +902,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
             : const Text('Camera initializing...'),
       );
     }
-    return Transform.scale(scaleX: -1, child: CameraPreview(controller));
+    return CameraPreview(controller);
   }
 
   String _formatConfidence(double value) {
@@ -834,48 +1028,47 @@ class _RecentCapturesList extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
           Text('Recent captures', style: theme.textTheme.titleMedium),
-          if (captures.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 16),
-              child: Text(
-                'No captures yet. Position a student in front of the camera to begin.',
-              ),
-            )
-          else
-            SizedBox(
-              height: 220,
-              child: Scrollbar(
-                controller: controller,
-                thumbVisibility: true,
-                child: ListView.separated(
-                  controller: controller,
-                  itemCount: captures.length,
-                  separatorBuilder: (_, __) => const Divider(height: 1),
-                  itemBuilder: (BuildContext context, int index) {
-                    final _AttendanceCapture capture = captures[index];
-                    return ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: Icon(
-                        capture.matchDisplayName == null
-                            ? Icons.help_outline
-                            : Icons.verified_user_outlined,
-                      ),
-                      title: Text(
-                        capture.matchDisplayName ?? 'Unrecognized face',
-                      ),
-                      subtitle: Text(
-                        'Captured at ${TimeOfDay.fromDateTime(capture.timestamp).format(context)}',
-                      ),
-                      trailing: capture.confidence == null
-                          ? const Text('No match')
-                          : Text(
-                              '${(capture.confidence! * 100).toStringAsFixed(1)}%',
-                            ),
-                    );
-                  },
-                ),
-              ),
-            ),
+          SizedBox(
+            height: 160,
+            child: captures.isEmpty
+                ? const Center(
+                    child: Text(
+                      'No captures yet. Position a student in front of the camera to begin.',
+                      textAlign: TextAlign.center,
+                    ),
+                  )
+                : Scrollbar(
+                    controller: controller,
+                    thumbVisibility: true,
+                    child: ListView.separated(
+                      controller: controller,
+                      itemCount: captures.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (BuildContext context, int index) {
+                        final _AttendanceCapture capture = captures[index];
+                        return ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: Icon(
+                            capture.matchDisplayName == null
+                                ? Icons.help_outline
+                                : Icons.verified_user_outlined,
+                          ),
+                          title: Text(
+                            capture.matchDisplayName ?? 'Unrecognized face',
+                          ),
+                          subtitle: Text(
+                            'Captured at ${TimeOfDay.fromDateTime(capture.timestamp).format(context)}',
+                          ),
+                          trailing: capture.confidence == null
+                              ? const Text('No match')
+                              : Text(
+                                  '${(capture.confidence! * 100).toStringAsFixed(1)}%',
+                                ),
+                        );
+                      },
+                    ),
+                  ),
+          ),
         ],
       ),
     );
@@ -909,6 +1102,10 @@ class _RecognizedStudent {
     QueryDocumentSnapshot<Map<String, dynamic>> doc,
   ) {
     final Map<String, dynamic> data = doc.data();
+    final String? provider = data['faceEmbedProvider'] as String?;
+    if (!kIsWeb && provider == 'web_fallback') {
+      return null;
+    }
     final List<dynamic>? rawEmbedding = data['faceEmbed'] as List<dynamic>?;
     if (rawEmbedding == null || rawEmbedding.isEmpty) {
       return null;

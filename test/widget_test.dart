@@ -8,7 +8,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:facts_ui_ux/login.dart';
+import 'package:facts/login.dart';
 
 void main() {
   testWidgets('Login form shows heading and validates inputs', (WidgetTester tester) async {
