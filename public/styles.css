@@ -158,3 +158,36 @@ a:hover {
   font-size: 13px;
   color: var(--muted);
 }
+
+.qr {
+  margin-top: var(--space);
+  display: flex;
+  align-items: center;
+  gap: var(--space);
+  flex-wrap: wrap;
+}
+
+.qr img {
+  width: 220px;
+  max-width: min(220px, 70vw);
+  height: auto;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #fff;
+  padding: 10px;
+}
+
+.qr .qr-meta {
+  min-width: 220px;
+  flex: 1;
+}
+
+.qr .qr-meta .label {
+  font-weight: 700;
+  margin: 0 0 6px;
+}
+
+.qr .qr-meta .url {
+  margin: 0;
+  word-break: break-word;
+}
