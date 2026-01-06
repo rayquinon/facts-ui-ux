@@ -5,7 +5,6 @@ import 'admin_page.dart';
 import 'instructor_page.dart';
 import 'signup_pickrole.dart';
 import 'student_page.dart';
-import 'constants/auth_constants.dart';
 import 'services/user_role_service.dart';
 import 'verify_email_page.dart';
 
@@ -51,19 +50,20 @@ class _LoginPageState extends State<LoginPage> {
     try {
       final UserCredential credential = await FirebaseAuth.instance
           .signInWithEmailAndPassword(email: email, password: password);
-      final User? user = credential.user;
-      final String normalizedAdminEmail = kAdminEmail.toLowerCase();
+        final User user = credential.user!;
+        final IdTokenResult token = await user.getIdTokenResult(true);
       final bool isAdmin =
-          (user?.email ?? '').toLowerCase() == normalizedAdminEmail;
+        token.claims != null &&
+        (token.claims!['admin'] == true || token.claims!['admin'] == 'true');
 
       late final String destinationRoute;
-      String welcomeMessage = 'Welcome back, ${user?.email ?? email}';
+      String welcomeMessage = 'Welcome back, ${user.email ?? email}';
 
       if (isAdmin) {
         destinationRoute = AdminPage.routeName;
         welcomeMessage = 'Signed in as Admin';
       } else {
-        final String? role = await UserRoleService.fetchRoleByUid(user?.uid);
+        final String? role = await UserRoleService.fetchRoleByUid(user.uid);
         if (role == 'student') {
           destinationRoute = StudentPage.routeName;
           welcomeMessage = 'Welcome back, student!';
@@ -92,11 +92,11 @@ class _LoginPageState extends State<LoginPage> {
 
       if (!mounted) return;
 
-      if (!isAdmin && !(user?.emailVerified ?? false)) {
+      if (!isAdmin && !user.emailVerified) {
         bool sent = false;
         FirebaseAuthException? sendError;
         try {
-          await user?.sendEmailVerification();
+          await user.sendEmailVerification();
           sent = true;
         } on FirebaseAuthException catch (error) {
           sendError = error;
@@ -116,7 +116,7 @@ class _LoginPageState extends State<LoginPage> {
           messenger.showSnackBar(
             SnackBar(
               content: Text(
-                'We sent a verification link to ${user?.email ?? email}. Verify to continue.',
+                'We sent a verification link to ${user.email ?? email}. Verify to continue.',
               ),
               behavior: SnackBarBehavior.floating,
             ),

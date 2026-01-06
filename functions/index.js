@@ -17,6 +17,55 @@ function requireAdmin(request) {
   }
 }
 
+async function hasAdminRole(uid) {
+  const db = getFirestore();
+  const snap = await db.collection('users').doc(uid).get();
+  const role = snap.exists && snap.data() ? snap.data().role : null;
+  return typeof role === 'string' && role.trim().toLowerCase() === 'admin';
+}
+
+exports.bootstrapAdminClaim = onCall({ cors: true }, async (request) => {
+  const auth = request.auth;
+  if (!auth) {
+    throw new HttpsError('unauthenticated', 'Authentication required.');
+  }
+
+  const uid = String(auth.uid || '');
+  if (!uid) {
+    throw new HttpsError('invalid-argument', 'uid is required');
+  }
+
+  // Bootstrap rule:
+  // - You can only grant admin to yourself.
+  // - Only if your Firestore profile role is explicitly 'admin'.
+  // This avoids hard-coded emails while still requiring a deliberate server-side role assignment.
+  const allowed = await hasAdminRole(uid);
+  if (!allowed) {
+    throw new HttpsError(
+      'permission-denied',
+      "Admin role required in Firestore (users/{uid}.role == 'admin')."
+    );
+  }
+
+  const authApi = getAuth();
+  const userRecord = await authApi.getUser(uid);
+  const existingClaims = userRecord.customClaims || {};
+  await authApi.setCustomUserClaims(uid, { ...existingClaims, admin: true });
+
+  // Best-effort marker for troubleshooting.
+  try {
+    const db = getFirestore();
+    await db.collection('users').doc(uid).set(
+      { adminClaimSetAt: FieldValue.serverTimestamp() },
+      { merge: true }
+    );
+  } catch (_) {
+    // ignore
+  }
+
+  return { ok: true };
+});
+
 async function deleteQueryInBatches(query, batchSize = 400) {
   const db = getFirestore();
   while (true) {

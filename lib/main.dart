@@ -1,5 +1,6 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -115,10 +116,21 @@ class MyApp extends FactsApp {
   const MyApp({super.key});
 }
 
-class AuthGate extends StatelessWidget {
+class AuthGate extends StatefulWidget {
   const AuthGate({super.key});
 
-  Future<Map<String, dynamic>> _fetchAuthInfo(User user) async {
+  @override
+  State<AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<AuthGate> {
+  int _authRefreshKey = 0;
+
+  void _triggerAuthRefresh() {
+    setState(() => _authRefreshKey++);
+  }
+
+  Future<Map<String, dynamic>> _fetchAuthInfo(User user, int refreshKey) async {
     final IdTokenResult token = await user.getIdTokenResult(true);
     final String? role = await UserRoleService.fetchRoleByUid(user.uid);
     final bool isAdmin =
@@ -142,7 +154,7 @@ class AuthGate extends StatelessWidget {
         }
 
         return FutureBuilder<Map<String, dynamic>>(
-          future: _fetchAuthInfo(user),
+          future: _fetchAuthInfo(user, _authRefreshKey),
           builder:
               (
                 BuildContext context,
@@ -161,7 +173,7 @@ class AuthGate extends StatelessWidget {
                 final bool isAdmin = data?['isAdmin'] == true;
                 final String? role = data?['role'] as String?;
 
-                if (kIsWeb && !isAdmin && role != 'instructor') {
+                if (kIsWeb && !isAdmin && role != 'instructor' && role != 'admin') {
                   return const _AuthErrorView(
                     message:
                         'Web access is available only for admin and instructor accounts.\n\nPlease use the mobile app for student access.',
@@ -169,6 +181,13 @@ class AuthGate extends StatelessWidget {
                 }
 
                 if (isAdmin) return const AdminPage();
+
+                if (role == 'admin') {
+                  return _BootstrapAdminClaimView(
+                    user: user,
+                    onBootstrapped: _triggerAuthRefresh,
+                  );
+                }
 
                 if (!user.emailVerified) {
                   final String? destinationRoute = switch (role) {
@@ -201,6 +220,93 @@ class AuthGate extends StatelessWidget {
               },
         );
       },
+    );
+  }
+}
+
+class _BootstrapAdminClaimView extends StatefulWidget {
+  const _BootstrapAdminClaimView({required this.user, required this.onBootstrapped});
+
+  final User user;
+  final VoidCallback onBootstrapped;
+
+  @override
+  State<_BootstrapAdminClaimView> createState() => _BootstrapAdminClaimViewState();
+}
+
+class _BootstrapAdminClaimViewState extends State<_BootstrapAdminClaimView> {
+  bool _isSubmitting = false;
+
+  Future<void> _enableAdminAccess() async {
+    if (_isSubmitting) return;
+    setState(() => _isSubmitting = true);
+    final messenger = ScaffoldMessenger.of(context);
+
+    try {
+      await FirebaseFunctions.instance.httpsCallable('bootstrapAdminClaim').call();
+      await widget.user.getIdToken(true);
+      widget.onBootstrapped();
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Admin access enabled. Loading admin dashboard...'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } on FirebaseFunctionsException catch (error) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(error.message ?? 'Failed to enable admin access.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Failed to enable admin access.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Text(
+                'Your account is marked as an Admin, but admin privileges are not enabled yet.\n\nTap “Enable admin access” once to activate admin permissions for this account.',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              const SizedBox(height: 16),
+              FilledButton(
+                onPressed: _isSubmitting ? null : _enableAdminAccess,
+                child: _isSubmitting
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Enable admin access'),
+              ),
+              const SizedBox(height: 12),
+              TextButton(
+                onPressed: () async {
+                  await FirebaseAuth.instance.signOut();
+                },
+                child: const Text('Back to login'),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
