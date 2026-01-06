@@ -15,8 +15,6 @@ class FaceEmbeddingService {
   FaceEmbeddingService._();
 
   static final FaceEmbeddingService instance = FaceEmbeddingService._();
-
-  static const String _modelAssetPath = 'assets/models/face_embedding.onnx';
   final ImageNormalizationService _imageNormalizer =
       ImageNormalizationService();
 

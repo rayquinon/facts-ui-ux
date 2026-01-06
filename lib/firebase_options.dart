@@ -45,7 +45,7 @@ class DefaultFirebaseOptions {
     authDomain: 'simple-distributed-database.firebaseapp.com',
     databaseURL:
         'https://simple-distributed-database-default-rtdb.asia-southeast1.firebasedatabase.app',
-    storageBucket: 'simple-distributed-database.firebasestorage.app',
+    storageBucket: 'simple-distributed-database.appspot.com',
     measurementId: 'G-LXW241NRWG',
   );
 
@@ -56,7 +56,7 @@ class DefaultFirebaseOptions {
     projectId: 'simple-distributed-database',
     databaseURL:
         'https://simple-distributed-database-default-rtdb.asia-southeast1.firebasedatabase.app',
-    storageBucket: 'simple-distributed-database.firebasestorage.app',
+    storageBucket: 'simple-distributed-database.appspot.com',
   );
 
   static const FirebaseOptions ios = FirebaseOptions(
@@ -66,7 +66,7 @@ class DefaultFirebaseOptions {
     projectId: 'simple-distributed-database',
     databaseURL:
         'https://simple-distributed-database-default-rtdb.asia-southeast1.firebasedatabase.app',
-    storageBucket: 'simple-distributed-database.firebasestorage.app',
+    storageBucket: 'simple-distributed-database.appspot.com',
     iosClientId:
         '424296832329-igai84cr1mh909ctm3htind2glcramjb.apps.googleusercontent.com',
     iosBundleId: 'com.example.factsUiUx',
@@ -79,7 +79,7 @@ class DefaultFirebaseOptions {
     projectId: 'simple-distributed-database',
     databaseURL:
         'https://simple-distributed-database-default-rtdb.asia-southeast1.firebasedatabase.app',
-    storageBucket: 'simple-distributed-database.firebasestorage.app',
+    storageBucket: 'simple-distributed-database.appspot.com',
     iosClientId:
         '424296832329-igai84cr1mh909ctm3htind2glcramjb.apps.googleusercontent.com',
     iosBundleId: 'com.example.factsUiUx',
@@ -93,7 +93,7 @@ class DefaultFirebaseOptions {
     authDomain: 'simple-distributed-database.firebaseapp.com',
     databaseURL:
         'https://simple-distributed-database-default-rtdb.asia-southeast1.firebasedatabase.app',
-    storageBucket: 'simple-distributed-database.firebasestorage.app',
+    storageBucket: 'simple-distributed-database.appspot.com',
     measurementId: 'G-82N0GTJ8CP',
   );
 
@@ -105,7 +105,7 @@ class DefaultFirebaseOptions {
     authDomain: 'simple-distributed-database.firebaseapp.com',
     databaseURL:
         'https://simple-distributed-database-default-rtdb.asia-southeast1.firebasedatabase.app',
-    storageBucket: 'simple-distributed-database.firebasestorage.app',
+    storageBucket: 'simple-distributed-database.appspot.com',
     measurementId: 'G-82N0GTJ8CP',
   );
 }
