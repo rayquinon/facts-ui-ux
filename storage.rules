@@ -1,0 +1,20 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // ONNX models live under: models/<filename>
+    // Allow any signed-in user to download the models.
+    match /models/{allPaths=**} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    // Default: lock down everything else.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

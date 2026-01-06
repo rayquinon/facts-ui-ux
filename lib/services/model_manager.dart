@@ -21,12 +21,14 @@ class ModelManager {
     if (await local.exists()) return local;
 
     // Try download from Firebase Storage
+    Object? downloadError;
     try {
       final Reference ref = _storage.ref().child('models/$modelName');
       final DownloadTask task = ref.writeToFile(local);
       await task;
       if (await local.exists()) return local;
     } catch (e) {
+      downloadError = e;
       debugPrint('Model download failed: $e');
     }
 
@@ -36,7 +38,11 @@ class ModelManager {
       await local.writeAsBytes(bytes.buffer.asUint8List());
       return local;
     } catch (e) {
-      throw StateError('Could not obtain model $modelName: $e');
+      throw StateError(
+        'Could not obtain model $modelName. '
+        'Download error: ${downloadError ?? 'none'}. '
+        'Asset error: $e',
+      );
     }
   }
 }
