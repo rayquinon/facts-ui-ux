@@ -8,28 +8,31 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:facts_ui_ux/main.dart';
+import 'package:facts_ui_ux/login.dart';
 
 void main() {
-  testWidgets('Login form validates and submits', (WidgetTester tester) async {
-    await tester.pumpWidget(const MyApp());
+  testWidgets('Login form shows heading and validates inputs', (WidgetTester tester) async {
+    await tester.pumpWidget(const MaterialApp(
+      home: Center(child: SizedBox(width: 520, child: LoginPage())),
+    ));
 
     expect(find.text('Welcome back'), findsOneWidget);
     expect(find.text('Sign in'), findsOneWidget);
 
+    // Enter invalid email and short password to trigger validators (avoids Firebase calls).
     await tester.enterText(
       find.widgetWithText(TextFormField, 'Email'),
-      'user@example.com',
+      'invalid-email',
     );
     await tester.enterText(
       find.widgetWithText(TextFormField, 'Password'),
-      'secret123',
+      '123',
     );
 
     await tester.tap(find.text('Sign in'));
-    await tester.pump();
-    await tester.pump(const Duration(seconds: 2));
+    await tester.pumpAndSettle();
 
-    expect(find.textContaining('Welcome user@example.com'), findsOneWidget);
+    expect(find.text('Enter a valid email address'), findsOneWidget);
+    expect(find.text('Password must be at least 6 characters'), findsOneWidget);
   });
 }

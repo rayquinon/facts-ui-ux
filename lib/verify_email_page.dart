@@ -1,7 +1,10 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'instructor_page.dart';
 import 'login.dart';
+import 'services/user_role_service.dart';
+import 'student_page.dart';
 
 class VerifyEmailPageArgs {
   const VerifyEmailPageArgs({required this.destinationRoute});
@@ -10,11 +13,11 @@ class VerifyEmailPageArgs {
 }
 
 class VerifyEmailPage extends StatefulWidget {
-  const VerifyEmailPage({super.key, required this.destinationRoute});
+  const VerifyEmailPage({super.key, this.destinationRoute});
 
   static const String routeName = '/verify-email';
 
-  final String destinationRoute;
+  final String? destinationRoute;
 
   @override
   State<VerifyEmailPage> createState() => _VerifyEmailPageState();
@@ -24,6 +27,7 @@ class _VerifyEmailPageState extends State<VerifyEmailPage> {
   bool _isSending = false;
   bool _isRefreshing = false;
   DateTime? _lastSentAt;
+  bool _autoSent = false;
 
   bool get _canResend {
     final DateTime? lastSentAt = _lastSentAt;
@@ -68,6 +72,18 @@ class _VerifyEmailPageState extends State<VerifyEmailPage> {
     }
   }
 
+  @override
+  void initState() {
+    super.initState();
+    // If the user lands here via AuthGate (app restart) there may not have
+    // been an earlier send attempt. Auto-send once on entry.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _autoSent) return;
+      _autoSent = true;
+      _sendVerificationEmail();
+    });
+  }
+
   Future<void> _refreshStatus() async {
     final User? user = FirebaseAuth.instance.currentUser;
     if (user == null || _isRefreshing) return;
@@ -80,10 +96,7 @@ class _VerifyEmailPageState extends State<VerifyEmailPage> {
       if (!mounted) return;
 
       if (verified) {
-        Navigator.of(context).pushNamedAndRemoveUntil(
-          widget.destinationRoute,
-          (Route<dynamic> route) => false,
-        );
+        await _navigateAfterVerified(refreshed);
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -102,6 +115,56 @@ class _VerifyEmailPageState extends State<VerifyEmailPage> {
       );
     } finally {
       if (mounted) setState(() => _isRefreshing = false);
+    }
+  }
+
+  Future<void> _navigateAfterVerified(User? user) async {
+    final String? explicitDestination = widget.destinationRoute;
+    if (explicitDestination != null && explicitDestination.isNotEmpty) {
+      Navigator.of(context).pushNamedAndRemoveUntil(
+        explicitDestination,
+        (Route<dynamic> route) => false,
+      );
+      return;
+    }
+
+    // Deep-link / direct navigation case: infer destination from profile role.
+    final String uid = user?.uid ?? FirebaseAuth.instance.currentUser?.uid ?? '';
+    if (uid.isEmpty) return;
+
+    try {
+      final String? role = await UserRoleService.fetchRoleByUid(uid);
+      if (!mounted) return;
+      final String? inferred = switch (role) {
+        'student' => StudentPage.routeName,
+        'instructor' => InstructorPage.routeName,
+        _ => null,
+      };
+      if (inferred == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Verified, but your profile role could not be loaded. Please sign out and sign in again.',
+            ),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+      Navigator.of(context).pushNamedAndRemoveUntil(
+        inferred,
+        (Route<dynamic> route) => false,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Verified, but failed to load your profile. Please sign out and sign in again.',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
     }
   }
 

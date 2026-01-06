@@ -13,12 +13,34 @@ import 'services/web_camera_service.dart';
 
 enum _OrientationPhase { front, left, right }
 
-const double _kGuideWidthRatio = 0.3;
-const double _kGuideHeightRatio = 0.7;
+const double _kGuideAspectRatio = 0.68; // width / height (head-like)
 const double _kGuideCenterToleranceFactor =
-    0.9; // slightly tighter than the oval edge
-const double _kGuideSizeLowerBound = 0.45;
-const double _kGuideSizeUpperBound = 1.6;
+    0.90; // strictness factor (smaller = stricter)
+
+Rect _computeGuideRect(Size size) {
+  final double minSide = math.min(size.width, size.height);
+
+  // Full-head strict guide sizing.
+  final double targetHeight = minSide * 0.82;
+  final double targetWidth = targetHeight * _kGuideAspectRatio;
+
+  // Clamp to keep it usable on both small and very large screens.
+  final double minHeight = minSide * 0.55;
+  final double maxHeight = size.height * 0.85;
+  final double minWidth = size.width * 0.45;
+  final double maxWidth = size.width * 0.75;
+
+  final double width = targetWidth.clamp(minWidth, maxWidth);
+  final double height = (width / _kGuideAspectRatio).clamp(minHeight, maxHeight);
+
+  return Rect.fromCenter(
+    center: size.center(Offset.zero),
+    width: height * _kGuideAspectRatio,
+    height: height,
+  );
+}
+
+enum _GuideMatch { ok, offCenter, tooSmall, tooLarge }
 
 class FaceEnrollmentPage extends StatefulWidget {
   const FaceEnrollmentPage({super.key});
@@ -209,11 +231,12 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
           image.width.toDouble(),
           image.height.toDouble(),
         );
-        final bool withinGuide = _isBoundingBoxWithinGuide(bbox, frameSize);
+        final _GuideMatch guideMatch = _evaluateGuideMatch(bbox, frameSize);
+        final bool withinGuide = guideMatch == _GuideMatch.ok;
         _updateFaceReadyState(withinGuide);
         if (_enrollmentStarted) {
           if (!withinGuide) {
-            _updateMisalignedStatus();
+            _updateGuideStatus(guideMatch);
           } else if (_embeddingService.isReady) {
             final List<double> embedding = await _embeddingService
                 .generateEmbedding(image, bbox);
@@ -262,12 +285,27 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     });
   }
 
-  void _updateMisalignedStatus() {
+  void _updateGuideStatus(_GuideMatch match) {
     if (!mounted) return;
     setState(() {
       _latestEmbedding = null;
-      _statusMessage =
-          'Center your face inside the oval before we can capture this step.';
+      switch (match) {
+        case _GuideMatch.offCenter:
+          _statusMessage =
+              'Center your face inside the oval before we can capture this step.';
+          break;
+        case _GuideMatch.tooSmall:
+          _statusMessage =
+              'Move closer so your full head fills the oval.';
+          break;
+        case _GuideMatch.tooLarge:
+          _statusMessage =
+              'Move farther so your full head fits inside the oval.';
+          break;
+        case _GuideMatch.ok:
+          // No-op; the caller should not request a status update.
+          break;
+      }
     });
   }
 
@@ -278,42 +316,43 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     setState(() => _faceReadyForEnrollment = hasFaceInGuide);
   }
 
-  bool _isBoundingBoxWithinGuide(Rect bbox, Size frameSize) {
-    final double frameWidth = frameSize.width;
-    final double frameHeight = frameSize.height;
-    if (frameWidth == 0 || frameHeight == 0) {
-      return true;
-    }
-    final Offset frameCenter = Offset(frameWidth / 2, frameHeight / 2);
+  _GuideMatch _evaluateGuideMatch(Rect bbox, Size frameSize) {
+    if (frameSize.width == 0 || frameSize.height == 0) return _GuideMatch.ok;
+
+    final Rect guideRect = _computeGuideRect(frameSize);
+    if (guideRect.width == 0 || guideRect.height == 0) return _GuideMatch.ok;
+
+    // Strict center check using ellipse math.
+    final Offset guideCenter = guideRect.center;
     final Offset boxCenter = bbox.center;
-    final double guideHalfWidth = frameWidth * _kGuideWidthRatio / 2;
-    final double guideHalfHeight = frameHeight * _kGuideHeightRatio / 2;
-    if (guideHalfWidth == 0 || guideHalfHeight == 0) {
-      return true;
-    }
-    final double normalizedX =
-        (boxCenter.dx - frameCenter.dx) /
-        (guideHalfWidth * _kGuideCenterToleranceFactor);
-    final double normalizedY =
-        (boxCenter.dy - frameCenter.dy) /
-        (guideHalfHeight * _kGuideCenterToleranceFactor);
-    final double distanceFromCenter =
-        normalizedX * normalizedX + normalizedY * normalizedY;
-    if (distanceFromCenter > 1) {
-      return false;
+    final double a = guideRect.width / 2;
+    final double b = guideRect.height / 2;
+    final double denomX = a * _kGuideCenterToleranceFactor;
+    final double denomY = b * _kGuideCenterToleranceFactor;
+    if (denomX > 0 && denomY > 0) {
+      final double nx = (boxCenter.dx - guideCenter.dx) / denomX;
+      final double ny = (boxCenter.dy - guideCenter.dy) / denomY;
+      if ((nx * nx) + (ny * ny) > 1) {
+        return _GuideMatch.offCenter;
+      }
     }
 
+    // Strict size bounds (full head) based on the same guide oval.
     final double bboxWidth = bbox.width.abs();
     final double bboxHeight = bbox.height.abs();
-    final double minWidth = guideHalfWidth * 2 * _kGuideSizeLowerBound;
-    final double maxWidth = guideHalfWidth * 2 * _kGuideSizeUpperBound;
-    final double minHeight = guideHalfHeight * 2 * _kGuideSizeLowerBound;
-    final double maxHeight = guideHalfHeight * 2 * _kGuideSizeUpperBound;
+    final double minWidth = guideRect.width * 0.45;
+    final double maxWidth = guideRect.width * 0.95;
+    final double minHeight = guideRect.height * 0.55;
+    final double maxHeight = guideRect.height * 0.95;
 
-    return bboxWidth >= minWidth &&
-        bboxWidth <= maxWidth &&
-        bboxHeight >= minHeight &&
-        bboxHeight <= maxHeight;
+    if (bboxWidth < minWidth || bboxHeight < minHeight) {
+      return _GuideMatch.tooSmall;
+    }
+    if (bboxWidth > maxWidth || bboxHeight > maxHeight) {
+      return _GuideMatch.tooLarge;
+    }
+
+    return _GuideMatch.ok;
   }
 
   void _recordEmbedding(List<double> embedding) {
@@ -488,25 +527,23 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
                       phaseLabel: _phaseLabel(_currentPhase),
                     ),
                   ),
-                if (_statusMessage != null)
-                  Positioned(
-                    left: 16,
-                    right: 16,
-                    bottom: 24,
-                    child: Card(
-                      elevation: 4,
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Text(
-                          _statusMessage!,
-                          textAlign: TextAlign.center,
-                        ),
-                      ),
-                    ),
-                  ),
               ],
             ),
           ),
+          if (_statusMessage != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+              child: Card(
+                elevation: 4,
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text(
+                    _statusMessage!,
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ),
+            ),
           Padding(
             padding: const EdgeInsets.all(24),
             child: Column(
@@ -633,18 +670,12 @@ class _FaceGuideMaskPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final Rect bounds = Offset.zero & size;
-    final double ovalWidth = size.width * _kGuideWidthRatio;
-    final double ovalHeight = size.height * _kGuideHeightRatio;
-    final Rect ovalRect = Rect.fromCenter(
-      center: size.center(Offset.zero),
-      width: ovalWidth,
-      height: ovalHeight,
-    );
+    final Rect guideRect = _computeGuideRect(size);
 
     final Path maskPath = Path()
       ..fillType = PathFillType.evenOdd
       ..addRect(bounds)
-      ..addOval(ovalRect);
+      ..addOval(guideRect);
 
     final Paint dimPaint = Paint()
       ..color = Colors.black.withValues(alpha: 0.6)
@@ -655,7 +686,7 @@ class _FaceGuideMaskPainter extends CustomPainter {
       ..color = Colors.white.withValues(alpha: 0.9)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 3;
-    canvas.drawOval(ovalRect, borderPaint);
+    canvas.drawOval(guideRect, borderPaint);
   }
 
   @override

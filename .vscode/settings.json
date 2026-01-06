@@ -1,0 +1,27 @@
+{
+  "dart.warnWhenEditingFilesOutsideWorkspace": false,
+  "dart.extensionLogFile": "C:/Users/admin/facts_ui_ux/reports/dart_extension_${workspaceName}.log",
+  "dart.analyzerLogFile": "C:/Users/admin/facts_ui_ux/reports/dart_analyzer_${workspaceName}.log",
+  "dart.flutterDaemonLogFile": "C:/Users/admin/facts_ui_ux/reports/dart_flutter_daemon_${workspaceName}.log",
+  "workbench.trustedDomains": [
+    "https://dartcode.org",
+    "https://*.dartcode.org"
+  ],
+  "search.exclude": {
+    "**/flutter/ephemeral/**": true,
+    "**/.plugin_symlinks/**": true
+  },
+  "files.watcherExclude": {
+    "**/flutter/ephemeral/**": true,
+    "**/.plugin_symlinks/**": true
+  },
+  "dart.analysisExcludedFolders": [
+    "**/.dart_tool/**",
+    "**/build/**",
+    "**/.plugin_symlinks/**",
+    "**/windows/flutter/ephemeral/**",
+    "**/linux/flutter/ephemeral/**",
+    "windows/flutter/ephemeral",
+    "linux/flutter/ephemeral"
+  ]
+}

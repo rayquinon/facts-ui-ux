@@ -401,7 +401,13 @@ class _SignUpPageState extends State<SignUpPage> {
 
       final User? user = credential.user;
       if (user != null) {
-        await user.updateDisplayName(fullName);
+        // Best-effort: profile data lives in Firestore; don't block signup if
+        // updating Auth displayName fails.
+        try {
+          await user.updateDisplayName(fullName);
+        } catch (error, stackTrace) {
+          debugPrint('updateDisplayName failed: $error\n$stackTrace');
+        }
         final Map<String, dynamic> profile = <String, dynamic>{
           'displayName': fullName,
           'Full Name': fullName,
@@ -443,17 +449,55 @@ class _SignUpPageState extends State<SignUpPage> {
             ? InstructorPage.routeName
             : StudentPage.routeName;
 
-        if (!(user.emailVerified)) {
-          await user.sendEmailVerification();
-          messenger.showSnackBar(
-            SnackBar(
-              content: Text(
-                'Verification email sent to ${user.email ?? email}. Please verify to continue.',
-              ),
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
+        // Refresh before checking to avoid stale `emailVerified` state.
+        try {
+          await user.reload();
+        } catch (_) {
+          // Best-effort; continue.
+        }
+
+        if (!mounted) return;
+
+        final bool isVerified =
+            FirebaseAuth.instance.currentUser?.emailVerified ??
+            user.emailVerified;
+
+        if (!isVerified) {
+          bool sent = false;
+          FirebaseAuthException? sendError;
+          try {
+            await FirebaseAuth.instance.currentUser?.sendEmailVerification();
+            sent = true;
+          } on FirebaseAuthException catch (error) {
+            debugPrint(
+              'sendEmailVerification failed: ${error.code} -> ${error.message}',
+            );
+            sendError = error;
+          }
+
           if (!mounted) return;
+
+          if (sendError != null) {
+            messenger.showSnackBar(
+              SnackBar(
+                content: Text(
+                  'Could not send verification email (${sendError.code}). You can retry from the verification screen.',
+                ),
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          }
+
+          if (sent) {
+            messenger.showSnackBar(
+              SnackBar(
+                content: Text(
+                  'Verification email sent to ${user.email ?? email}. Please verify to continue.',
+                ),
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+          }
           Navigator.of(context).pushNamedAndRemoveUntil(
             VerifyEmailPage.routeName,
             (Route<dynamic> route) => false,
@@ -478,6 +522,18 @@ class _SignUpPageState extends State<SignUpPage> {
       debugPrint(
         'Firestore write failed: ${error.code} -> ${error.message}\n$stackTrace',
       );
+
+      // Prevent "auth-only" accounts (created in Firebase Auth but missing a
+      // Firestore profile). If the profile write failed, roll back the newly
+      // created Auth user so the person can retry signup cleanly.
+      try {
+        await FirebaseAuth.instance.currentUser?.delete();
+      } catch (deleteError, deleteStack) {
+        debugPrint('Rollback delete() failed: $deleteError\n$deleteStack');
+      } finally {
+        await FirebaseAuth.instance.signOut();
+      }
+
       final String message = error.code == 'student-id-already-in-use'
           ? 'That Student ID is already registered. Please check your ID or contact support.'
           : 'Sign-up failed. ${error.message ?? error.code}';
@@ -486,6 +542,16 @@ class _SignUpPageState extends State<SignUpPage> {
       );
     } catch (error, stackTrace) {
       debugPrint('Unexpected signup error: $error\n$stackTrace');
+
+      // Same rollback logic for unknown failures after Auth user creation.
+      try {
+        await FirebaseAuth.instance.currentUser?.delete();
+      } catch (deleteError, deleteStack) {
+        debugPrint('Rollback delete() failed: $deleteError\n$deleteStack');
+      } finally {
+        await FirebaseAuth.instance.signOut();
+      }
+
       messenger.showSnackBar(
         const SnackBar(
           content: Text('Something went wrong. Please try again.'),

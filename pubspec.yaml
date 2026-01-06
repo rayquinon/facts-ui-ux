@@ -30,6 +30,8 @@ environment:
 dependencies:
   flutter:
       sdk: flutter
+  firebase_storage: ^13.0.5
+  path_provider: ^2.0.14
   file_picker: ^10.3.6
   cupertino_icons: ^1.0.8
   firebase_core: ^4.2.1
@@ -71,7 +73,6 @@ flutter:
   uses-material-design: true
 
   assets:
-    - assets/models/
     - assets/logo.png
     - assets/reports/ustp_logo.png
 

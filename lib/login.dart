@@ -93,16 +93,35 @@ class _LoginPageState extends State<LoginPage> {
       if (!mounted) return;
 
       if (!isAdmin && !(user?.emailVerified ?? false)) {
-        await user?.sendEmailVerification();
+        bool sent = false;
+        FirebaseAuthException? sendError;
+        try {
+          await user?.sendEmailVerification();
+          sent = true;
+        } on FirebaseAuthException catch (error) {
+          sendError = error;
+        }
         if (!mounted) return;
-        messenger.showSnackBar(
-          SnackBar(
-            content: Text(
-              'We sent a verification link to ${user?.email ?? email}. Verify to continue.',
+        if (sendError != null) {
+          messenger.showSnackBar(
+            SnackBar(
+              content: Text(
+                'Could not send verification email (${sendError.code}). You can retry from the verification screen.',
+              ),
+              behavior: SnackBarBehavior.floating,
             ),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+          );
+        }
+        if (sent) {
+          messenger.showSnackBar(
+            SnackBar(
+              content: Text(
+                'We sent a verification link to ${user?.email ?? email}. Verify to continue.',
+              ),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
         Navigator.of(context).pushReplacementNamed(
           VerifyEmailPage.routeName,
           arguments: VerifyEmailPageArgs(destinationRoute: destinationRoute),

@@ -125,32 +125,47 @@ class _FaceEnrollmentRequiredView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(title: const Text('Complete enrollment')),
-      body: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Icon(Icons.face_retouching_natural, size: 72),
-            const SizedBox(height: 16),
-            Text(
-              'Before accessing the dashboard we need to capture your facial embedding for secure attendance.',
-              style: Theme.of(context).textTheme.titleMedium,
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 24),
-            FilledButton.icon(
-              onPressed: onStartEnrollment,
-              icon: const Icon(Icons.camera_alt_outlined),
-              label: const Text('Start face enrollment'),
-            ),
-            const SizedBox(height: 12),
-            TextButton(
-              onPressed: onSignOut,
-              child: const Text('Sign out'),
-            ),
-          ],
+      body: SafeArea(
+        child: LayoutBuilder(
+          builder: (BuildContext context, BoxConstraints constraints) {
+            return Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(24),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 520),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      const Icon(Icons.face_retouching_natural, size: 72),
+                      const SizedBox(height: 16),
+                      Text(
+                        'Before accessing the dashboard we need to capture your facial embedding for secure attendance.',
+                        style: theme.textTheme.titleMedium,
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 24),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          onPressed: onStartEnrollment,
+                          icon: const Icon(Icons.camera_alt_outlined),
+                          label: const Text('Start face enrollment'),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextButton(
+                        onPressed: onSignOut,
+                        child: const Text('Sign out'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
         ),
       ),
     );

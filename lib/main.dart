@@ -11,7 +11,6 @@ import 'login.dart';
 import 'signup_pickrole.dart';
 import 'student_page.dart';
 import 'attendance_session_page.dart';
-import 'constants/auth_constants.dart';
 import 'services/user_role_service.dart';
 import 'reports/generate_report_page.dart';
 import 'verify_email_page.dart';
@@ -63,12 +62,7 @@ class FactsApp extends StatelessWidget {
           final ModalRoute<dynamic>? route = ModalRoute.of(context);
           final VerifyEmailPageArgs? args =
               route?.settings.arguments as VerifyEmailPageArgs?;
-          if (args == null) {
-            return const UnknownRouteScreen(
-              unknownRouteName: VerifyEmailPage.routeName,
-            );
-          }
-          return VerifyEmailPage(destinationRoute: args.destinationRoute);
+          return VerifyEmailPage(destinationRoute: args?.destinationRoute);
         },
         AdminPage.routeName: (BuildContext context) => const AdminPage(),
         StudentPage.routeName: (BuildContext context) => const StudentPage(),
@@ -106,6 +100,15 @@ class MyApp extends FactsApp {
 class AuthGate extends StatelessWidget {
   const AuthGate({super.key});
 
+  Future<Map<String, dynamic>> _fetchAuthInfo(User user) async {
+    final IdTokenResult token = await user.getIdTokenResult(true);
+    final String? role = await UserRoleService.fetchRoleByUid(user.uid);
+    final bool isAdmin =
+        token.claims != null &&
+        (token.claims!['admin'] == true || token.claims!['admin'] == 'true');
+    return <String, dynamic>{'isAdmin': isAdmin, 'role': role};
+  }
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<User?>(
@@ -120,51 +123,57 @@ class AuthGate extends StatelessWidget {
           return const LoginPage();
         }
 
-        final String normalizedAdminEmail = kAdminEmail.toLowerCase();
-        if ((user.email ?? '').toLowerCase() == normalizedAdminEmail) {
-          return const AdminPage();
-        }
+        return FutureBuilder<Map<String, dynamic>>(
+          future: _fetchAuthInfo(user),
+          builder:
+              (
+                BuildContext context,
+                AsyncSnapshot<Map<String, dynamic>> authSnapshot,
+              ) {
+                if (authSnapshot.connectionState == ConnectionState.waiting) {
+                  return const _AuthLoadingView();
+                }
+                if (authSnapshot.hasError) {
+                  return const _AuthErrorView(
+                    message: 'Failed to load your profile. Please try again.',
+                  );
+                }
 
-        return FutureBuilder<String?>(
-          future: UserRoleService.fetchRoleByUid(user.uid),
-          builder: (BuildContext context, AsyncSnapshot<String?> roleSnapshot) {
-            if (roleSnapshot.connectionState == ConnectionState.waiting) {
-              return const _AuthLoadingView();
-            }
-            if (roleSnapshot.hasError) {
-              return const _AuthErrorView(
-                message: 'Failed to load your profile. Please try again.',
-              );
-            }
-            final String? role = roleSnapshot.data;
-            if (!user.emailVerified) {
-              final String? destinationRoute = switch (role) {
-                'student' => StudentPage.routeName,
-                'instructor' => InstructorPage.routeName,
-                _ => null,
-              };
+                final Map<String, dynamic>? data = authSnapshot.data;
+                final bool isAdmin = data?['isAdmin'] == true;
+                final String? role = data?['role'] as String?;
 
-              if (destinationRoute == null) {
-                return const _AuthErrorView(
-                  message:
-                      'Your account is missing a role assignment. Please contact support.',
-                );
-              }
+                if (isAdmin) return const AdminPage();
 
-              return VerifyEmailPage(destinationRoute: destinationRoute);
-            }
-            switch (role) {
-              case 'student':
-                return const StudentPage();
-              case 'instructor':
-                return const InstructorPage();
-              default:
-                return const _AuthErrorView(
-                  message:
-                      'Your account is missing a role assignment. Please contact support.',
-                );
-            }
-          },
+                if (!user.emailVerified) {
+                  final String? destinationRoute = switch (role) {
+                    'student' => StudentPage.routeName,
+                    'instructor' => InstructorPage.routeName,
+                    _ => null,
+                  };
+
+                  if (destinationRoute == null) {
+                    return const _AuthErrorView(
+                      message:
+                          'Your account is missing a role assignment. Please contact support.',
+                    );
+                  }
+
+                  return VerifyEmailPage(destinationRoute: destinationRoute);
+                }
+
+                switch (role) {
+                  case 'student':
+                    return const StudentPage();
+                  case 'instructor':
+                    return const InstructorPage();
+                  default:
+                    return const _AuthErrorView(
+                      message:
+                          'Your account is missing a role assignment. Please contact support.',
+                    );
+                }
+              },
         );
       },
     );

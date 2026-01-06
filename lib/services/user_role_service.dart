@@ -21,8 +21,9 @@ class UserRoleService {
 
   /// Creates/updates a student profile while claiming a unique Student ID.
   ///
-  /// This uses a Firestore transaction to ensure the same Student ID can't be
-  /// claimed by multiple users.
+  /// This uses a batched write (no reads) so it works with security rules that
+  /// keep the index private (students cannot read `studentIdIndex`). Uniqueness
+  /// is enforced by Firestore rules using `!exists(...)` on the index document.
   static Future<void> upsertStudentProfileWithUniqueStudentId({
     required String uid,
     required String studentId,
@@ -44,34 +45,39 @@ class UserRoleService {
         .collection(_studentIdIndexCollection)
         .doc(normalizedId);
 
-    await firestore.runTransaction((Transaction tx) async {
-      final DocumentSnapshot<Map<String, dynamic>> indexSnap = await tx.get(
-        indexRef,
-      );
-      if (indexSnap.exists) {
-        final String? existingUid = indexSnap.data()?['uid'] as String?;
-        if (existingUid != null && existingUid != uid) {
-          throw FirebaseException(
-            plugin: 'cloud_firestore',
-            code: 'student-id-already-in-use',
-            message: 'Student ID is already in use.',
-          );
-        }
-      }
+    final Map<String, dynamic> mergedProfile = <String, dynamic>{
+      ...profile,
+      'studentId': normalizedId,
+      'Student ID': normalizedId,
+    };
 
-      final Map<String, dynamic> mergedProfile = <String, dynamic>{
-        ...profile,
-        'studentId': normalizedId,
-        'Student ID': normalizedId,
-      };
-
-      tx.set(userRef, mergedProfile, SetOptions(merge: true));
-      tx.set(indexRef, <String, dynamic>{
-        'uid': uid,
-        'studentId': normalizedId,
-        'createdAt': FieldValue.serverTimestamp(),
-      });
+    final WriteBatch batch = firestore.batch();
+    batch.set(userRef, mergedProfile, SetOptions(merge: true));
+    batch.set(indexRef, <String, dynamic>{
+      'uid': uid,
+      'studentId': normalizedId,
+      'createdAt': FieldValue.serverTimestamp(),
     });
+
+    try {
+      await batch.commit();
+    } on FirebaseException catch (error) {
+      // If the index doc already exists, rules will reject the create.
+      if (error.code.toLowerCase().contains('permission')) {
+        rethrow;
+      }
+      // Normalize common "already exists" shapes into a stable code that the
+      // UI already handles.
+      final String msg = (error.message ?? '').toLowerCase();
+      if (error.code == 'already-exists' || msg.contains('already exists')) {
+        throw FirebaseException(
+          plugin: 'cloud_firestore',
+          code: 'student-id-already-in-use',
+          message: 'Student ID is already in use.',
+        );
+      }
+      rethrow;
+    }
   }
 
   /// Admin-only helper: changes a user's Student ID while keeping the unique

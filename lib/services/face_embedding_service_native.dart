@@ -7,6 +7,8 @@ import 'package:image/image.dart' as imglib;
 import 'package:onnxruntime/onnxruntime.dart';
 
 import 'image_normalization_service.dart';
+import 'model_manager.dart';
+import 'dart:io';
 
 /// Handles ONNX Runtime face embedding generation.
 class FaceEmbeddingService {
@@ -36,9 +38,10 @@ class FaceEmbeddingService {
       sessionOptions = OrtSessionOptions()
         ..setIntraOpNumThreads(2)
         ..setInterOpNumThreads(2);
-      final ByteData rawModel = await rootBundle.load(_modelAssetPath);
+      final File modelFile = await ModelManager.instance.getModelFile('face_embedding.onnx');
+      final Uint8List rawBytes = await modelFile.readAsBytes();
       _session = OrtSession.fromBuffer(
-        rawModel.buffer.asUint8List(),
+        rawBytes,
         sessionOptions,
       );
       _inputName = _session!.inputNames.first;

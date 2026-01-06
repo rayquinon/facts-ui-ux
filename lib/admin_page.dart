@@ -2470,14 +2470,36 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
         'uid': uid,
       });
       if (!mounted) return;
+
+      setState(() {
+        _loadedUserDocs = _loadedUserDocs
+            .where(
+              (QueryDocumentSnapshot<Map<String, dynamic>> d) => d.id != uid,
+            )
+            .toList(growable: false);
+      });
+
+      // Re-fetch to keep pagination consistent.
+      _refreshUsers();
+
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('User deleted.')));
     } catch (error) {
       if (!mounted) return;
+
+      String message = error.toString();
+      if (error is FirebaseFunctionsException) {
+        final String details = error.details?.toString() ?? '';
+        message = [
+          '[${error.code}]',
+          if ((error.message ?? '').trim().isNotEmpty) error.message!.trim(),
+          if (details.trim().isNotEmpty) details.trim(),
+        ].join(' ');
+      }
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('Failed to delete: $error')));
+      ).showSnackBar(SnackBar(content: Text('Failed to delete: $message')));
     }
   }
 

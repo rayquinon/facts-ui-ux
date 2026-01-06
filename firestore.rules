@@ -12,7 +12,8 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return normalizedEmail() == 'admin@gmail.com';
+      // Use a custom claim `admin` set on the user's ID token via Admin SDK.
+      return isSignedIn() && request.auth.token.admin == true;
     }
 
     function adminRoleValues() {
