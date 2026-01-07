@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
@@ -220,6 +222,17 @@ class _LoginPageState extends State<LoginPage> {
     required double horizontalPadding,
     required double verticalPadding,
   }) {
+    final Size screenSize = MediaQuery.sizeOf(context);
+    final bool showLogo = !isDesktop;
+    final bool isShortScreen = screenSize.height < 720;
+    final double logoMaxHeight = isTablet
+        ? (isShortScreen ? 120 : 150)
+        : (isShortScreen ? 96 : 120);
+    final double logoMaxWidth = math.min(
+      isTablet ? 320 : 260,
+      screenSize.width * (isTablet ? 0.45 : 0.60),
+    );
+
     final EdgeInsets contentPadding = EdgeInsets.symmetric(
       horizontal: isDesktop ? horizontalPadding / 2 : horizontalPadding,
       vertical: verticalPadding,
@@ -235,8 +248,28 @@ class _LoginPageState extends State<LoginPage> {
                 ? CrossAxisAlignment.start
                 : CrossAxisAlignment.center,
             children: <Widget>[
+              if (showLogo)
+                ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxHeight: logoMaxHeight,
+                    maxWidth: logoMaxWidth,
+                  ),
+                  child: Image.asset(
+                    'assets/logo.png',
+                    fit: BoxFit.contain,
+                    filterQuality: FilterQuality.high,
+                    errorBuilder: (
+                      BuildContext context,
+                      Object error,
+                      StackTrace? stackTrace,
+                    ) {
+                      return const SizedBox.shrink();
+                    },
+                  ),
+                ),
+              if (showLogo) SizedBox(height: isShortScreen ? 12 : 16),
               _buildHeading(theme, isTablet),
-              const SizedBox(height: 32),
+              SizedBox(height: isShortScreen ? 24 : 32),
               _buildFormCard(theme, isTablet: isTablet),
             ],
           ),
