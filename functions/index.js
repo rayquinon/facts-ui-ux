@@ -188,6 +188,10 @@ exports.adminClearFaceEnrollment = onCall({ cors: true }, async (request) => {
   await db.collection('users').doc(uid).set(
     {
       faceEmbed: FieldValue.delete(),
+      faceEmbeds: FieldValue.delete(),
+      faceEmbedCount: FieldValue.delete(),
+      faceEmbedProvider: FieldValue.delete(),
+      faceEmbedUpdatedAt: FieldValue.delete(),
     },
     { merge: true }
   );

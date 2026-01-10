@@ -69,6 +69,7 @@ class FaceEnrollmentPage extends StatefulWidget {
 
 class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   static const int _capturesPerPhase = 10;
+  static const int _storedEmbeddingsPerPhase = 3;
   static final List<_OrientationPhase> _phaseOrder = _OrientationPhase.values;
 
   CameraController? _cameraController;
@@ -82,6 +83,8 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   bool _cameraReady = false;
   bool _cameraInitializing = false;
   bool _faceReadyForEnrollment = kIsWeb;
+  bool _enrollmentLocked = false;
+  bool _enrollmentLockChecked = false;
   DateTime? _lastCaptureAt;
   Size? _lastPreviewContainerSize;
   int _lastRotationCompensation = 0;
@@ -109,6 +112,41 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     }
     _statusMessage =
         'Tap "Allow Camera" to preview before starting enrollment.';
+
+    _checkEnrollmentLock();
+  }
+
+  Future<void> _checkEnrollmentLock() async {
+    final User? user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      if (mounted) {
+        setState(() => _enrollmentLockChecked = true);
+      }
+      return;
+    }
+    try {
+      final DocumentSnapshot<Map<String, dynamic>> snapshot =
+          await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
+      final Map<String, dynamic>? data = snapshot.data();
+      final bool hasEmbeds =
+          (data?['faceEmbeds'] is List &&
+              (data!['faceEmbeds'] as List).isNotEmpty) ||
+          (data?['faceEmbed'] is List && (data!['faceEmbed'] as List).isNotEmpty);
+      if (!mounted) return;
+      if (hasEmbeds) {
+        setState(() {
+          _enrollmentLocked = true;
+          _statusMessage =
+              'Face enrollment already exists. Ask an admin to clear your face enrollment before re-enrolling.';
+        });
+      }
+    } catch (_) {
+      // If this check fails, don’t block enrollment.
+    } finally {
+      if (mounted) {
+        setState(() => _enrollmentLockChecked = true);
+      }
+    }
   }
 
   Future<void> _initializePipeline() async {
@@ -137,6 +175,17 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
 
   Future<void> _startEnrollment() async {
     if (_enrollmentStarted || !_cameraReady) return;
+    if (_enrollmentLocked) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Enrollment already exists. Ask an admin to clear it before re-enrolling.',
+          ),
+        ),
+      );
+      return;
+    }
     final bool alignmentRequired = _faceDetector != null;
     if (alignmentRequired && !_faceReadyForEnrollment) {
       setState(() {
@@ -770,6 +819,18 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     final User? user = FirebaseAuth.instance.currentUser;
     if (embedding == null || user == null) return;
 
+    if (_enrollmentLocked) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Enrollment already exists. Ask an admin to clear it before re-enrolling.',
+          ),
+        ),
+      );
+      return;
+    }
+
     if (kIsWeb) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -784,9 +845,16 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
 
     setState(() => _isSaving = true);
     try {
+      final List<List<double>> embeddingsForStorage =
+          _selectRepresentativeEmbeddings(perPhase: _storedEmbeddingsPerPhase);
       await FirebaseFirestore.instance.collection('users').doc(user.uid).set(
         <String, dynamic>{
+          // Keep the averaged embedding for backward compatibility/quick matching.
           'faceEmbed': embedding,
+
+          // Store multiple samples for robust matching.
+          'faceEmbeds': embeddingsForStorage,
+          'faceEmbedCount': embeddingsForStorage.length,
           'faceEmbedProvider': 'onnx_v1',
           'faceEmbedUpdatedAt': FieldValue.serverTimestamp(),
         },
@@ -807,6 +875,36 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
         setState(() => _isSaving = false);
       }
     }
+  }
+
+  List<List<double>> _selectRepresentativeEmbeddings({required int perPhase}) {
+    final List<List<double>> selected = <List<double>>[];
+    for (final _OrientationPhase phase in _phaseOrder) {
+      final List<List<double>> bucket = _phaseEmbeddings[phase] ?? <List<double>>[];
+      if (bucket.isEmpty) {
+        continue;
+      }
+
+      final List<int> indices = <int>[];
+      if (perPhase <= 1 || bucket.length == 1) {
+        indices.add(0);
+      } else if (perPhase == 2) {
+        indices.add(0);
+        indices.add(bucket.length - 1);
+      } else {
+        indices.add(0);
+        indices.add(bucket.length ~/ 2);
+        indices.add(bucket.length - 1);
+      }
+
+      final Set<int> uniq = indices
+          .where((int i) => i >= 0 && i < bucket.length)
+          .toSet();
+      for (final int i in uniq) {
+        selected.add(List<double>.from(bucket[i], growable: false));
+      }
+    }
+    return selected;
   }
 
   @override
@@ -917,6 +1015,13 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
         label: Text(
           _cameraInitializing ? 'Requesting camera...' : 'Allow Camera',
         ),
+      );
+    }
+    if (_enrollmentLockChecked && _enrollmentLocked) {
+      return FilledButton.icon(
+        onPressed: null,
+        icon: const Icon(Icons.lock_outline),
+        label: const Text('Enrollment already exists'),
       );
     }
     if (!_enrollmentStarted) {

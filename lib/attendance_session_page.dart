@@ -51,6 +51,8 @@ class AttendanceSessionPage extends StatefulWidget {
 
 class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   static const double _similarityThreshold = 0.45;
+  static const double _minAcceptedConfidence = 0.85;
+  static const double _confidenceSpan = 0.20;
   static const Duration _captureCooldown = Duration(seconds: 2);
   static const Duration _duplicateCaptureCooldown = Duration(seconds: 10);
   static const Duration _unrecognizedCooldown = Duration(seconds: 4);
@@ -348,16 +350,21 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     _RecognizedStudent? bestCandidate;
     double bestSimilarity = -1;
     for (final _RecognizedStudent student in _roster) {
-      final double similarity = _cosineSimilarity(embedding, student.embedding);
-      if (similarity > bestSimilarity) {
-        bestSimilarity = similarity;
-        bestCandidate = student;
+      for (final List<double> candidate in student.embeddings) {
+        final double similarity = _cosineSimilarity(embedding, candidate);
+        if (similarity > bestSimilarity) {
+          bestSimilarity = similarity;
+          bestCandidate = student;
+        }
       }
     }
     if (bestCandidate == null || bestSimilarity < _similarityThreshold) {
       return _MatchResult(embedding: embedding, similarity: bestSimilarity);
     }
-    final double confidence = _normalizeConfidence(bestSimilarity);
+    final double confidence = _similarityToDisplayConfidence(bestSimilarity);
+    if (confidence < _minAcceptedConfidence) {
+      return _MatchResult(embedding: embedding, similarity: bestSimilarity);
+    }
     return _MatchResult(
       embedding: embedding,
       student: bestCandidate,
@@ -729,9 +736,21 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     return dot / (math.sqrt(normA) * math.sqrt(normB));
   }
 
-  double _normalizeConfidence(double similarity) {
-    final double normalized = (similarity + 1) / 2;
-    return normalized.clamp(0, 1);
+  double _similarityToDisplayConfidence(double similarity) {
+    // Display mapping (not a calibrated probability): below threshold maps to
+    // 0–84%, and above threshold maps to 85–100%.
+    if (similarity.isNaN || similarity <= 0) {
+      return 0;
+    }
+
+    if (similarity < _similarityThreshold) {
+      final double ratio = similarity / _similarityThreshold;
+      return (ratio * 0.84).clamp(0.0, 0.84);
+    }
+
+    final double delta = similarity - _similarityThreshold;
+    final double t = (delta / _confidenceSpan).clamp(0.0, 1.0);
+    return (0.85 + (t * 0.15)).clamp(0.0, 1.0);
   }
 
   void _toggleCapture() {
@@ -1091,12 +1110,12 @@ class _RecognizedStudent {
   const _RecognizedStudent({
     required this.userId,
     required this.displayName,
-    required this.embedding,
+    required this.embeddings,
   });
 
   final String userId;
   final String displayName;
-  final List<double> embedding;
+  final List<List<double>> embeddings;
 
   static _RecognizedStudent? fromDocument(
     QueryDocumentSnapshot<Map<String, dynamic>> doc,
@@ -1106,19 +1125,45 @@ class _RecognizedStudent {
     if (!kIsWeb && provider == 'web_fallback') {
       return null;
     }
-    final List<dynamic>? rawEmbedding = data['faceEmbed'] as List<dynamic>?;
-    if (rawEmbedding == null || rawEmbedding.isEmpty) {
+    final List<List<double>> embeddings = _readEmbeddings(data);
+    if (embeddings.isEmpty) {
       return null;
     }
-    final List<double> embedding = rawEmbedding
-        .map((dynamic value) => (value as num).toDouble())
-        .toList(growable: false);
     final String displayName = _resolveDisplayName(data, doc.id);
     return _RecognizedStudent(
       userId: doc.id,
       displayName: displayName,
-      embedding: embedding,
+      embeddings: embeddings,
     );
+  }
+
+  static List<List<double>> _readEmbeddings(Map<String, dynamic> data) {
+    final dynamic rawMulti = data['faceEmbeds'];
+    if (rawMulti is List && rawMulti.isNotEmpty) {
+      final List<List<double>> parsed = <List<double>>[];
+      for (final dynamic item in rawMulti) {
+        if (item is! List) continue;
+        final List<double> vec = item
+            .whereType<num>()
+            .map((num v) => v.toDouble())
+            .toList(growable: false);
+        if (vec.isNotEmpty) {
+          parsed.add(vec);
+        }
+      }
+      if (parsed.isNotEmpty) {
+        return parsed;
+      }
+    }
+
+    final List<dynamic>? rawSingle = data['faceEmbed'] as List<dynamic>?;
+    if (rawSingle == null || rawSingle.isEmpty) {
+      return <List<double>>[];
+    }
+    final List<double> embedding = rawSingle
+        .map((dynamic value) => (value as num).toDouble())
+        .toList(growable: false);
+    return <List<double>>[embedding];
   }
 
   static String _resolveDisplayName(Map<String, dynamic> data, String docId) {

@@ -72,8 +72,11 @@ class _StudentPageState extends State<StudentPage> {
           );
         }
         final Map<String, dynamic>? data = snapshot.data?.data();
+        final List<dynamic>? faceEmbeds = data?['faceEmbeds'] as List<dynamic>?;
         final List<dynamic>? faceEmbed = data?['faceEmbed'] as List<dynamic>?;
-        final bool hasEnrollment = faceEmbed != null && faceEmbed.isNotEmpty;
+        final bool hasEnrollment =
+          (faceEmbeds != null && faceEmbeds.isNotEmpty) ||
+          (faceEmbed != null && faceEmbed.isNotEmpty);
 
         if (!hasEnrollment) {
           return _FaceEnrollmentRequiredView(

@@ -2970,8 +2970,10 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                             );
                             final String role = (data['role'] as String?) ?? '';
                             final bool hasEnrollment =
-                                (data['faceEmbed'] is List) &&
-                                (data['faceEmbed'] as List).isNotEmpty;
+                              ((data['faceEmbeds'] is List) &&
+                                (data['faceEmbeds'] as List).isNotEmpty) ||
+                              ((data['faceEmbed'] is List) &&
+                                (data['faceEmbed'] as List).isNotEmpty);
                             final bool approved = data['approved'] == true;
 
                             return ListTile(
