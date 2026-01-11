@@ -233,6 +233,44 @@ service cloud.firestore {
         allow read: if isSignedIn() && (request.auth.uid == studentId || isClassInstructor(classId) || isAdmin());
         allow write: if isAdmin() || (isSignedIn() && isClassInstructor(classId) && isApprovedInstructor());
       }
+
+      match /attendanceOverrides/{overrideId} {
+        allow read: if isSignedIn() && (isAdmin() || isRoleAdmin() || isClassInstructor(classId) || isStudent());
+        // Overrides are applied via Cloud Functions (Admin SDK). Allowing direct client writes
+        // increases risk of tampering, so keep it locked down.
+        allow create, update, delete: if isAdmin();
+      }
+    }
+
+    match /excuseRequests/{requestId} {
+      function isOwner() {
+        return isSignedIn() && resource.data.studentId == request.auth.uid;
+      }
+
+      function isAssignedInstructor() {
+        return isSignedIn() && (resource.data.instructorIds is list) && request.auth.uid in resource.data.instructorIds;
+      }
+
+      function studentAttachmentOnlyUpdate() {
+        let changed = request.resource.data.diff(resource.data).changedKeys();
+        return isStudent() &&
+          isOwner() &&
+          resource.data.status == 'pending' &&
+          request.resource.data.status == 'pending' &&
+          changed.hasOnly(['attachment', 'updatedAt']);
+      }
+
+      allow read: if isAdmin() || isRoleAdmin() || isApprovedInstructor() || isOwner() || isAssignedInstructor();
+
+      // Create/approve flows are handled through Cloud Functions (Admin SDK). This prevents
+      // clients from spoofing instructor routing or approval fields.
+      allow create: if false;
+
+      // Students can only attach/update attachment metadata while pending.
+      allow update: if isAdmin() || studentAttachmentOnlyUpdate();
+
+      // Only admin (custom claim) can delete requests.
+      allow delete: if isAdmin();
     }
 
     match /attendanceSessions/{sessionId} {

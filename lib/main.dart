@@ -13,12 +13,17 @@ import 'login.dart';
 import 'signup_pickrole.dart';
 import 'student_page.dart';
 import 'attendance_session_page.dart';
+import 'services/crash_reporter.dart';
 import 'services/user_role_service.dart';
 import 'reports/generate_report_page.dart';
 import 'verify_email_page.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Best-effort crash capture (especially for framework red-screen assertions).
+  await CrashReporter.init();
+  CrashReporter.installGlobalHandlers();
 
   if (kIsWeb) {
     await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
@@ -131,8 +136,12 @@ class _AuthGateState extends State<AuthGate> {
   }
 
   Future<Map<String, dynamic>> _fetchAuthInfo(User user, int refreshKey) async {
-    final IdTokenResult token = await user.getIdTokenResult(true);
-    final String? role = await UserRoleService.fetchRoleByUid(user.uid);
+    final bool forceRefresh = refreshKey > 0;
+    final IdTokenResult token = await user.getIdTokenResult(forceRefresh);
+    final String? role = await UserRoleService.fetchRoleByUid(
+      user.uid,
+      forceRefresh: forceRefresh,
+    );
     final bool isAdmin =
         token.claims != null &&
         (token.claims!['admin'] == true || token.claims!['admin'] == 'true');

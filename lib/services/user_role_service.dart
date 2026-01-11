@@ -4,18 +4,31 @@ class UserRoleService {
   const UserRoleService._();
 
   static const String _studentIdIndexCollection = 'studentIdIndex';
+  static final Map<String, String?> _roleCache = <String, String?>{};
 
   static String normalizeStudentId(String raw) => raw.trim().toUpperCase();
 
-  static Future<String?> fetchRoleByUid(String? uid) async {
+  static Future<String?> fetchRoleByUid(
+    String? uid, {
+    bool forceRefresh = false,
+  }) async {
     if (uid == null) return null;
+
+    if (!forceRefresh && _roleCache.containsKey(uid)) {
+      return _roleCache[uid];
+    }
+
     final DocumentSnapshot<Map<String, dynamic>> snapshot =
         await FirebaseFirestore.instance.collection('users').doc(uid).get();
     final Map<String, dynamic>? data = snapshot.data();
     final Object? roleValue = data?['role'];
     if (roleValue is String) {
-      return roleValue.toLowerCase();
+      final String role = roleValue.toLowerCase();
+      _roleCache[uid] = role;
+      return role;
     }
+
+    _roleCache[uid] = null;
     return null;
   }
 

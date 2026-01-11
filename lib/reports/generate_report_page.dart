@@ -1044,7 +1044,64 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
         }
       }
     }));
+
+    // Apply per-day overrides (e.g., approved excuse requests). Overrides win over
+    // session marks and can provide marks even when no session record exists.
+    try {
+      final DateTime startDay = _dayKey(range.start);
+      final DateTime endDay = _dayKey(range.end);
+      final String startKey = _dateKeyString(startDay);
+      final String endKey = _dateKeyString(endDay);
+      final QuerySnapshot<Map<String, dynamic>> overridesSnapshot = await _firestore
+          .collection('classes')
+          .doc(classId)
+          .collection('attendanceOverrides')
+          .where('dateKey', isGreaterThanOrEqualTo: startKey)
+          .where('dateKey', isLessThanOrEqualTo: endKey)
+          .get();
+      for (final QueryDocumentSnapshot<Map<String, dynamic>> override
+          in overridesSnapshot.docs) {
+        final Map<String, dynamic> overrideData = override.data();
+        final String? dateKeyString = overrideData['dateKey'] as String?;
+        final String? studentId = overrideData['studentId'] as String?;
+        final String? status = overrideData['status'] as String?;
+        if (dateKeyString == null || studentId == null || status == null) {
+          continue;
+        }
+        final AttendanceMark? mark = _statusToMark(status);
+        if (mark == null) {
+          continue;
+        }
+        final DateTime? overrideDay = _parseDateKey(dateKeyString);
+        if (overrideDay == null) {
+          continue;
+        }
+        final DateTime dayKey = _dayKey(overrideDay);
+        if (!matrix.containsKey(dayKey)) {
+          continue;
+        }
+        matrix.putIfAbsent(dayKey, () => <String, AttendanceMark>{})[studentId] =
+            mark;
+      }
+    } catch (_) {
+      // Best-effort only.
+    }
     return matrix;
+  }
+
+  String _dateKeyString(DateTime date) {
+    final String mm = date.month.toString().padLeft(2, '0');
+    final String dd = date.day.toString().padLeft(2, '0');
+    return '${date.year}-$mm-$dd';
+  }
+
+  DateTime? _parseDateKey(String value) {
+    final RegExpMatch? match = RegExp(r'^(\d{4})-(\d{2})-(\d{2})$').firstMatch(value);
+    if (match == null) return null;
+    final int year = int.parse(match.group(1)!);
+    final int month = int.parse(match.group(2)!);
+    final int day = int.parse(match.group(3)!);
+    return DateTime(year, month, day);
   }
 
   AttendanceMark? _statusToMark(String? status) {

@@ -4,11 +4,13 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:printing/printing.dart';
 
 import 'reports/generate_report_page.dart';
+import 'services/excuse_request_service.dart';
 import 'services/user_role_service.dart';
 
-enum _AdminSection { overview, users, departments, subjects, classes }
+enum _AdminSection { overview, users, departments, subjects, classes, excuses }
 
 class AdminPage extends StatefulWidget {
   const AdminPage({super.key});
@@ -22,6 +24,9 @@ class AdminPage extends StatefulWidget {
 class _AdminPageState extends State<AdminPage> {
   _AdminSection _selectedSection = _AdminSection.overview;
   late Future<_AdminOverviewStats> _overviewFuture;
+  final ExcuseRequestService _excuseService = ExcuseRequestService();
+  bool _isApprovingExcuse = false;
+  bool _isDeletingExcuse = false;
   static const List<_SectionNavItem> _navItems = <_SectionNavItem>[
     _SectionNavItem(
       _AdminSection.overview,
@@ -48,7 +53,287 @@ class _AdminPageState extends State<AdminPage> {
       'Class Maintenance',
       Icons.class_outlined,
     ),
+    _SectionNavItem(
+      _AdminSection.excuses,
+      'Excuse Requests',
+      Icons.report_problem_outlined,
+    ),
   ];
+
+  Future<void> _openPdfFromAttachment(Map<String, dynamic>? attachment) async {
+    if (attachment == null) return;
+    final String path = (attachment['path'] as String?) ?? '';
+    if (path.isEmpty) return;
+    try {
+      final bytes = await _excuseService.downloadPdfBytes(path: path);
+      await Printing.layoutPdf(onLayout: (_) async => bytes);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unable to open PDF: $error')),
+      );
+    }
+  }
+
+  Future<void> _approveExcuseRequest(String requestId) async {
+    if (_isApprovingExcuse) return;
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('Approve excuse request?'),
+        content: const Text('This will immediately mark the absence as excused.'),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Approve'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    setState(() => _isApprovingExcuse = true);
+    try {
+      await _excuseService.approve(requestId: requestId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Excuse request approved.')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Approval failed: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _isApprovingExcuse = false);
+    }
+  }
+
+  Future<void> _disapproveExcuseRequest(String requestId) async {
+    if (_isApprovingExcuse) return;
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('Disapprove excuse request?'),
+        content: const Text('This will mark the request as rejected.'),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Disapprove'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    setState(() => _isApprovingExcuse = true);
+    try {
+      await _excuseService.disapprove(requestId: requestId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Excuse request rejected.')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Rejection failed: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _isApprovingExcuse = false);
+    }
+  }
+
+  Future<void> _deleteExcuseRequest(String requestId) async {
+    if (_isDeletingExcuse) return;
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('Delete excuse request?'),
+        content: const Text('Only admins can delete requests. This cannot be undone.'),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    setState(() => _isDeletingExcuse = true);
+    try {
+      await _excuseService.delete(requestId: requestId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Excuse request deleted.')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Delete failed: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _isDeletingExcuse = false);
+    }
+  }
+
+  Widget _buildExcuseRequestsPanel() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        const Text(
+          'Excuse requests',
+          style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
+        ),
+        const SizedBox(height: 12),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                const Text('Approve or delete student excuse requests.'),
+                const SizedBox(height: 16),
+                StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                  stream: FirebaseFirestore.instance
+                      .collection('excuseRequests')
+                      .orderBy('createdAt', descending: true)
+                      .limit(50)
+                      .snapshots(),
+                  builder: (
+                    BuildContext context,
+                    AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot,
+                  ) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return const Center(
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(vertical: 12),
+                          child: CircularProgressIndicator(),
+                        ),
+                      );
+                    }
+                    if (snapshot.hasError) {
+                      return Text('Failed to load requests: ${snapshot.error}');
+                    }
+                    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
+                        snapshot.data?.docs ??
+                            <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+                    if (docs.isEmpty) {
+                      return const Text('No requests found.');
+                    }
+                    return ListView.separated(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: docs.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (BuildContext context, int index) {
+                        final QueryDocumentSnapshot<Map<String, dynamic>> doc =
+                            docs[index];
+                        final Map<String, dynamic> data = doc.data();
+                        final String status =
+                            (data['status'] as String?) ?? 'pending';
+                        final bool isPending = status.toLowerCase() == 'pending';
+                        final String studentName =
+                            (data['studentName'] as String?) ?? 'Student';
+                        final String section =
+                            (data['studentSection'] as String?) ?? '';
+                        final List<dynamic> dateKeys =
+                            (data['dateKeys'] as List<dynamic>?) ?? <dynamic>[];
+                        final String dateLabel = dateKeys.isEmpty
+                            ? 'No dates'
+                            : dateKeys.join(', ');
+                        final String reason = (data['reason'] as String?) ?? '';
+                        final Map<String, dynamic>? attachment =
+                            (data['attachment'] as Map?)?.cast<String, dynamic>();
+
+                        return ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(
+                            '$studentName${section.isEmpty ? '' : ' • $section'}',
+                          ),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Text(dateLabel),
+                              if (reason.isNotEmpty)
+                                Text(
+                                  reason,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                            ],
+                          ),
+                          trailing: Wrap(
+                            spacing: 8,
+                            children: <Widget>[
+                              Chip(label: Text(status.toUpperCase())),
+                              IconButton(
+                                tooltip: 'Open PDF',
+                                onPressed: attachment == null
+                                    ? null
+                                    : () => _openPdfFromAttachment(attachment),
+                                icon: const Icon(Icons.picture_as_pdf_outlined),
+                              ),
+                              IconButton(
+                                tooltip: 'Disapprove',
+                                onPressed: (!isPending || _isApprovingExcuse)
+                                    ? null
+                                    : () => _disapproveExcuseRequest(doc.id),
+                                icon: const Icon(Icons.cancel_outlined),
+                              ),
+                              IconButton(
+                                tooltip: 'Approve',
+                                onPressed: (!isPending || _isApprovingExcuse)
+                                    ? null
+                                    : () => _approveExcuseRequest(doc.id),
+                                icon: _isApprovingExcuse && isPending
+                                    ? const SizedBox(
+                                        width: 18,
+                                        height: 18,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : const Icon(Icons.check_circle_outline),
+                              ),
+                              IconButton(
+                                tooltip: 'Delete',
+                                onPressed: _isDeletingExcuse
+                                    ? null
+                                    : () => _deleteExcuseRequest(doc.id),
+                                icon: _isDeletingExcuse
+                                    ? const SizedBox(
+                                        width: 18,
+                                        height: 18,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : const Icon(Icons.delete_outline),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 
   @override
   void initState() {
@@ -65,6 +350,11 @@ class _AdminPageState extends State<AdminPage> {
         Icons.insights_outlined,
         onTap: () =>
             Navigator.of(context).pushNamed(GenerateReportPage.routeName),
+      ),
+      _AdminAction(
+        'Review Excuse Requests',
+        Icons.report_problem_outlined,
+        onTap: () => setState(() => _selectedSection = _AdminSection.excuses),
       ),
       _AdminAction(
         'Manage Departments',
@@ -325,6 +615,8 @@ class _AdminPageState extends State<AdminPage> {
             _ClassMaintenancePanel(),
           ],
         );
+      case _AdminSection.excuses:
+        return _buildExcuseRequestsPanel();
     }
   }
 

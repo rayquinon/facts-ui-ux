@@ -3,9 +3,11 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:printing/printing.dart';
 
 import 'attendance_session_page.dart';
 import 'reports/generate_report_page.dart';
+import 'services/excuse_request_service.dart';
 
 class InstructorPage extends StatefulWidget {
   const InstructorPage({super.key});
@@ -31,6 +33,8 @@ class _InstructorPageState extends State<InstructorPage> {
       <_InstructorClassAssignment>[];
   List<_InstructorSchedule> _scheduleEntries = <_InstructorSchedule>[];
   bool _isLaunchingSession = false;
+  bool _isApprovingExcuse = false;
+  final ExcuseRequestService _excuseService = ExcuseRequestService();
 
   DateTime get _activeTime =>
       _simulationEnabled ? _simulatedTime : DateTime.now();
@@ -47,6 +51,395 @@ class _InstructorPageState extends State<InstructorPage> {
     _profileSubscription?.cancel();
     _assignmentSubscription?.cancel();
     super.dispose();
+  }
+
+  Future<void> _approveExcuseRequest(String requestId) async {
+    if (_isApprovingExcuse) return;
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('Approve excuse request?'),
+        content: const Text(
+          'This will immediately mark the selected absence as excused.',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Approve'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    setState(() => _isApprovingExcuse = true);
+    try {
+      await _excuseService.approve(requestId: requestId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Excuse request approved.')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Approval failed: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _isApprovingExcuse = false);
+    }
+  }
+
+  Future<void> _disapproveExcuseRequest(String requestId) async {
+    if (_isApprovingExcuse) return;
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('Disapprove excuse request?'),
+        content: const Text(
+          'This will mark the request as rejected. The student can submit a new request if needed.',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Disapprove'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    setState(() => _isApprovingExcuse = true);
+    try {
+      await _excuseService.disapprove(requestId: requestId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Excuse request rejected.')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Disapprove failed: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _isApprovingExcuse = false);
+    }
+  }
+
+  Future<void> _openPdfFromAttachment(Map<String, dynamic>? attachment) async {
+    if (attachment == null) return;
+    final String path = (attachment['path'] as String?) ?? '';
+    if (path.isEmpty) return;
+    try {
+      final bytes = await _excuseService.downloadPdfBytes(path: path);
+      await Printing.layoutPdf(onLayout: (_) async => bytes);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unable to open PDF: $error')),
+      );
+    }
+  }
+
+  Widget _buildExcuseRequestsCard() {
+    final ThemeData theme = Theme.of(context);
+    final User? user = FirebaseAuth.instance.currentUser;
+    final String uid = user?.uid ?? '';
+    if (uid.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    bool isIndexError(Object error) {
+      final String message = error.toString().toLowerCase();
+      return message.contains('failed-precondition') && message.contains('index');
+    }
+
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> sortAndFilter(
+      List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+    ) {
+      final List<QueryDocumentSnapshot<Map<String, dynamic>>> pending = docs
+          .where((doc) {
+            final Object? status = doc.data()['status'];
+            return status is String && status.toLowerCase() == 'pending';
+          })
+          .toList();
+      pending.sort((a, b) {
+        final Timestamp? aCreated = a.data()['createdAt'] as Timestamp?;
+        final Timestamp? bCreated = b.data()['createdAt'] as Timestamp?;
+        final int aMs = aCreated?.millisecondsSinceEpoch ?? 0;
+        final int bMs = bCreated?.millisecondsSinceEpoch ?? 0;
+        return bMs.compareTo(aMs);
+      });
+      return pending;
+    }
+
+    return Card(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text(
+              'Excuse requests',
+              style: theme.textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Review and approve requests from your assigned students.',
+              style: theme.textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 12),
+            StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: FirebaseFirestore.instance
+                  .collection('excuseRequests')
+                  .where('instructorIds', arrayContains: uid)
+                  .where('status', isEqualTo: 'pending')
+                  .orderBy('createdAt', descending: true)
+                  .limit(20)
+                  .snapshots(),
+              builder: (
+                BuildContext context,
+                AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot,
+              ) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 12),
+                    child: LinearProgressIndicator(),
+                  );
+                }
+                if (snapshot.hasError) {
+                  final Object error = snapshot.error!;
+                  if (isIndexError(error)) {
+                    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                      stream: FirebaseFirestore.instance
+                          .collection('excuseRequests')
+                          .where('instructorIds', arrayContains: uid)
+                          .limit(50)
+                          .snapshots(),
+                      builder: (
+                        BuildContext context,
+                        AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>>
+                            fallbackSnapshot,
+                      ) {
+                        if (fallbackSnapshot.connectionState ==
+                            ConnectionState.waiting) {
+                          return const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 12),
+                            child: LinearProgressIndicator(),
+                          );
+                        }
+                        if (fallbackSnapshot.hasError) {
+                          return Text(
+                            'Failed to load requests: ${fallbackSnapshot.error}',
+                          );
+                        }
+                        final List<
+                                QueryDocumentSnapshot<Map<String, dynamic>>>
+                            rawDocs = fallbackSnapshot.data?.docs ??
+                                <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+                        final List<QueryDocumentSnapshot<Map<String, dynamic>>>
+                            docs = sortAndFilter(rawDocs);
+                        if (docs.isEmpty) {
+                          return const Text('No pending requests.');
+                        }
+                        return Column(
+                          children: docs
+                              .map((QueryDocumentSnapshot<Map<String, dynamic>>
+                                  doc) {
+                            final Map<String, dynamic> data = doc.data();
+                            final String studentName =
+                                (data['studentName'] as String?) ?? 'Student';
+                            final String section =
+                                (data['studentSection'] as String?) ?? '';
+                            final List<dynamic> dateKeys =
+                                (data['dateKeys'] as List<dynamic>?) ??
+                                    <dynamic>[];
+                            final String dateLabel = dateKeys.isEmpty
+                                ? 'No dates'
+                                : dateKeys.join(', ');
+                            final String reason =
+                                (data['reason'] as String?) ?? '';
+                            final Map<String, dynamic>? attachment =
+                                (data['attachment'] as Map?)
+                                    ?.cast<String, dynamic>();
+
+                            return Card(
+                              margin: const EdgeInsets.symmetric(vertical: 6),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              child: Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: <Widget>[
+                                    Text(
+                                      '$studentName${section.isEmpty ? '' : ' • $section'}',
+                                      style: theme.textTheme.titleMedium
+                                          ?.copyWith(
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 6),
+                                    Text(dateLabel),
+                                    if (reason.isNotEmpty) ...<Widget>[
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        reason,
+                                        maxLines: 3,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ],
+                                    const SizedBox(height: 10),
+                                    Wrap(
+                                      spacing: 10,
+                                      runSpacing: 10,
+                                      children: <Widget>[
+                                        OutlinedButton.icon(
+                                          onPressed: attachment == null
+                                              ? null
+                                              : () =>
+                                                  _openPdfFromAttachment(
+                                                    attachment,
+                                                  ),
+                                          icon: const Icon(
+                                            Icons.picture_as_pdf_outlined,
+                                          ),
+                                          label: const Text('Open PDF'),
+                                        ),
+                                        OutlinedButton.icon(
+                                          onPressed: _isApprovingExcuse
+                                              ? null
+                                              : () => _disapproveExcuseRequest(doc.id),
+                                          icon: const Icon(Icons.cancel_outlined),
+                                          label: const Text('Disapprove'),
+                                        ),
+                                        FilledButton.icon(
+                                          onPressed: _isApprovingExcuse
+                                              ? null
+                                              : () => _approveExcuseRequest(doc.id),
+                                          icon: const Icon(Icons.check),
+                                          label: const Text('Approve'),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          }).toList(),
+                        );
+                      },
+                    );
+                  }
+                  return Text('Failed to load requests: ${snapshot.error}');
+                }
+                final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
+                    snapshot.data?.docs ??
+                        <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+                if (docs.isEmpty) {
+                  return const Text('No pending requests.');
+                }
+                return Column(
+                  children:
+                      docs.map((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+                    final Map<String, dynamic> data = doc.data();
+                    final String studentName =
+                        (data['studentName'] as String?) ?? 'Student';
+                    final String section =
+                        (data['studentSection'] as String?) ?? '';
+                    final List<dynamic> dateKeys =
+                        (data['dateKeys'] as List<dynamic>?) ?? <dynamic>[];
+                    final String dateLabel =
+                        dateKeys.isEmpty ? 'No dates' : dateKeys.join(', ');
+                    final String reason = (data['reason'] as String?) ?? '';
+                    final Map<String, dynamic>? attachment =
+                        (data['attachment'] as Map?)?.cast<String, dynamic>();
+
+                    return Card(
+                      margin: const EdgeInsets.symmetric(vertical: 6),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: <Widget>[
+                            Text(
+                              '$studentName${section.isEmpty ? '' : ' • $section'}',
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(dateLabel),
+                            if (reason.isNotEmpty) ...<Widget>[
+                              const SizedBox(height: 4),
+                              Text(
+                                reason,
+                                maxLines: 3,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
+                            const SizedBox(height: 8),
+                            Wrap(
+                              spacing: 12,
+                              runSpacing: 12,
+                              children: <Widget>[
+                                OutlinedButton.icon(
+                                  onPressed: _isApprovingExcuse
+                                      ? null
+                                      : () => _disapproveExcuseRequest(doc.id),
+                                  icon: const Icon(Icons.cancel_outlined),
+                                  label: const Text('Disapprove'),
+                                ),
+                                FilledButton.icon(
+                                  onPressed: _isApprovingExcuse
+                                      ? null
+                                      : () => _approveExcuseRequest(doc.id),
+                                  icon: _isApprovingExcuse
+                                      ? const SizedBox(
+                                          width: 18,
+                                          height: 18,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                          ),
+                                        )
+                                      : const Icon(Icons.check_circle_outline),
+                                  label: const Text('Approve'),
+                                ),
+                                OutlinedButton.icon(
+                                  onPressed: attachment == null
+                                      ? null
+                                      : () => _openPdfFromAttachment(attachment),
+                                  icon: const Icon(Icons.picture_as_pdf_outlined),
+                                  label: const Text('View PDF'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _listenToApproval() {
@@ -428,6 +821,8 @@ class _InstructorPageState extends State<InstructorPage> {
               ),
               const SizedBox(height: 24),
               _buildReportShortcutCard(context, hasAssignments),
+              const SizedBox(height: 32),
+              _buildExcuseRequestsCard(),
               const SizedBox(height: 32),
               _buildScheduleSection(
                 context,

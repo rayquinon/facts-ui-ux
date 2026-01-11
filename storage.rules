@@ -5,6 +5,32 @@ service firebase.storage {
       return request.auth != null;
     }
 
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.admin == true;
+    }
+
+    function excuseRequestDoc(requestId) {
+      return requestId is string
+        ? firestore.get(/databases/(default)/documents/excuseRequests/$(requestId))
+        : null;
+    }
+
+    function canReadExcuseAttachment(requestId) {
+      let doc = excuseRequestDoc(requestId);
+      return doc != null &&
+        (isAdmin() ||
+          (doc.data.studentId is string && doc.data.studentId == request.auth.uid) ||
+          ((doc.data.instructorIds is list) && (request.auth.uid in doc.data.instructorIds))
+        );
+    }
+
+    function canWriteExcuseAttachment(requestId) {
+      let doc = excuseRequestDoc(requestId);
+      return doc != null &&
+        (doc.data.studentId is string && doc.data.studentId == request.auth.uid) &&
+        (doc.data.status is string && doc.data.status == 'pending');
+    }
+
     // ONNX models live under: models/<filename>
     // Allow any signed-in user to download the models.
     match /models/{allPaths=**} {
@@ -12,7 +38,15 @@ service firebase.storage {
       allow write: if false;
     }
 
-    // Default: lock down everything else.
+    // Excuse request attachments live under: excuseRequests/<requestId>/<filename>
+    match /excuseRequests/{requestId}/{fileName} {
+      allow read: if isSignedIn() && canReadExcuseAttachment(requestId);
+      allow write: if isSignedIn() &&
+        canWriteExcuseAttachment(requestId) &&
+        request.resource.size < 10 * 1024 * 1024 &&
+        request.resource.contentType == 'application/pdf';
+    }
+
     match /{allPaths=**} {
       allow read, write: if false;
     }

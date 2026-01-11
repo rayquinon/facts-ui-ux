@@ -1,8 +1,12 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:printing/printing.dart';
 
 import 'face_enrollment_page.dart';
+import 'services/excuse_request_service.dart';
+import 'widgets/request_excuse_dialog.dart';
 
 class StudentPage extends StatefulWidget {
   const StudentPage({super.key});
@@ -187,6 +191,13 @@ class _StudentDashboard extends StatefulWidget {
 
 class _StudentDashboardState extends State<_StudentDashboard> {
   late Future<_StudentDashboardData> _dashboardFuture;
+  final ExcuseRequestService _excuseService = ExcuseRequestService();
+
+  bool _summaryLoading = true;
+  Object? _summaryError;
+  _StudentAttendanceSummary _summary = const _StudentAttendanceSummary(isLoading: true);
+  final Map<String, _StudentAttendanceSummary> _statsByClassId =
+      <String, _StudentAttendanceSummary>{};
 
   @override
   void initState() {
@@ -199,15 +210,19 @@ class _StudentDashboardState extends State<_StudentDashboard> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.profile.userId != widget.profile.userId ||
         oldWidget.profile.section != widget.profile.section) {
+      _statsByClassId.clear();
+      _summaryError = null;
+      _summaryLoading = true;
+      _summary = const _StudentAttendanceSummary(isLoading: true);
       _dashboardFuture = _loadDashboardData();
     }
   }
 
   Future<_StudentDashboardData> _loadDashboardData() async {
     if (widget.profile.section.isEmpty) {
+      _setSummaryIdle(const _StudentAttendanceSummary());
       return const _StudentDashboardData(
         assignments: <_StudentClassAssignment>[],
-        summary: _StudentAttendanceSummary(),
         resolvedTerm: null,
       );
     }
@@ -217,17 +232,12 @@ class _StudentDashboardState extends State<_StudentDashboard> {
         .where('section', isEqualTo: widget.profile.section);
     final QuerySnapshot<Map<String, dynamic>> snapshot = await query.get();
 
-    final List<_StudentClassAssignment?> rawAssignments = await Future.wait(
-      snapshot.docs.map(_buildAssignment),
-    );
-    final List<_StudentClassAssignment> assignments =
-        rawAssignments.whereType<_StudentClassAssignment>().toList()
-          ..sort((a, b) => a.subjectCode.compareTo(b.subjectCode));
+    final List<_StudentClassAssignment> assignments = snapshot.docs
+        .map(_buildAssignmentFromClassDoc)
+        .whereType<_StudentClassAssignment>()
+        .toList()
+      ..sort((a, b) => a.subjectCode.compareTo(b.subjectCode));
 
-    final _StudentAttendanceSummary summary = assignments.fold<_StudentAttendanceSummary>(
-      const _StudentAttendanceSummary(),
-      (_StudentAttendanceSummary total, _StudentClassAssignment assignment) => total + assignment.stats,
-    );
     final Iterable<String> termValues = assignments
         .map(( _StudentClassAssignment assignment) => assignment.term.trim())
         .where((String term) => term.isNotEmpty);
@@ -238,24 +248,25 @@ class _StudentDashboardState extends State<_StudentDashboard> {
             ? uniqueTerms.first
             : 'Multiple terms';
 
-    return _StudentDashboardData(assignments: assignments, summary: summary, resolvedTerm: resolvedTerm);
+    // Do not block the whole dashboard on per-class stats reads.
+    _loadAttendanceSummary(assignments);
+
+    return _StudentDashboardData(assignments: assignments, resolvedTerm: resolvedTerm);
   }
 
-  Future<_StudentClassAssignment?> _buildAssignment(
+  _StudentClassAssignment? _buildAssignmentFromClassDoc(
     QueryDocumentSnapshot<Map<String, dynamic>> doc,
-  ) async {
+  ) {
     final Map<String, dynamic> data = doc.data();
     final List<_StudentClassSchedule> schedules =
-      (data['schedules'] as List<dynamic>? ?? <dynamic>[])
-            .map((dynamic entry) => _StudentClassSchedule.fromMap(entry as Map<String, dynamic>?))
+        (data['schedules'] as List<dynamic>? ?? <dynamic>[])
+            .map(
+              (dynamic entry) => _StudentClassSchedule.fromMap(
+                entry as Map<String, dynamic>?,
+              ),
+            )
             .whereType<_StudentClassSchedule>()
             .toList();
-    final DocumentSnapshot<Map<String, dynamic>> statsDoc = await doc.reference
-        .collection('attendanceStats')
-        .doc(widget.profile.userId)
-        .get();
-    final _StudentAttendanceSummary stats =
-        _StudentAttendanceSummary.fromMap(statsDoc.data());
     return _StudentClassAssignment(
       id: doc.id,
       subjectCode: (data['subjectCode'] as String?) ?? 'N/A',
@@ -264,11 +275,78 @@ class _StudentDashboardState extends State<_StudentDashboard> {
       term: (data['term'] as String?) ?? '',
       departmentName: (data['departmentName'] as String?) ?? '',
       schedules: schedules,
-      stats: stats,
     );
   }
 
+  void _setSummaryIdle(_StudentAttendanceSummary summary) {
+    if (!mounted) return;
+    setState(() {
+      _summaryLoading = false;
+      _summaryError = null;
+      _summary = summary;
+    });
+  }
+
+  Future<void> _loadAttendanceSummary(List<_StudentClassAssignment> assignments) async {
+    if (assignments.isEmpty) {
+      _setSummaryIdle(const _StudentAttendanceSummary());
+      return;
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _summaryLoading = true;
+      _summaryError = null;
+      _summary = const _StudentAttendanceSummary(isLoading: true);
+    });
+
+    final String studentId = widget.profile.userId;
+
+    try {
+      final List<Future<_StudentAttendanceSummary>> reads = assignments.map((a) async {
+        final _StudentAttendanceSummary? cached = _statsByClassId[a.id];
+        if (cached != null) return cached;
+
+        final DocumentSnapshot<Map<String, dynamic>> statsDoc = await FirebaseFirestore
+            .instance
+            .collection('classes')
+            .doc(a.id)
+            .collection('attendanceStats')
+            .doc(studentId)
+            .get();
+        final _StudentAttendanceSummary stats =
+            _StudentAttendanceSummary.fromMap(statsDoc.data());
+        _statsByClassId[a.id] = stats;
+        return stats;
+      }).toList();
+
+      final List<_StudentAttendanceSummary> statsList = await Future.wait(reads);
+      final _StudentAttendanceSummary summary = statsList.fold<_StudentAttendanceSummary>(
+        const _StudentAttendanceSummary(),
+        (_StudentAttendanceSummary total, _StudentAttendanceSummary other) => total + other,
+      );
+
+      if (!mounted) return;
+      setState(() {
+        _summaryLoading = false;
+        _summaryError = null;
+        _summary = summary;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _summaryLoading = false;
+        _summaryError = error;
+        _summary = const _StudentAttendanceSummary();
+      });
+    }
+  }
+
   Future<void> _handleRefresh() async {
+    _statsByClassId.clear();
+    _summaryError = null;
+    _summaryLoading = true;
+    _summary = const _StudentAttendanceSummary(isLoading: true);
     final Future<_StudentDashboardData> refreshFuture = _loadDashboardData();
     setState(() {
       _dashboardFuture = refreshFuture;
@@ -276,24 +354,203 @@ class _StudentDashboardState extends State<_StudentDashboard> {
     await refreshFuture;
   }
 
+  Future<void> _openRequestExcuseDialog() async {
+    final bool? submitted = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) {
+        return RequestExcuseDialog(excuseService: _excuseService);
+      },
+    );
+
+    if (!mounted) return;
+    if (submitted == true) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Excuse request submitted.')),
+      );
+    }
+  }
+
+  Future<void> _openPdfFromAttachment(Map<String, dynamic>? attachment) async {
+    if (attachment == null) return;
+    final String path = (attachment['path'] as String?) ?? '';
+    if (path.isEmpty) return;
+    try {
+      final Uint8List bytes = await _excuseService.downloadPdfBytes(path: path);
+      await Printing.layoutPdf(onLayout: (_) async => bytes);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unable to open PDF: $error')),
+      );
+    }
+  }
+
+  Widget _buildExcuseRequestsCard(ThemeData theme) {
+    final String uid = widget.profile.userId;
+
+    bool isIndexError(Object error) {
+      final String message = error.toString().toLowerCase();
+      return message.contains('failed-precondition') && message.contains('index');
+    }
+
+    Widget buildList(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
+      docs.sort((a, b) {
+        final Timestamp? aCreated = a.data()['createdAt'] as Timestamp?;
+        final Timestamp? bCreated = b.data()['createdAt'] as Timestamp?;
+        final int aMs = aCreated?.millisecondsSinceEpoch ?? 0;
+        final int bMs = bCreated?.millisecondsSinceEpoch ?? 0;
+        return bMs.compareTo(aMs);
+      });
+
+      return Column(
+        children: docs.map((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+          final Map<String, dynamic> data = doc.data();
+          final String status = (data['status'] as String?) ?? 'pending';
+          final String reason = (data['reason'] as String?) ?? '';
+          final List<dynamic> dateKeys =
+              (data['dateKeys'] as List<dynamic>?) ?? <dynamic>[];
+          final String dateLabel =
+              dateKeys.isEmpty ? 'No dates' : dateKeys.join(', ');
+          final Map<String, dynamic>? attachment =
+              (data['attachment'] as Map?)?.cast<String, dynamic>();
+
+          return ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text(
+              dateLabel,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            subtitle: reason.isEmpty
+                ? null
+                : Text(
+                    reason,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+            trailing: Wrap(
+              spacing: 8,
+              children: <Widget>[
+                Chip(label: Text(status.toUpperCase())),
+                IconButton(
+                  tooltip: 'Open PDF',
+                  onPressed: attachment == null
+                      ? null
+                      : () => _openPdfFromAttachment(attachment),
+                  icon: const Icon(Icons.picture_as_pdf_outlined),
+                ),
+              ],
+            ),
+          );
+        }).toList(),
+      );
+    }
+
+    return Card(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text(
+              'Excuse requests',
+              style: theme.textTheme.titleLarge
+                  ?.copyWith(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 12),
+            StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: FirebaseFirestore.instance
+                  .collection('excuseRequests')
+                  .where('studentId', isEqualTo: uid)
+                  .orderBy('createdAt', descending: true)
+                  .limit(5)
+                  .snapshots(),
+              builder: (
+                BuildContext context,
+                AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot,
+              ) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 12),
+                    child: LinearProgressIndicator(),
+                  );
+                }
+                if (snapshot.hasError) {
+                  final Object error = snapshot.error!;
+                  if (isIndexError(error)) {
+                    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                      stream: FirebaseFirestore.instance
+                          .collection('excuseRequests')
+                          .where('studentId', isEqualTo: uid)
+                          .limit(25)
+                          .snapshots(),
+                      builder: (
+                        BuildContext context,
+                        AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>>
+                            fallbackSnapshot,
+                      ) {
+                        if (fallbackSnapshot.connectionState ==
+                            ConnectionState.waiting) {
+                          return const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 12),
+                            child: LinearProgressIndicator(),
+                          );
+                        }
+                        if (fallbackSnapshot.hasError) {
+                          return Text(
+                            'Failed to load requests: ${fallbackSnapshot.error}',
+                          );
+                        }
+                        final List<
+                                QueryDocumentSnapshot<Map<String, dynamic>>>
+                            docs = fallbackSnapshot.data?.docs ??
+                                <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+                        if (docs.isEmpty) {
+                          return const Text('No requests yet.');
+                        }
+                        return buildList(docs);
+                      },
+                    );
+                  }
+
+                  return Text('Failed to load requests: ${snapshot.error}');
+                }
+
+                final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
+                    snapshot.data?.docs ??
+                        <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+                if (docs.isEmpty) {
+                  return const Text('No requests yet.');
+                }
+                return buildList(docs);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   List<_ClassScheduleMatch> _computeUpcomingSessions(
     List<_StudentClassAssignment> assignments,
-    DateTime reference,
+    DateTime now,
   ) {
-    final List<_ClassScheduleMatch> sessions = <_ClassScheduleMatch>[];
+    final List<_ClassScheduleMatch> matches = <_ClassScheduleMatch>[];
     for (final _StudentClassAssignment assignment in assignments) {
       for (final _StudentClassSchedule schedule in assignment.schedules) {
-        sessions.add(
+        matches.add(
           _ClassScheduleMatch(
             assignment: assignment,
             schedule: schedule,
-            startTime: schedule.nextOccurrence(reference),
+            startTime: schedule.nextOccurrence(now),
           ),
         );
       }
     }
-    sessions.sort((a, b) => a.startTime.compareTo(b.startTime));
-    return sessions;
+    matches.sort((a, b) => a.startTime.compareTo(b.startTime));
+    return matches;
   }
 
   @override
@@ -301,72 +558,90 @@ class _StudentDashboardState extends State<_StudentDashboard> {
     final ThemeData theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Student Dashboard'),
+        title: const Text('Student'),
         actions: <Widget>[
-          TextButton.icon(
+          IconButton(
+            tooltip: 'Sign out',
             onPressed: widget.onSignOut,
-            icon: const Icon(Icons.logout, size: 18),
-            label: const Text('Sign out'),
+            icon: const Icon(Icons.logout),
           ),
         ],
       ),
-      body: FutureBuilder<_StudentDashboardData>(
-        future: _dashboardFuture,
-        builder: (BuildContext context, AsyncSnapshot<_StudentDashboardData> snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snapshot.hasError) {
-            return Center(
-              child: Padding(
+      body: SafeArea(
+        child: FutureBuilder<_StudentDashboardData>(
+          future: _dashboardFuture,
+          builder: (
+            BuildContext context,
+            AsyncSnapshot<_StudentDashboardData> snapshot,
+          ) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            if (snapshot.hasError) {
+              return Center(
+                child: Text('Failed to load dashboard: ${snapshot.error}'),
+              );
+            }
+
+            final _StudentDashboardData data = snapshot.data ??
+                const _StudentDashboardData(
+                  assignments: <_StudentClassAssignment>[],
+                  resolvedTerm: null,
+                );
+            final DateTime now = DateTime.now();
+            final List<_ClassScheduleMatch> upcomingSessions =
+                _computeUpcomingSessions(data.assignments, now);
+            final _ClassScheduleMatch? nextSession =
+                upcomingSessions.isEmpty ? null : upcomingSessions.first;
+            final List<_ClassScheduleMatch> upcomingList =
+                upcomingSessions.take(3).toList();
+
+            return RefreshIndicator(
+              onRefresh: _handleRefresh,
+              child: ListView(
                 padding: const EdgeInsets.all(24),
-                child: Text('Unable to load dashboard: ${snapshot.error}'),
+                physics: const AlwaysScrollableScrollPhysics(),
+                children: <Widget>[
+                  _DashboardHeroCard(
+                    theme: theme,
+                    profile: widget.profile,
+                    summary: _summary,
+                    nextSession: nextSession,
+                  ),
+                  const SizedBox(height: 24),
+                  _StudentStatsRow(
+                    theme: theme,
+                    summary: _summary,
+                    isLoading: _summaryLoading,
+                    error: _summaryError,
+                  ),
+                  const SizedBox(height: 24),
+                  _StudentProfileSection(
+                    profile: widget.profile,
+                    resolvedTerm: data.resolvedTerm,
+                  ),
+                  const SizedBox(height: 24),
+                  _StudentNextClassSection(
+                    theme: theme,
+                    nextSession: nextSession,
+                  ),
+                  const SizedBox(height: 24),
+                  if (data.assignments.isEmpty)
+                    _StudentEmptyClassesCard(section: widget.profile.section)
+                  else
+                    _StudentUpcomingList(theme: theme, sessions: upcomingList),
+                  const SizedBox(height: 24),
+                  _StudentActionRow(
+                    theme: theme,
+                    onRequestExcuse: _openRequestExcuseDialog,
+                  ),
+                  const SizedBox(height: 24),
+                  _buildExcuseRequestsCard(theme),
+                ],
               ),
             );
-          }
-          final _StudentDashboardData data = snapshot.data ??
-              const _StudentDashboardData(
-                assignments: <_StudentClassAssignment>[],
-                summary: _StudentAttendanceSummary(),
-                resolvedTerm: null,
-              );
-          final DateTime now = DateTime.now();
-          final List<_ClassScheduleMatch> upcomingSessions =
-              _computeUpcomingSessions(data.assignments, now);
-          final _ClassScheduleMatch? nextSession =
-              upcomingSessions.isEmpty ? null : upcomingSessions.first;
-          final List<_ClassScheduleMatch> upcomingList =
-              upcomingSessions.take(3).toList();
-
-          return RefreshIndicator(
-            onRefresh: _handleRefresh,
-            child: ListView(
-              padding: const EdgeInsets.all(24),
-              physics: const AlwaysScrollableScrollPhysics(),
-              children: <Widget>[
-                _DashboardHeroCard(
-                  theme: theme,
-                  profile: widget.profile,
-                  summary: data.summary,
-                  nextSession: nextSession,
-                ),
-                const SizedBox(height: 24),
-                _StudentStatsRow(theme: theme, summary: data.summary),
-                const SizedBox(height: 24),
-                _StudentProfileSection(profile: widget.profile, resolvedTerm: data.resolvedTerm),
-                const SizedBox(height: 24),
-                _StudentNextClassSection(theme: theme, nextSession: nextSession),
-                const SizedBox(height: 24),
-                if (data.assignments.isEmpty)
-                  _StudentEmptyClassesCard(section: widget.profile.section)
-                else
-                  _StudentUpcomingList(theme: theme, sessions: upcomingList),
-                const SizedBox(height: 24),
-                _StudentActionRow(theme: theme, onSignOut: widget.onSignOut),
-              ],
-            ),
-          );
-        },
+          },
+        ),
       ),
     );
   }
@@ -389,7 +664,9 @@ class _DashboardHeroCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final String greeting = 'Hello, ${profile.displayName.split(' ').first}!';
     final int totalSessions = summary.total;
-    final String progressText = totalSessions == 0
+    final String progressText = summary.isLoading
+      ? 'Loading your attendance summary...'
+      : totalSessions == 0
         ? 'No recorded sessions yet. Attend your next class to get started.'
         : 'You have $totalSessions recorded sessions this term. Keep it up!';
     final String nextLabel = nextSession == null
@@ -450,17 +727,44 @@ class _DashboardHeroCard extends StatelessWidget {
 }
 
 class _StudentStatsRow extends StatelessWidget {
-  const _StudentStatsRow({required this.theme, required this.summary});
+  const _StudentStatsRow({
+    required this.theme,
+    required this.summary,
+    required this.isLoading,
+    required this.error,
+  });
 
   final ThemeData theme;
   final _StudentAttendanceSummary summary;
+  final bool isLoading;
+  final Object? error;
 
   @override
   Widget build(BuildContext context) {
+    if (error != null) {
+      return Row(
+        children: <Widget>[
+          Icon(Icons.warning_amber_rounded, color: theme.colorScheme.error),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Attendance summary unavailable.',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: theme.colorScheme.error,
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
     final List<_StudentStat> stats = <_StudentStat>[
-      _StudentStat(label: 'Present', value: summary.present.toString()),
-      _StudentStat(label: 'Late', value: summary.late.toString()),
-      _StudentStat(label: 'Absent', value: summary.absent.toString()),
+      _StudentStat(
+        label: 'Present',
+        value: isLoading ? '—' : summary.present.toString(),
+      ),
+      _StudentStat(label: 'Late', value: isLoading ? '—' : summary.late.toString()),
+      _StudentStat(label: 'Absent', value: isLoading ? '—' : summary.absent.toString()),
     ];
     return Wrap(
       spacing: 12,
@@ -578,6 +882,64 @@ class _StudentNextClassSection extends StatelessWidget {
   final ThemeData theme;
   final _ClassScheduleMatch? nextSession;
 
+  void _showSessionDetailsDialog(BuildContext context, _ClassScheduleMatch session) {
+    // Schedule dialog display after the current frame. This avoids Flutter
+    // assertions like "Tried to build dirty widget in the wrong build scope"
+    // when the tap occurs during an in-progress rebuild.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!context.mounted) return;
+
+      final MaterialLocalizations localizations =
+          MaterialLocalizations.of(context);
+      final String dateLabel = localizations.formatFullDate(session.startTime);
+      final String timeLabel = localizations.formatTimeOfDay(
+        TimeOfDay.fromDateTime(session.startTime),
+        alwaysUse24HourFormat: false,
+      );
+
+      showDialog<void>(
+        context: context,
+        useRootNavigator: true,
+        builder: (BuildContext dialogContext) {
+          return AlertDialog(
+            title: const Text('Session details'),
+            content: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 520),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    '${session.assignment.subjectCode} • ${session.assignment.subjectName}',
+                    style: Theme.of(dialogContext)
+                        .textTheme
+                        .titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Schedule: ${session.schedule.formatRange(dialogContext)}',
+                  ),
+                  Text(
+                    'Location: ${session.schedule.location ?? 'Location TBD'}',
+                  ),
+                  const SizedBox(height: 12),
+                  Text('Next start: $dateLabel • $timeLabel'),
+                ],
+              ),
+            ),
+            actions: <Widget>[
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('Close'),
+              ),
+            ],
+          );
+        },
+      );
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     if (nextSession == null) {
@@ -603,6 +965,9 @@ class _StudentNextClassSection extends StatelessWidget {
         ? 'In progress'
         : 'Starts in ${_formatCountdown(countdown)}';
 
+    final double screenWidth = MediaQuery.sizeOf(context).width;
+    final bool isNarrow = screenWidth < 380;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
@@ -615,15 +980,29 @@ class _StudentNextClassSection extends StatelessWidget {
               backgroundColor: theme.colorScheme.primaryContainer,
               child: Icon(Icons.class_outlined, color: theme.colorScheme.primary),
             ),
-            title: Text('${nextSession!.assignment.subjectCode} • ${nextSession!.assignment.subjectName}'),
+            title: Text(
+              '${nextSession!.assignment.subjectCode} • ${nextSession!.assignment.subjectName}',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
             subtitle: Text(
               '${nextSession!.schedule.formatRange(context)} • ${nextSession!.schedule.location ?? 'Location TBD'}\n$countdownLabel',
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
             ),
-            trailing: FilledButton.tonalIcon(
-              onPressed: () {},
-              icon: const Icon(Icons.route_outlined),
-              label: const Text('Details'),
-            ),
+            trailing: isNarrow
+                ? IconButton.filledTonal(
+                    tooltip: 'Details',
+                    onPressed: () =>
+                        _showSessionDetailsDialog(context, nextSession!),
+                    icon: const Icon(Icons.route_outlined),
+                  )
+                : FilledButton.tonalIcon(
+                    onPressed: () =>
+                        _showSessionDetailsDialog(context, nextSession!),
+                    icon: const Icon(Icons.route_outlined),
+                    label: const Text('Details'),
+                  ),
           ),
         ),
       ],
@@ -697,10 +1076,13 @@ class _StudentEmptyClassesCard extends StatelessWidget {
 }
 
 class _StudentActionRow extends StatelessWidget {
-  const _StudentActionRow({required this.theme, required this.onSignOut});
+  const _StudentActionRow({
+    required this.theme,
+    required this.onRequestExcuse,
+  });
 
   final ThemeData theme;
-  final VoidCallback onSignOut;
+  final VoidCallback onRequestExcuse;
 
   @override
   Widget build(BuildContext context) {
@@ -714,7 +1096,7 @@ class _StudentActionRow extends StatelessWidget {
           runSpacing: 12,
           children: <Widget>[
             FilledButton.icon(
-              onPressed: () {},
+              onPressed: onRequestExcuse,
               icon: const Icon(Icons.report_problem_outlined),
               label: const Text('Request excuse'),
             ),
@@ -781,12 +1163,10 @@ class _StudentProfile {
 class _StudentDashboardData {
   const _StudentDashboardData({
     required this.assignments,
-    required this.summary,
     required this.resolvedTerm,
   });
 
   final List<_StudentClassAssignment> assignments;
-  final _StudentAttendanceSummary summary;
   final String? resolvedTerm;
 }
 
@@ -799,7 +1179,6 @@ class _StudentClassAssignment {
     required this.term,
     required this.departmentName,
     required this.schedules,
-    required this.stats,
   });
 
   final String id;
@@ -809,7 +1188,6 @@ class _StudentClassAssignment {
   final String term;
   final String departmentName;
   final List<_StudentClassSchedule> schedules;
-  final _StudentAttendanceSummary stats;
 }
 
 class _StudentClassSchedule {
@@ -887,11 +1265,13 @@ class _StudentAttendanceSummary {
     this.present = 0,
     this.late = 0,
     this.absent = 0,
+    this.isLoading = false,
   });
 
   final int present;
   final int late;
   final int absent;
+  final bool isLoading;
 
   int get total => present + late + absent;
 
@@ -899,10 +1279,20 @@ class _StudentAttendanceSummary {
     if (data == null) {
       return const _StudentAttendanceSummary();
     }
+
+    int readCount(String primary, String fallback) {
+      final num? a = data[primary] as num?;
+      if (a != null) return a.toInt();
+      final num? b = data[fallback] as num?;
+      return b?.toInt() ?? 0;
+    }
+
     return _StudentAttendanceSummary(
-      present: (data['present'] as num?)?.toInt() ?? 0,
-      late: (data['late'] as num?)?.toInt() ?? 0,
-      absent: (data['absent'] as num?)?.toInt() ?? 0,
+      // Older schema: present/late/absent
+      // Current schema used by attendance_session_page.dart: presentCount/lateCount/absentCount
+      present: readCount('present', 'presentCount'),
+      late: readCount('late', 'lateCount'),
+      absent: readCount('absent', 'absentCount'),
     );
   }
 
