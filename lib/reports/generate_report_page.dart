@@ -8,6 +8,10 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 
+import 'attendance_mark.dart';
+import 'docx_attendance_builder.dart';
+import 'save_bytes.dart';
+
 const Set<int> _defaultMeetingWeekdays = <int>{
   DateTime.monday,
   DateTime.tuesday,
@@ -41,6 +45,7 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
   bool _isLoadingClasses = true;
   bool _isLoadingPreview = false;
   bool _isPrintingReport = false;
+  bool _isExportingDocx = false;
   List<_ClassOption> _classes = <_ClassOption>[];
   String? _selectedClassId;
   DateTimeRange? _selectedRange;
@@ -57,7 +62,9 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
 
   Future<void> _loadHeaderLogo() async {
     try {
-      final ByteData data = await rootBundle.load('assets/reports/ustp_logo.png');
+      final ByteData data = await rootBundle.load(
+        'assets/reports/ustp_logo.png',
+      );
       if (!mounted) return;
       setState(() {
         _headerLogoBytes = data.buffer.asUint8List();
@@ -74,7 +81,7 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
           .collection('classes')
           .orderBy('subjectCode')
           .get();
-        final List<_ClassOption> options = snapshot.docs
+      final List<_ClassOption> options = snapshot.docs
           .map(_ClassOption.fromDoc)
           .whereType<_ClassOption>()
           .toList();
@@ -86,23 +93,28 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
           _selectedClassId = null;
           _workingDays = <DateTime>[];
         } else {
-            final bool selectionMissing = _selectedClassId == null ||
-              !_classes.any((_ClassOption option) => option.id == _selectedClassId);
+          final bool selectionMissing =
+              _selectedClassId == null ||
+              !_classes.any(
+                (_ClassOption option) => option.id == _selectedClassId,
+              );
           if (selectionMissing) {
             _selectedClassId = _classes.first.id;
           }
           if (_selectedRange != null) {
-            _workingDays =
-                _expandMeetingDays(_selectedRange!, _resolveSelectedClass());
+            _workingDays = _expandMeetingDays(
+              _selectedRange!,
+              _resolveSelectedClass(),
+            );
           }
         }
       });
     } catch (error) {
       if (!mounted) return;
       setState(() => _isLoadingClasses = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to load classes: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to load classes: $error')));
     }
   }
 
@@ -133,7 +145,9 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
     if (weekdays.isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Select a range that includes a scheduled class day.')),
+        const SnackBar(
+          content: Text('Select a range that includes a scheduled class day.'),
+        ),
       );
       return;
     }
@@ -154,7 +168,10 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
       barrierDismissible: true,
       builder: (BuildContext context) {
         return Dialog(
-          insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+          insetPadding: const EdgeInsets.symmetric(
+            horizontal: 24,
+            vertical: 24,
+          ),
           child: _MonthYearRangePicker(
             initialRange: initialRange,
             firstDate: firstDate,
@@ -169,9 +186,9 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
   Future<void> _generatePreview() async {
     final _ClassOption? selectedClass = _resolveSelectedClass();
     if (selectedClass == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Select a class first.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Select a class first.')));
       return;
     }
     final DateTimeRange? range = _selectedRange;
@@ -183,7 +200,9 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
     }
     if (_workingDays.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Pick days that include at least one class meeting.')),
+        const SnackBar(
+          content: Text('Pick days that include at least one class meeting.'),
+        ),
       );
       return;
     }
@@ -192,17 +211,19 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
       _previewRows = <_ReportRow>[];
     });
     try {
-      final List<_StudentRosterEntry> roster = await _fetchRoster(selectedClass);
+      final List<_StudentRosterEntry> roster = await _fetchRoster(
+        selectedClass,
+      );
       final Map<DateTime, Map<String, AttendanceMark>> matrix =
           await _fetchAttendanceMatrix(
-        classId: selectedClass.id,
-        range: range,
-        dateKeys: _workingDays,
-      );
+            classId: selectedClass.id,
+            range: range,
+            dateKeys: _workingDays,
+          );
       final DateTime today = _dayKey(DateTime.now());
-      final List<_ReportRow> rows = roster
-          .map((_StudentRosterEntry student) {
-        final Map<DateTime, AttendanceMark> marks = <DateTime, AttendanceMark>{};
+      final List<_ReportRow> rows = roster.map((_StudentRosterEntry student) {
+        final Map<DateTime, AttendanceMark> marks =
+            <DateTime, AttendanceMark>{};
         for (final DateTime day in _workingDays) {
           final DateTime key = _dayKey(day);
           final AttendanceMark? mark = matrix[key]?[student.id];
@@ -221,8 +242,7 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
           courseYear: courseYear,
           marks: marks,
         );
-      }).toList()
-        ..sort((a, b) => a.studentName.compareTo(b.studentName));
+      }).toList()..sort((a, b) => a.studentName.compareTo(b.studentName));
       if (!mounted) return;
       setState(() {
         _previewRows = rows;
@@ -240,9 +260,9 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
     } catch (error) {
       if (!mounted) return;
       setState(() => _isLoadingPreview = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to build report: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to build report: $error')));
     }
   }
 
@@ -259,17 +279,23 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
     setState(() => _isPrintingReport = true);
     try {
       final pw.Document document = pw.Document();
-      final pw.ImageProvider? headerLogo =
-        _headerLogoBytes == null ? null : pw.MemoryImage(_headerLogoBytes!);
-      final List<List<DateTime>> dateChunks =
-          _chunkDates(_workingDays, _pdfDatesPerPage);
-      final List<List<_ReportRow>> rowChunks =
-          _chunkRows(_previewRows, _pdfRowsPerPage);
+      final pw.ImageProvider? headerLogo = _headerLogoBytes == null
+          ? null
+          : pw.MemoryImage(_headerLogoBytes!);
+      final List<List<DateTime>> dateChunks = _chunkDates(
+        _workingDays,
+        _pdfDatesPerPage,
+      );
+      final List<List<_ReportRow>> rowChunks = _chunkRows(
+        _previewRows,
+        _pdfRowsPerPage,
+      );
       if (dateChunks.isEmpty) {
         throw Exception('No class days available to print.');
       }
       int pageNumber = 0;
-      final int totalPages = dateChunks.length * (rowChunks.isEmpty ? 1 : rowChunks.length);
+      final int totalPages =
+          dateChunks.length * (rowChunks.isEmpty ? 1 : rowChunks.length);
       for (final List<DateTime> chunk in dateChunks) {
         if (rowChunks.isEmpty) {
           pageNumber++;
@@ -287,7 +313,11 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
           );
           continue;
         }
-        for (int rowPageIndex = 0; rowPageIndex < rowChunks.length; rowPageIndex++) {
+        for (
+          int rowPageIndex = 0;
+          rowPageIndex < rowChunks.length;
+          rowPageIndex++
+        ) {
           final List<_ReportRow> rows = rowChunks[rowPageIndex];
           final int rowOffset = rowPageIndex * _pdfRowsPerPage;
           pageNumber++;
@@ -317,6 +347,338 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
       if (mounted) {
         setState(() => _isPrintingReport = false);
       }
+    }
+  }
+
+  Future<void> _exportDocxReport() async {
+    final _ClassOption? selectedClass = _resolveSelectedClass();
+    final DateTimeRange? range = _selectedRange;
+    if (selectedClass == null || range == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Select a class and date range first.')),
+      );
+      return;
+    }
+    if (_isExportingDocx) return;
+    setState(() => _isExportingDocx = true);
+
+    try {
+      final List<_StudentRosterEntry> roster = await _fetchRoster(
+        selectedClass,
+      );
+      final ({
+        List<DateTime> sessionDays,
+        Map<DateTime, Map<String, AttendanceMark>> matrix,
+        String? instructorId,
+      })
+      sessionData = await _fetchSessionAttendanceMatrix(
+        classId: selectedClass.id,
+        range: range,
+      );
+
+      if (sessionData.sessionDays.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No attendance sessions found in this range.'),
+          ),
+        );
+        return;
+      }
+
+      final List<DocxAttendanceRow> rows = roster.map((
+        _StudentRosterEntry student,
+      ) {
+        final Map<DateTime, AttendanceMark> marks =
+            <DateTime, AttendanceMark>{};
+        for (final DateTime day in sessionData.sessionDays) {
+          final DateTime key = _dayKey(day);
+          final AttendanceMark? mark = sessionData.matrix[key]?[student.id];
+          marks[key] = mark ?? AttendanceMark.absent;
+        }
+        final String courseYear = (student.courseYear?.isNotEmpty == true)
+            ? student.courseYear!
+            : selectedClass.courseYearLabel;
+        return DocxAttendanceRow(
+          studentName: student.displayName,
+          courseYear: courseYear,
+          marksByDay: marks,
+        );
+      }).toList()..sort((a, b) => a.studentName.compareTo(b.studentName));
+
+      final Uint8List templateBytes = (await rootBundle.load(
+        'assets/reports/template.docx.docx',
+      )).buffer.asUint8List();
+
+      final String scheduleLabel = selectedClass.schedules.isEmpty
+          ? ''
+          : selectedClass.schedules
+                .map((e) {
+                  final String day = e.dayLabel.trim();
+                  final String time = e.timeLabel.trim();
+                  if (day.isEmpty && time.isEmpty) {
+                    return '';
+                  }
+                  if (day.isEmpty) {
+                    return time;
+                  }
+                  if (time.isEmpty) {
+                    return day;
+                  }
+                  return '$day $time';
+                })
+                .where((e) => e.isNotEmpty)
+                .join(' • ');
+
+      final DocxAttendanceHeader header = DocxAttendanceHeader(
+        officeOrUnit: selectedClass.departmentName,
+        subject: '${selectedClass.subjectCode} • ${selectedClass.subjectName}',
+        classSchedule: scheduleLabel,
+        courseCode: selectedClass.subjectCode,
+        room: selectedClass.schedules.isNotEmpty
+            ? selectedClass.schedules
+                  .map((e) => e.roomLabel)
+                  .where((e) => e.isNotEmpty)
+                  .join(' • ')
+            : '',
+      );
+
+      final String? checkedBy = await _resolveInstructorName(
+        sessionData.instructorId,
+      );
+      final String? submittedTo = await _resolveDepartmentHeadName(
+        selectedClass.departmentName,
+      );
+
+      final Uint8List docxBytes = await buildAttendanceDocxFromTemplate(
+        templateDocxBytes: templateBytes,
+        header: header,
+        sessionDays: sessionData.sessionDays,
+        students: rows,
+        checkedBy: checkedBy,
+        submittedTo: submittedTo,
+      );
+
+      final String startKey = _dateKeyString(_dayKey(range.start));
+      final String endKey = _dateKeyString(_dayKey(range.end));
+      final String fileName =
+          'attendance_${selectedClass.sectionLabel}_$startKey-$endKey.docx';
+
+      final String? savedPath = await saveBytesAsFile(docxBytes, fileName);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            savedPath == null
+                ? 'Download started: $fileName'
+                : 'Saved DOCX to $savedPath',
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to export DOCX: $error')));
+    } finally {
+      if (mounted) {
+        setState(() => _isExportingDocx = false);
+      }
+    }
+  }
+
+  Future<
+    ({
+      List<DateTime> sessionDays,
+      Map<DateTime, Map<String, AttendanceMark>> matrix,
+      String? instructorId,
+    })
+  >
+  _fetchSessionAttendanceMatrix({
+    required String classId,
+    required DateTimeRange range,
+  }) async {
+    final Map<DateTime, Map<String, AttendanceMark>> matrix =
+        <DateTime, Map<String, AttendanceMark>>{};
+    final Set<DateTime> sessionDayKeys = <DateTime>{};
+
+    final DateTime rangeStart = _dayKey(range.start);
+    final DateTime rangeEndExclusive = _dayKey(
+      range.end,
+    ).add(const Duration(days: 1));
+    final Query<Map<String, dynamic>> query = _firestore
+        .collection('attendanceSessions')
+        .where('classId', isEqualTo: classId)
+        .where(
+          'startedAt',
+          isGreaterThanOrEqualTo: Timestamp.fromDate(rangeStart),
+        )
+        .where('startedAt', isLessThan: Timestamp.fromDate(rangeEndExclusive));
+    final QuerySnapshot<Map<String, dynamic>> sessionsSnapshot = await query
+        .get();
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> sessions =
+        sessionsSnapshot.docs;
+
+    final String? instructorId = _mostCommonNonEmpty(
+      sessions
+          .map((doc) => doc.data()['instructorId'] as String?)
+          .whereType<String>()
+          .toList(),
+    );
+
+    await Future.wait(
+      sessions.map((QueryDocumentSnapshot<Map<String, dynamic>> doc) async {
+        final Map<String, dynamic> data = doc.data();
+        final Timestamp? startedAt =
+            (data['startedAt'] as Timestamp?) ??
+            (data['createdAt'] as Timestamp?);
+        if (startedAt == null) return;
+
+        final DateTime dayKey = _dayKey(startedAt.toDate());
+        sessionDayKeys.add(dayKey);
+        final QuerySnapshot<Map<String, dynamic>> attendeesSnapshot = await doc
+            .reference
+            .collection('attendees')
+            .get();
+        final Map<String, AttendanceMark> dayMarks = matrix.putIfAbsent(
+          dayKey,
+          () => <String, AttendanceMark>{},
+        );
+        for (final QueryDocumentSnapshot<Map<String, dynamic>> attendee
+            in attendeesSnapshot.docs) {
+          final Map<String, dynamic> attendeeData = attendee.data();
+          final AttendanceMark? mark = _statusToMark(
+            attendeeData['status'] as String?,
+          );
+          if (mark != null) {
+            dayMarks[attendee.id] = mark;
+          }
+        }
+      }),
+    );
+
+    // Apply overrides (best-effort) but only for days that have a session.
+    try {
+      final DateTime startDay = _dayKey(range.start);
+      final DateTime endDay = _dayKey(range.end);
+      final String startKey = _dateKeyString(startDay);
+      final String endKey = _dateKeyString(endDay);
+      final QuerySnapshot<Map<String, dynamic>> overridesSnapshot =
+          await _firestore
+              .collection('classes')
+              .doc(classId)
+              .collection('attendanceOverrides')
+              .where('dateKey', isGreaterThanOrEqualTo: startKey)
+              .where('dateKey', isLessThanOrEqualTo: endKey)
+              .get();
+
+      for (final QueryDocumentSnapshot<Map<String, dynamic>> override
+          in overridesSnapshot.docs) {
+        final Map<String, dynamic> overrideData = override.data();
+        final String? dateKeyString = overrideData['dateKey'] as String?;
+        final String? studentId = overrideData['studentId'] as String?;
+        final String? status = overrideData['status'] as String?;
+        if (dateKeyString == null || studentId == null || status == null) {
+          continue;
+        }
+        final AttendanceMark? mark = _statusToMark(status);
+        if (mark == null) continue;
+        final DateTime? overrideDay = _parseDateKey(dateKeyString);
+        if (overrideDay == null) continue;
+        final DateTime dayKey = _dayKey(overrideDay);
+        if (!sessionDayKeys.contains(dayKey)) continue;
+        matrix.putIfAbsent(
+          dayKey,
+          () => <String, AttendanceMark>{},
+        )[studentId] = mark;
+      }
+    } catch (_) {
+      // Best-effort only.
+    }
+
+    final List<DateTime> sessionDays = sessionDayKeys.toList()
+      ..sort((a, b) => a.compareTo(b));
+    return (
+      sessionDays: sessionDays,
+      matrix: matrix,
+      instructorId: instructorId,
+    );
+  }
+
+  String? _mostCommonNonEmpty(List<String> values) {
+    final Map<String, int> counts = <String, int>{};
+    for (final String value in values) {
+      final String trimmed = value.trim();
+      if (trimmed.isEmpty) continue;
+      counts[trimmed] = (counts[trimmed] ?? 0) + 1;
+    }
+    if (counts.isEmpty) return null;
+    String best = counts.keys.first;
+    int bestCount = counts[best] ?? 0;
+    counts.forEach((key, occurrences) {
+      if (occurrences > bestCount) {
+        best = key;
+        bestCount = occurrences;
+      }
+    });
+    return best;
+  }
+
+  String _resolveUserDisplayName(Map<String, dynamic>? data, String fallback) {
+    if (data == null) return fallback;
+    final List<String?> candidates = <String?>[
+      data['displayName'] as String?,
+      data['Full Name'] as String?,
+      data['fullName'] as String?,
+      data['name'] as String?,
+    ];
+    for (final String? candidate in candidates) {
+      final String value = (candidate ?? '').trim();
+      if (value.isNotEmpty) return value;
+    }
+    return fallback;
+  }
+
+  Future<String?> _resolveInstructorName(String? instructorId) async {
+    final String id = (instructorId ?? '').trim();
+    if (id.isEmpty) return null;
+    try {
+      final DocumentSnapshot<Map<String, dynamic>> doc = await _firestore
+          .collection('users')
+          .doc(id)
+          .get();
+      if (!doc.exists) return null;
+      return _resolveUserDisplayName(doc.data(), '');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<String?> _resolveDepartmentHeadName(String departmentName) async {
+    final String name = departmentName.trim();
+    if (name.isEmpty) return null;
+    try {
+      final QuerySnapshot<Map<String, dynamic>> snapshot = await _firestore
+          .collection('departments')
+          .where('name', isEqualTo: name)
+          .limit(1)
+          .get();
+      if (snapshot.docs.isEmpty) return null;
+      final Map<String, dynamic> data = snapshot.docs.first.data();
+
+      final String headName = (data['headName'] as String? ?? '').trim();
+      if (headName.isNotEmpty) return headName;
+
+      final String headUserId = (data['headUserId'] as String? ?? '').trim();
+      if (headUserId.isEmpty) return null;
+      final DocumentSnapshot<Map<String, dynamic>> headDoc = await _firestore
+          .collection('users')
+          .doc(headUserId)
+          .get();
+      if (!headDoc.exists) return null;
+      return _resolveUserDisplayName(headDoc.data(), '');
+    } catch (_) {
+      return null;
     }
   }
 
@@ -377,13 +739,15 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
     pw.ImageProvider? headerLogo,
   ) {
     final String officeUnit = _resolveOfficeUnit(selectedClass);
-    final String subjectLine = '${selectedClass.subjectName} (${selectedClass.sectionLabel})';
+    final String subjectLine =
+        '${selectedClass.subjectName} (${selectedClass.sectionLabel})';
     final String scheduleSummary = _formatClassScheduleSummary(selectedClass);
     final String roomLabel = _resolvePrimaryRoom(selectedClass);
-    final String dateRangeLabel = '${_formatDate(range.start)} - ${_formatDate(range.end)}';
+    final String dateRangeLabel =
+        '${_formatDate(range.start)} - ${_formatDate(range.end)}';
     final String scheduleValue = scheduleSummary == '—'
-      ? dateRangeLabel
-      : '$scheduleSummary\n$dateRangeLabel';
+        ? dateRangeLabel
+        : '$scheduleSummary\n$dateRangeLabel';
     return pw.Column(
       crossAxisAlignment: pw.CrossAxisAlignment.start,
       children: <pw.Widget>[
@@ -401,10 +765,7 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
                         height: 250,
                         alignment: pw.Alignment.centerLeft,
                         padding: const pw.EdgeInsets.only(right: 12),
-                        child: pw.Image(
-                          headerLogo,
-                          fit: pw.BoxFit.contain,
-                        ),
+                        child: pw.Image(headerLogo, fit: pw.BoxFit.contain),
                       ),
                     ),
             ),
@@ -568,10 +929,7 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
           subtitle: 'Subject Instructor/Professor',
         ),
         pw.SizedBox(width: 32),
-        _pdfSignatureBlock(
-          title: 'Submitted to:',
-          subtitle: 'Date Submitted:',
-        ),
+        _pdfSignatureBlock(title: 'Submitted to:', subtitle: 'Date Submitted:'),
       ],
     );
   }
@@ -584,7 +942,10 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
       child: pw.Column(
         crossAxisAlignment: pw.CrossAxisAlignment.start,
         children: <pw.Widget>[
-          pw.Text(title, style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold)),
+          pw.Text(
+            title,
+            style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold),
+          ),
           pw.SizedBox(height: 18),
           pw.Container(height: 0.8, color: PdfColors.grey700),
           pw.SizedBox(height: 4),
@@ -634,11 +995,12 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
         ),
       );
     }
-    final Map<int, pw.TableColumnWidth> columnWidths = <int, pw.TableColumnWidth>{
-      0: const pw.FixedColumnWidth(_pdfNumberColumnWidth),
-      1: const pw.FixedColumnWidth(_pdfNameColumnWidth),
-      2: const pw.FixedColumnWidth(_pdfCourseColumnWidth),
-    };
+    final Map<int, pw.TableColumnWidth> columnWidths =
+        <int, pw.TableColumnWidth>{
+          0: const pw.FixedColumnWidth(_pdfNumberColumnWidth),
+          1: const pw.FixedColumnWidth(_pdfNameColumnWidth),
+          2: const pw.FixedColumnWidth(_pdfCourseColumnWidth),
+        };
     for (int i = 0; i < displayDays.length; i++) {
       columnWidths[i + 3] = const pw.FixedColumnWidth(_pdfDateColumnWidth);
     }
@@ -664,7 +1026,10 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
     );
   }
 
-  pw.Widget _buildPdfInstructionStrip(int dateColumnCount, PdfColor borderColor) {
+  pw.Widget _buildPdfInstructionStrip(
+    int dateColumnCount,
+    PdfColor borderColor,
+  ) {
     final double dateAreaWidth = dateColumnCount * _pdfDateColumnWidth;
     return pw.Row(
       children: <pw.Widget>[
@@ -724,13 +1089,18 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
         _pdfTableHeaderCell('', align: pw.TextAlign.center),
         _pdfTableHeaderCell('', align: pw.TextAlign.left),
         _pdfTableHeaderCell('', align: pw.TextAlign.left),
-        ...days.map((DateTime? day) =>
-            _pdfTableHeaderCell(day == null ? '' : _formatDate(day))),
+        ...days.map(
+          (DateTime? day) =>
+              _pdfTableHeaderCell(day == null ? '' : _formatDate(day)),
+        ),
       ],
     );
   }
 
-  pw.Widget _pdfTableHeaderCell(String text, {pw.TextAlign align = pw.TextAlign.center}) {
+  pw.Widget _pdfTableHeaderCell(
+    String text, {
+    pw.TextAlign align = pw.TextAlign.center,
+  }) {
     return pw.Container(
       padding: const pw.EdgeInsets.symmetric(vertical: 6, horizontal: 4),
       alignment: align == pw.TextAlign.center
@@ -744,7 +1114,10 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
     );
   }
 
-  pw.Widget _pdfTableCell(String text, {pw.TextAlign align = pw.TextAlign.left}) {
+  pw.Widget _pdfTableCell(
+    String text, {
+    pw.TextAlign align = pw.TextAlign.left,
+  }) {
     return pw.Container(
       padding: const pw.EdgeInsets.symmetric(vertical: 6, horizontal: 4),
       alignment: align == pw.TextAlign.center
@@ -875,7 +1248,10 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
     }
   }
 
-  List<DateTime> _expandMeetingDays(DateTimeRange range, _ClassOption? classOption) {
+  List<DateTime> _expandMeetingDays(
+    DateTimeRange range,
+    _ClassOption? classOption,
+  ) {
     final Set<int> allowedWeekdays = _meetingWeekdaysFor(classOption);
     final List<DateTime> days = <DateTime>[];
     DateTime cursor = _dayKey(range.start);
@@ -902,8 +1278,10 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
       return '—';
     }
     return classOption.schedules
-        .map(( _ClassScheduleEntry entry) {
-          final String timePart = entry.timeLabel.isEmpty ? '' : ' ${entry.timeLabel}';
+        .map((_ClassScheduleEntry entry) {
+          final String timePart = entry.timeLabel.isEmpty
+              ? ''
+              : ' ${entry.timeLabel}';
           return '${entry.dayLabel}$timePart';
         })
         .where((String value) => value.trim().isNotEmpty)
@@ -926,7 +1304,9 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
     if (classOption == null) {
       return '—';
     }
-    return classOption.departmentName.isEmpty ? '—' : classOption.departmentName;
+    return classOption.departmentName.isEmpty
+        ? '—'
+        : classOption.departmentName;
   }
 
   DateTimeRange _clampRangeToBounds(
@@ -957,14 +1337,13 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
 
   bool _isSelectableDay(DateTime day) => day.weekday != DateTime.sunday;
 
-  DateTime _nearestSelectableDay(
-    DateTime date, {
-    required bool forward,
-  }) {
+  DateTime _nearestSelectableDay(DateTime date, {required bool forward}) {
     DateTime cursor = DateTime(date.year, date.month, date.day);
     int safety = 0;
     while (!_isSelectableDay(cursor) && safety < 7) {
-      cursor = forward ? cursor.add(const Duration(days: 1)) : cursor.subtract(const Duration(days: 1));
+      cursor = forward
+          ? cursor.add(const Duration(days: 1))
+          : cursor.subtract(const Duration(days: 1));
       safety++;
     }
     return cursor;
@@ -984,7 +1363,8 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
     return null;
   }
 
-  bool get _hasPrintableData => _previewRows.isNotEmpty && _workingDays.isNotEmpty;
+  bool get _hasPrintableData =>
+      _previewRows.isNotEmpty && _workingDays.isNotEmpty;
 
   Future<List<_StudentRosterEntry>> _fetchRoster(
     _ClassOption selectedClass,
@@ -994,11 +1374,12 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
         .where('role', isEqualTo: 'student')
         .where('section', isEqualTo: selectedClass.sectionLabel)
         .get();
-    final List<_StudentRosterEntry> roster = snapshot.docs
-        .map(_StudentRosterEntry.fromDoc)
-        .whereType<_StudentRosterEntry>()
-        .toList()
-      ..sort((a, b) => a.displayName.compareTo(b.displayName));
+    final List<_StudentRosterEntry> roster =
+        snapshot.docs
+            .map(_StudentRosterEntry.fromDoc)
+            .whereType<_StudentRosterEntry>()
+            .toList()
+          ..sort((a, b) => a.displayName.compareTo(b.displayName));
     return roster;
   }
 
@@ -1007,43 +1388,60 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
     required DateTimeRange range,
     required List<DateTime> dateKeys,
   }) async {
-    final Map<DateTime, Map<String, AttendanceMark>> matrix = <DateTime, Map<String, AttendanceMark>>{
-      for (final DateTime key in dateKeys) _dayKey(key): <String, AttendanceMark>{},
-    };
+    final Map<DateTime, Map<String, AttendanceMark>> matrix =
+        <DateTime, Map<String, AttendanceMark>>{
+          for (final DateTime key in dateKeys)
+            _dayKey(key): <String, AttendanceMark>{},
+        };
     final DateTime rangeStart = _dayKey(range.start);
-    final DateTime rangeEndExclusive = _dayKey(range.end).add(const Duration(days: 1));
+    final DateTime rangeEndExclusive = _dayKey(
+      range.end,
+    ).add(const Duration(days: 1));
     final Query<Map<String, dynamic>> query = _firestore
         .collection('attendanceSessions')
         .where('classId', isEqualTo: classId)
-        .where('startedAt', isGreaterThanOrEqualTo: Timestamp.fromDate(rangeStart))
+        .where(
+          'startedAt',
+          isGreaterThanOrEqualTo: Timestamp.fromDate(rangeStart),
+        )
         .where('startedAt', isLessThan: Timestamp.fromDate(rangeEndExclusive));
-    final QuerySnapshot<Map<String, dynamic>> sessionsSnapshot = await query.get();
-    final List<QueryDocumentSnapshot<Map<String, dynamic>>> sessions = sessionsSnapshot.docs;
-    await Future.wait(sessions.map((QueryDocumentSnapshot<Map<String, dynamic>> doc) async {
-      final Map<String, dynamic> data = doc.data();
-      final Timestamp? startedAt = (data['startedAt'] as Timestamp?) ??
-          (data['createdAt'] as Timestamp?);
-      if (startedAt == null) {
-        return;
-      }
-      final DateTime dayKey = _dayKey(startedAt.toDate());
-      if (!matrix.containsKey(dayKey)) {
-        return;
-      }
-      final QuerySnapshot<Map<String, dynamic>> attendeesSnapshot =
-          await doc.reference.collection('attendees').get();
-      final Map<String, AttendanceMark> dayMarks =
-          matrix.putIfAbsent(dayKey, () => <String, AttendanceMark>{});
-      for (final QueryDocumentSnapshot<Map<String, dynamic>> attendee in
-          attendeesSnapshot.docs) {
-        final Map<String, dynamic> attendeeData = attendee.data();
-        final AttendanceMark? mark =
-            _statusToMark(attendeeData['status'] as String?);
-        if (mark != null) {
-          dayMarks[attendee.id] = mark;
+    final QuerySnapshot<Map<String, dynamic>> sessionsSnapshot = await query
+        .get();
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> sessions =
+        sessionsSnapshot.docs;
+    await Future.wait(
+      sessions.map((QueryDocumentSnapshot<Map<String, dynamic>> doc) async {
+        final Map<String, dynamic> data = doc.data();
+        final Timestamp? startedAt =
+            (data['startedAt'] as Timestamp?) ??
+            (data['createdAt'] as Timestamp?);
+        if (startedAt == null) {
+          return;
         }
-      }
-    }));
+        final DateTime dayKey = _dayKey(startedAt.toDate());
+        if (!matrix.containsKey(dayKey)) {
+          return;
+        }
+        final QuerySnapshot<Map<String, dynamic>> attendeesSnapshot = await doc
+            .reference
+            .collection('attendees')
+            .get();
+        final Map<String, AttendanceMark> dayMarks = matrix.putIfAbsent(
+          dayKey,
+          () => <String, AttendanceMark>{},
+        );
+        for (final QueryDocumentSnapshot<Map<String, dynamic>> attendee
+            in attendeesSnapshot.docs) {
+          final Map<String, dynamic> attendeeData = attendee.data();
+          final AttendanceMark? mark = _statusToMark(
+            attendeeData['status'] as String?,
+          );
+          if (mark != null) {
+            dayMarks[attendee.id] = mark;
+          }
+        }
+      }),
+    );
 
     // Apply per-day overrides (e.g., approved excuse requests). Overrides win over
     // session marks and can provide marks even when no session record exists.
@@ -1052,13 +1450,14 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
       final DateTime endDay = _dayKey(range.end);
       final String startKey = _dateKeyString(startDay);
       final String endKey = _dateKeyString(endDay);
-      final QuerySnapshot<Map<String, dynamic>> overridesSnapshot = await _firestore
-          .collection('classes')
-          .doc(classId)
-          .collection('attendanceOverrides')
-          .where('dateKey', isGreaterThanOrEqualTo: startKey)
-          .where('dateKey', isLessThanOrEqualTo: endKey)
-          .get();
+      final QuerySnapshot<Map<String, dynamic>> overridesSnapshot =
+          await _firestore
+              .collection('classes')
+              .doc(classId)
+              .collection('attendanceOverrides')
+              .where('dateKey', isGreaterThanOrEqualTo: startKey)
+              .where('dateKey', isLessThanOrEqualTo: endKey)
+              .get();
       for (final QueryDocumentSnapshot<Map<String, dynamic>> override
           in overridesSnapshot.docs) {
         final Map<String, dynamic> overrideData = override.data();
@@ -1080,8 +1479,10 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
         if (!matrix.containsKey(dayKey)) {
           continue;
         }
-        matrix.putIfAbsent(dayKey, () => <String, AttendanceMark>{})[studentId] =
-            mark;
+        matrix.putIfAbsent(
+          dayKey,
+          () => <String, AttendanceMark>{},
+        )[studentId] = mark;
       }
     } catch (_) {
       // Best-effort only.
@@ -1096,7 +1497,9 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
   }
 
   DateTime? _parseDateKey(String value) {
-    final RegExpMatch? match = RegExp(r'^(\d{4})-(\d{2})-(\d{2})$').firstMatch(value);
+    final RegExpMatch? match = RegExp(
+      r'^(\d{4})-(\d{2})-(\d{2})$',
+    ).firstMatch(value);
     if (match == null) return null;
     final int year = int.parse(match.group(1)!);
     final int month = int.parse(match.group(2)!);
@@ -1134,8 +1537,10 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
             if (_selectedRange != null && mounted) {
               final _ClassOption? selectedClass = _resolveSelectedClass();
               setState(() {
-                _workingDays =
-                    _expandMeetingDays(_selectedRange!, selectedClass);
+                _workingDays = _expandMeetingDays(
+                  _selectedRange!,
+                  selectedClass,
+                );
               });
             }
           },
@@ -1173,12 +1578,15 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
   }
 
   Widget _buildFiltersCard(ThemeData theme) {
-    final _ClassOption selectedClass = _resolveSelectedClass() ??
+    final _ClassOption selectedClass =
+        _resolveSelectedClass() ??
         (_classes.isNotEmpty ? _classes.first : _ClassOption.empty());
     final String rangeLabel = _selectedRange == null
-      ? 'Select date range'
-      : '${_formatDate(_selectedRange!.start)} → ${_formatDate(_selectedRange!.end)}';
+        ? 'Select date range'
+        : '${_formatDate(_selectedRange!.start)} → ${_formatDate(_selectedRange!.end)}';
     final bool canPrint = _hasPrintableData && !_isPrintingReport;
+    final bool canExportDocx =
+        _selectedClassId != null && _selectedRange != null && !_isExportingDocx;
     return Card(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       child: Padding(
@@ -1188,7 +1596,9 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
           children: <Widget>[
             Text(
               'Filters',
-              style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
+              style: theme.textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
             ),
             const SizedBox(height: 16),
             DropdownButtonFormField<String>(
@@ -1199,7 +1609,9 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
                   .map(
                     (_ClassOption option) => DropdownMenuItem<String>(
                       value: option.id,
-                      child: Text('${option.subjectCode} • ${option.sectionLabel}'),
+                      child: Text(
+                        '${option.subjectCode} • ${option.sectionLabel}',
+                      ),
                     ),
                   )
                   .toList(),
@@ -1248,7 +1660,11 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.playlist_add_check),
-                  label: Text(_isLoadingPreview ? 'Preparing preview...' : 'Preview roster'),
+                  label: Text(
+                    _isLoadingPreview
+                        ? 'Preparing preview...'
+                        : 'Preview roster',
+                  ),
                 ),
                 OutlinedButton.icon(
                   onPressed: canPrint ? _printReport : null,
@@ -1259,7 +1675,22 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.print_outlined),
-                  label: Text(_isPrintingReport ? 'Preparing PDF...' : 'Print report'),
+                  label: Text(
+                    _isPrintingReport ? 'Preparing PDF...' : 'Print report',
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: canExportDocx ? _exportDocxReport : null,
+                  icon: _isExportingDocx
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.description_outlined),
+                  label: Text(
+                    _isExportingDocx ? 'Preparing DOCX...' : 'Export DOCX',
+                  ),
                 ),
               ],
             ),
@@ -1303,7 +1734,9 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
               children: <Widget>[
                 Text(
                   '${_formatDate(start)} → ${_formatDate(end)}',
-                  style: theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
                 Text(
                   '$totalDays class days selected',
@@ -1419,8 +1852,10 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
       spacing: 16,
       runSpacing: 12,
       children: entries
-          .map((_LegendEntry entry) =>
-              Chip(avatar: Text(entry.symbol), label: Text(entry.label)))
+          .map(
+            (_LegendEntry entry) =>
+                Chip(avatar: Text(entry.symbol), label: Text(entry.label)),
+          )
           .toList(),
     );
   }
@@ -1484,15 +1919,21 @@ class _ClassOption {
   ) {
     final Map<String, dynamic> data = doc.data();
     final String subjectCode = (data['subjectCode'] as String?) ?? 'N/A';
-    final String subjectName = (data['subjectName'] as String?) ?? 'Untitled Subject';
+    final String subjectName =
+        (data['subjectName'] as String?) ?? 'Untitled Subject';
     final String section = ((data['section'] as String?) ?? 'Section').trim();
     final String courseYear = ((data['courseYear'] as String?) ?? '').trim();
     final String term = (data['term'] as String?) ?? '';
-    final String departmentName = ((data['departmentName'] as String?) ?? '').trim();
-    final List<dynamic> schedules = (data['schedules'] as List<dynamic>? ?? <dynamic>[]);
+    final String departmentName = ((data['departmentName'] as String?) ?? '')
+        .trim();
+    final List<dynamic> schedules =
+        (data['schedules'] as List<dynamic>? ?? <dynamic>[]);
     final Set<int> meetingWeekdays = _extractMeetingWeekdays(schedules);
     final List<_ClassScheduleEntry> scheduleEntries = schedules
-        .map((dynamic entry) => _ClassScheduleEntry.fromMap(entry as Map<String, dynamic>?))
+        .map(
+          (dynamic entry) =>
+              _ClassScheduleEntry.fromMap(entry as Map<String, dynamic>?),
+        )
         .whereType<_ClassScheduleEntry>()
         .toList();
     return _ClassOption(
@@ -1509,16 +1950,16 @@ class _ClassOption {
   }
 
   factory _ClassOption.empty() => const _ClassOption(
-        id: 'placeholder-class',
-        subjectCode: 'N/A',
-        subjectName: 'No subject',
-        sectionLabel: 'Section',
-        courseYearLabel: '--',
-        termLabel: '',
-        meetingWeekdays: _defaultMeetingWeekdays,
-        departmentName: '',
-        schedules: <_ClassScheduleEntry>[],
-      );
+    id: 'placeholder-class',
+    subjectCode: 'N/A',
+    subjectName: 'No subject',
+    sectionLabel: 'Section',
+    courseYearLabel: '--',
+    termLabel: '',
+    meetingWeekdays: _defaultMeetingWeekdays,
+    departmentName: '',
+    schedules: <_ClassScheduleEntry>[],
+  );
 
   static Set<int> _extractMeetingWeekdays(List<dynamic> schedules) {
     final Set<int> days = <int>{};
@@ -1615,7 +2056,6 @@ String _formatScheduleTimeRange(
   return '$startLabel - $endLabel';
 }
 
-
 String _formatScheduleTime(Map<String, dynamic>? map) {
   if (map == null) {
     return '';
@@ -1652,15 +2092,21 @@ class _StudentRosterEntry {
       return null;
     }
     final String? section = (data['section'] as String?)?.trim();
-    final String? courseYear = ((data['courseYear'] as String?) ?? section)?.trim();
+    final String? courseYear = ((data['courseYear'] as String?) ?? section)
+        ?.trim();
     return _StudentRosterEntry(
       id: doc.id,
       displayName: name,
-      courseYear: (courseYear == null || courseYear.isEmpty) ? null : courseYear,
+      courseYear: (courseYear == null || courseYear.isEmpty)
+          ? null
+          : courseYear,
     );
   }
 
-  static String _resolveDisplayName(Map<String, dynamic> data, String fallbackId) {
+  static String _resolveDisplayName(
+    Map<String, dynamic> data,
+    String fallbackId,
+  ) {
     const List<String> keys = <String>[
       'displayName',
       'display_name',
@@ -1682,8 +2128,8 @@ class _StudentRosterEntry {
     final int safeLength = fallbackId.isEmpty
         ? 0
         : fallbackId.length > 6
-            ? 6
-            : fallbackId.length;
+        ? 6
+        : fallbackId.length;
     final String label = safeLength == 0
         ? fallbackId
         : fallbackId.substring(0, safeLength);
@@ -1705,8 +2151,6 @@ class _ReportRow {
   final Map<DateTime, AttendanceMark> marks;
 }
 
-enum AttendanceMark { present, absent, late, excused }
-
 extension on AttendanceMark {
   String get symbol {
     switch (this) {
@@ -1717,7 +2161,7 @@ extension on AttendanceMark {
       case AttendanceMark.late:
         return 'L';
       case AttendanceMark.excused:
-        return 'Exc';
+        return 'E';
     }
   }
 }
@@ -1771,7 +2215,10 @@ class _MonthYearRangePickerState extends State<_MonthYearRangePicker> {
   List<int> get _yearOptions {
     final int startYear = widget.firstDate.year;
     final int endYear = widget.lastDate.year;
-    return List<int>.generate(endYear - startYear + 1, (int i) => startYear + i);
+    return List<int>.generate(
+      endYear - startYear + 1,
+      (int i) => startYear + i,
+    );
   }
 
   @override
@@ -1811,8 +2258,12 @@ class _MonthYearRangePickerState extends State<_MonthYearRangePicker> {
   }
 
   List<int> _monthsForYear(int year) {
-    final int minMonth = year == widget.firstDate.year ? widget.firstDate.month : 1;
-    final int maxMonth = year == widget.lastDate.year ? widget.lastDate.month : 12;
+    final int minMonth = year == widget.firstDate.year
+        ? widget.firstDate.month
+        : 1;
+    final int maxMonth = year == widget.lastDate.year
+        ? widget.lastDate.month
+        : 12;
     return List<int>.generate(maxMonth - minMonth + 1, (int i) => minMonth + i);
   }
 
@@ -1851,7 +2302,9 @@ class _MonthYearRangePickerState extends State<_MonthYearRangePicker> {
                         Expanded(
                           child: DropdownButtonFormField<int>(
                             initialValue: _displayMonth,
-                            decoration: const InputDecoration(labelText: 'Month'),
+                            decoration: const InputDecoration(
+                              labelText: 'Month',
+                            ),
                             items: months
                                 .map(
                                   (int month) => DropdownMenuItem<int>(
@@ -1870,7 +2323,9 @@ class _MonthYearRangePickerState extends State<_MonthYearRangePicker> {
                         Expanded(
                           child: DropdownButtonFormField<int>(
                             initialValue: _displayYear,
-                            decoration: const InputDecoration(labelText: 'Year'),
+                            decoration: const InputDecoration(
+                              labelText: 'Year',
+                            ),
                             items: _yearOptions
                                 .map(
                                   (int year) => DropdownMenuItem<int>(
@@ -1895,10 +2350,7 @@ class _MonthYearRangePickerState extends State<_MonthYearRangePicker> {
                     const SizedBox(height: 8),
                     _buildCalendarGrid(theme, monthAnchor),
                     const SizedBox(height: 16),
-                    Text(
-                      _selectionLabel,
-                      style: theme.textTheme.bodyMedium,
-                    ),
+                    Text(_selectionLabel, style: theme.textTheme.bodyMedium),
                     const SizedBox(height: 12),
                     Row(
                       children: <Widget>[
@@ -1941,7 +2393,8 @@ class _MonthYearRangePickerState extends State<_MonthYearRangePicker> {
 
   Widget _buildCalendarGrid(ThemeData theme, DateTime anchor) {
     final int daysInMonth = DateTime(anchor.year, anchor.month + 1, 0).day;
-    final int leadingEmpty = (DateTime(anchor.year, anchor.month, 1).weekday + 6) % 7;
+    final int leadingEmpty =
+        (DateTime(anchor.year, anchor.month, 1).weekday + 6) % 7;
     final int totalCells = leadingEmpty + daysInMonth;
     final int trailingEmpty = totalCells % 7 == 0 ? 0 : 7 - (totalCells % 7);
     final int itemCount = totalCells + trailingEmpty;
@@ -1968,12 +2421,12 @@ class _MonthYearRangePickerState extends State<_MonthYearRangePicker> {
   Widget _buildDayCell(ThemeData theme, DateTime day, int dayNumber) {
     final bool withinBounds =
         !day.isBefore(widget.firstDate) && !day.isAfter(widget.lastDate);
-    final bool selectable =
-        withinBounds && widget.selectableDayPredicate(day);
+    final bool selectable = withinBounds && widget.selectableDayPredicate(day);
     final bool isStart = _rangeStart != null && _isSameDay(day, _rangeStart!);
     final bool isEnd = _rangeEnd != null && _isSameDay(day, _rangeEnd!);
     final bool hasBoth = _rangeStart != null && _rangeEnd != null;
-    final bool inBetween = hasBoth && !day.isBefore(_rangeStart!) && !day.isAfter(_rangeEnd!);
+    final bool inBetween =
+        hasBoth && !day.isBefore(_rangeStart!) && !day.isAfter(_rangeEnd!);
 
     final ColorScheme colors = theme.colorScheme;
     Color background;
@@ -1986,7 +2439,9 @@ class _MonthYearRangePickerState extends State<_MonthYearRangePicker> {
       foreground = colors.onPrimaryContainer;
     } else {
       background = selectable ? colors.surfaceContainerHighest : colors.surface;
-      foreground = selectable ? theme.textTheme.bodyMedium?.color ?? colors.onSurface : theme.disabledColor;
+      foreground = selectable
+          ? theme.textTheme.bodyMedium?.color ?? colors.onSurface
+          : theme.disabledColor;
     }
 
     return GestureDetector(
@@ -2055,18 +2510,30 @@ class _WeekdayHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const List<String> labels = <String>['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const List<String> labels = <String>[
+      'Mon',
+      'Tue',
+      'Wed',
+      'Thu',
+      'Fri',
+      'Sat',
+      'Sun',
+    ];
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: labels
-          .map((String label) => Expanded(
-                child: Center(
-                  child: Text(
-                    label,
-                    style: theme.textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w600),
+          .map(
+            (String label) => Expanded(
+              child: Center(
+                child: Text(
+                  label,
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
                   ),
                 ),
-              ))
+              ),
+            ),
+          )
           .toList(),
     );
   }

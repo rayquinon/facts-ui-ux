@@ -891,6 +891,7 @@ class _DepartmentDialogState extends State<_DepartmentDialog> {
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _abbrController = TextEditingController();
+  final TextEditingController _headNameController = TextEditingController();
   bool _isActive = true;
   bool _isSaving = false;
 
@@ -901,6 +902,7 @@ class _DepartmentDialogState extends State<_DepartmentDialog> {
     if (data != null) {
       _nameController.text = (data['name'] as String?) ?? '';
       _abbrController.text = (data['abbr'] as String?) ?? '';
+      _headNameController.text = (data['headName'] as String?) ?? '';
       _isActive = (data['isActive'] as bool?) ?? true;
     }
   }
@@ -909,18 +911,22 @@ class _DepartmentDialogState extends State<_DepartmentDialog> {
   void dispose() {
     _nameController.dispose();
     _abbrController.dispose();
+    _headNameController.dispose();
     super.dispose();
   }
 
   Future<void> _handleSave() async {
     if (!_formKey.currentState!.validate()) return;
     setState(() => _isSaving = true);
+    final String headName = _headNameController.text.trim();
     final Map<String, dynamic> payload = <String, dynamic>{
       'name': _nameController.text.trim(),
       'abbr': _abbrController.text.trim(),
+      'headName': headName.isEmpty ? null : headName,
       'isActive': _isActive,
       'updatedAt': FieldValue.serverTimestamp(),
     };
+    payload.removeWhere((_, Object? value) => value == null);
     final CollectionReference<Map<String, dynamic>> departmentsCollection =
         FirebaseFirestore.instance.collection('departments');
     try {
@@ -964,6 +970,14 @@ class _DepartmentDialogState extends State<_DepartmentDialog> {
             TextFormField(
               controller: _abbrController,
               decoration: const InputDecoration(labelText: 'Abbreviation'),
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _headNameController,
+              decoration: const InputDecoration(
+                labelText: 'Department head (name)',
+                helperText: 'Used for report “Submitted to”.',
+              ),
             ),
             const SizedBox(height: 12),
             SwitchListTile.adaptive(
