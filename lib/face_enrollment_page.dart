@@ -126,12 +126,16 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     }
     try {
       final DocumentSnapshot<Map<String, dynamic>> snapshot =
-          await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
+          await FirebaseFirestore.instance
+              .collection('users')
+              .doc(user.uid)
+              .get();
       final Map<String, dynamic>? data = snapshot.data();
       final bool hasEmbeds =
           (data?['faceEmbeds'] is List &&
               (data!['faceEmbeds'] as List).isNotEmpty) ||
-          (data?['faceEmbed'] is List && (data!['faceEmbed'] as List).isNotEmpty);
+          (data?['faceEmbed'] is List &&
+              (data!['faceEmbed'] as List).isNotEmpty);
       if (!mounted) return;
       if (hasEmbeds) {
         setState(() {
@@ -845,21 +849,27 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
 
     setState(() => _isSaving = true);
     try {
-      final List<List<double>> embeddingsForStorage =
+      final List<List<double>> selectedVectors =
           _selectRepresentativeEmbeddings(perPhase: _storedEmbeddingsPerPhase);
-      await FirebaseFirestore.instance.collection('users').doc(user.uid).set(
-        <String, dynamic>{
-          // Keep the averaged embedding for backward compatibility/quick matching.
-          'faceEmbed': embedding,
 
-          // Store multiple samples for robust matching.
-          'faceEmbeds': embeddingsForStorage,
-          'faceEmbedCount': embeddingsForStorage.length,
-          'faceEmbedProvider': 'onnx_v1',
-          'faceEmbedUpdatedAt': FieldValue.serverTimestamp(),
-        },
-        SetOptions(merge: true),
-      );
+      // Firestore does not support nested arrays (List<List<num>>).
+      // Store as an array of maps instead.
+      final List<Map<String, dynamic>> embeddingsForStorage = selectedVectors
+          .map((List<double> v) => <String, dynamic>{'v': v})
+          .toList(growable: false);
+      await FirebaseFirestore.instance.collection('users').doc(user.uid).set(<
+        String,
+        dynamic
+      >{
+        // Keep the averaged embedding for backward compatibility/quick matching.
+        'faceEmbed': embedding,
+
+        // Store multiple samples for robust matching.
+        'faceEmbeds': embeddingsForStorage,
+        'faceEmbedCount': embeddingsForStorage.length,
+        'faceEmbedProvider': 'onnx_v1',
+        'faceEmbedUpdatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Face enrolled successfully.')),
@@ -880,7 +890,8 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   List<List<double>> _selectRepresentativeEmbeddings({required int perPhase}) {
     final List<List<double>> selected = <List<double>>[];
     for (final _OrientationPhase phase in _phaseOrder) {
-      final List<List<double>> bucket = _phaseEmbeddings[phase] ?? <List<double>>[];
+      final List<List<double>> bucket =
+          _phaseEmbeddings[phase] ?? <List<double>>[];
       if (bucket.isEmpty) {
         continue;
       }

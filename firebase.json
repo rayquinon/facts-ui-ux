@@ -50,6 +50,15 @@
         ]
       },
       {
+        "source": "/downloads/app-latest-*.apk",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=60"
+          }
+        ]
+      },
+      {
         "source": "/downloads/**",
         "headers": [
           {

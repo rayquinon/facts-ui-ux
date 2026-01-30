@@ -696,6 +696,76 @@ exports.adminClearFaceEnrollment = onCall({ cors: true }, async (request) => {
   return { ok: true };
 });
 
+exports.adminMigrateFaceEmbeds = onCall({ cors: true }, async (request) => {
+  requireAdmin(request);
+  const uid = request.data && request.data.uid ? String(request.data.uid) : '';
+  if (!uid) {
+    throw new HttpsError('invalid-argument', 'uid is required');
+  }
+
+  const db = getFirestore();
+  const ref = db.collection('users').doc(uid);
+  const snap = await ref.get();
+  if (!snap.exists) {
+    throw new HttpsError('not-found', 'User not found');
+  }
+
+  const data = snap.data() || {};
+  const raw = data.faceEmbeds;
+  if (!Array.isArray(raw) || raw.length === 0) {
+    return { ok: true, migrated: false, reason: 'no-faceEmbeds' };
+  }
+
+  let needsMigration = false;
+  const converted = [];
+
+  for (const item of raw) {
+    let rawVec = null;
+
+    // Legacy: [num, num, ...]
+    if (Array.isArray(item)) {
+      needsMigration = true;
+      rawVec = item;
+    }
+
+    // New: { v: [num, num, ...] }
+    if (!rawVec && item && typeof item === 'object' && Array.isArray(item.v)) {
+      rawVec = item.v;
+    }
+
+    if (!rawVec) continue;
+    const vec = rawVec.filter((n) => typeof n === 'number' && Number.isFinite(n));
+    if (vec.length) {
+      converted.push({ v: vec });
+    }
+  }
+
+  if (!converted.length) {
+    return { ok: true, migrated: false, reason: 'no-valid-vectors' };
+  }
+
+  // If everything is already in the new shape, keep it as-is.
+  if (!needsMigration) {
+    const alreadyOk = raw.every(
+      (x) => x && typeof x === 'object' && !Array.isArray(x) && Array.isArray(x.v)
+    );
+    if (alreadyOk) {
+      return { ok: true, migrated: false, reason: 'already-migrated', count: converted.length };
+    }
+  }
+
+  await ref.set(
+    {
+      faceEmbeds: converted,
+      faceEmbedCount: converted.length,
+      faceEmbedUpdatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  return { ok: true, migrated: true, count: converted.length };
+});
+
 exports.adminDeleteUser = onCall({ cors: true, timeoutSeconds: 120 }, async (request) => {
   requireAdmin(request);
   const uid = request.data && request.data.uid ? String(request.data.uid) : '';

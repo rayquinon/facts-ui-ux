@@ -4,15 +4,31 @@ Set-Location (Split-Path $PSScriptRoot -Parent)
 
 $downloads = Join-Path $PWD "public\downloads"
 $latest = Join-Path $downloads "app-latest.apk"
+$latestArm64 = Join-Path $downloads "app-latest-arm64.apk"
+$latestArmeabi = Join-Path $downloads "app-latest-armeabi-v7a.apk"
+$latestX64 = Join-Path $downloads "app-latest-x86_64.apk"
 $prev1 = Join-Path $downloads "app-prev1.apk"
 $prev2 = Join-Path $downloads "app-prev2.apk"
 
-Write-Host "Building Flutter Android release APK…"
-flutter build apk --release
+$webOut = Join-Path $PWD "public\app"
 
-$srcApk = Join-Path $PWD "build\app\outputs\flutter-apk\app-release.apk"
-if (!(Test-Path $srcApk)) {
-  throw "Build output not found: $srcApk"
+Write-Host "Building Flutter Android release APKs (split-per-ABI)…"
+flutter build apk --release --split-per-abi
+
+$apkDir = Join-Path $PWD "build\app\outputs\flutter-apk"
+$srcArm64 = Join-Path $apkDir "app-arm64-v8a-release.apk"
+$srcArmeabi = Join-Path $apkDir "app-armeabi-v7a-release.apk"
+$srcX64 = Join-Path $apkDir "app-x86_64-release.apk"
+
+if (!(Test-Path $srcArm64)) { throw "Build output not found: $srcArm64" }
+if (!(Test-Path $srcArmeabi)) { throw "Build output not found: $srcArmeabi" }
+if (!(Test-Path $srcX64)) { throw "Build output not found: $srcX64" }
+
+Write-Host "Building universal APK (fallback)…"
+flutter build apk --release
+$srcUniversal = Join-Path $apkDir "app-release.apk"
+if (!(Test-Path $srcUniversal)) {
+  throw "Build output not found: $srcUniversal"
 }
 
 Write-Host "Ensuring downloads folder exists: $downloads"
@@ -29,7 +45,24 @@ if (Test-Path $latest) {
 }
 
 Write-Host "Publishing new latest APK…"
-Copy-Item -Force $srcApk $latest
+Copy-Item -Force $srcUniversal $latest
+Copy-Item -Force $srcArm64 $latestArm64
+Copy-Item -Force $srcArmeabi $latestArmeabi
+Copy-Item -Force $srcX64 $latestX64
+
+Write-Host "Building Flutter web release…"
+flutter build web --release --base-href /app/
+
+Write-Host "Publishing web build to: $webOut"
+if (!(Test-Path $webOut)) {
+  New-Item -ItemType Directory -Path $webOut | Out-Null
+}
+
+# Clear previous web output but keep folder.
+Get-ChildItem -Path $webOut -Force | Remove-Item -Recurse -Force
+
+$srcWeb = Join-Path $PWD "build\web\*"
+Copy-Item -Recurse -Force $srcWeb $webOut
 
 Write-Host "Deploying Firebase Hosting…"
 firebase deploy --only hosting

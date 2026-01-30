@@ -1142,9 +1142,18 @@ class _RecognizedStudent {
     if (rawMulti is List && rawMulti.isNotEmpty) {
       final List<List<double>> parsed = <List<double>>[];
       for (final dynamic item in rawMulti) {
-        if (item is! List) continue;
-        final List<double> vec = item
-            .whereType<num>()
+        List<num>? rawVec;
+        if (item is List) {
+          rawVec = item.whereType<num>().toList(growable: false);
+        } else if (item is Map) {
+          final dynamic v = item['v'];
+          if (v is List) {
+            rawVec = v.whereType<num>().toList(growable: false);
+          }
+        }
+        if (rawVec == null || rawVec.isEmpty) continue;
+
+        final List<double> vec = rawVec
             .map((num v) => v.toDouble())
             .toList(growable: false);
         if (vec.isNotEmpty) {
