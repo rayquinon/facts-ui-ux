@@ -12,6 +12,14 @@ $prev2 = Join-Path $downloads "app-prev2.apk"
 
 $webOut = Join-Path $PWD "public\app"
 
+$versionLine = Select-String -Path (Join-Path $PWD 'pubspec.yaml') -Pattern '^version:\s*(.+)$' | Select-Object -First 1
+$versionRaw = if ($versionLine) { $versionLine.Matches[0].Groups[1].Value.Trim() } else { 'unknown' }
+$versionSafe = ($versionRaw -replace '[^0-9A-Za-z\.-]+','-')
+$latestVersioned = Join-Path $downloads "app-latest-$versionSafe.apk"
+$latestArm64Versioned = Join-Path $downloads "app-latest-arm64-$versionSafe.apk"
+$latestArmeabiVersioned = Join-Path $downloads "app-latest-armeabi-v7a-$versionSafe.apk"
+$latestX64Versioned = Join-Path $downloads "app-latest-x86_64-$versionSafe.apk"
+
 Write-Host "Building Flutter Android release APKs (split-per-ABI)…"
 flutter build apk --release --split-per-abi
 
@@ -50,6 +58,12 @@ Copy-Item -Force $srcArm64 $latestArm64
 Copy-Item -Force $srcArmeabi $latestArmeabi
 Copy-Item -Force $srcX64 $latestX64
 
+Write-Host "Publishing version-stamped APKs ($versionRaw)…"
+Copy-Item -Force $srcUniversal $latestVersioned
+Copy-Item -Force $srcArm64 $latestArm64Versioned
+Copy-Item -Force $srcArmeabi $latestArmeabiVersioned
+Copy-Item -Force $srcX64 $latestX64Versioned
+
 Write-Host "Building Flutter web release…"
 flutter build web --release --base-href /app/
 
@@ -68,3 +82,4 @@ Write-Host "Deploying Firebase Hosting…"
 firebase deploy --only hosting
 
 Write-Host "Done. Latest APK: https://simple-distributed-database.web.app/downloads/app-latest.apk"
+Write-Host "Done. Versioned APK: https://simple-distributed-database.web.app/downloads/app-latest-$versionSafe.apk"

@@ -54,6 +54,9 @@ class DocxAttendanceHeader {
     required this.classSchedule,
     required this.courseCode,
     required this.room,
+    this.documentCodeNo,
+    this.revisionNo,
+    this.effectiveDate,
   });
 
   final String officeOrUnit;
@@ -61,6 +64,11 @@ class DocxAttendanceHeader {
   final String classSchedule;
   final String courseCode;
   final String room;
+
+  // Optional template metadata (top-right header block).
+  final String? documentCodeNo;
+  final String? revisionNo;
+  final String? effectiveDate;
 }
 
 /// Fills the university attendance monitoring sheet template and returns a
@@ -119,6 +127,20 @@ Future<Uint8List> buildAttendanceDocxFromTemplate({
   final String xmlString = utf8.decode(docXmlFile.content as List<int>);
   final XmlDocument document = XmlDocument.parse(xmlString);
 
+  final String namespaceDecls = document.rootElement.attributes
+      .where(
+        (XmlAttribute a) => a.name.prefix == 'xmlns' || a.name.local == 'xmlns',
+      )
+      .map((XmlAttribute a) => '${a.name.qualified}="${a.value}"')
+      .join(' ');
+
+  // Some `xml` versions may omit xmlns attributes from `attributes`. Ensure we
+  // always have the `w` namespace available for re-parsing/cloning.
+  final String wrapperNamespaceDecls =
+      namespaceDecls.contains('xmlns:w="$_wNs"')
+      ? namespaceDecls
+      : '${namespaceDecls.isEmpty ? '' : '$namespaceDecls '}xmlns:w="$_wNs"';
+
   final XmlElement body = document
       .findAllElements('body', namespace: _wNs)
       .cast<XmlElement>()
@@ -133,9 +155,35 @@ Future<Uint8List> buildAttendanceDocxFromTemplate({
         orElse: () => null,
       );
 
-  final XmlElement baseTable = body.children.whereType<XmlElement>().firstWhere(
-    (XmlElement e) => e.name.local == 'tbl' && e.name.namespaceUri == _wNs,
-  );
+  // Prefer the table with the most rows to avoid selecting incidental tables.
+  final Set<XmlElement> candidateTableSet = <XmlElement>{
+    ...body.findAllElements('tbl', namespace: _wNs),
+    ...body.findAllElements('tbl'),
+  };
+  final List<XmlElement> candidateTables = candidateTableSet.toList();
+  if (candidateTables.isEmpty) {
+    throw StateError('Template DOCX is missing a table (w:tbl).');
+  }
+  XmlElement baseTable = candidateTables.first;
+  int bestRowCount = -1;
+  for (final XmlElement table in candidateTables) {
+    final int rowCount = table.findAllElements('tr', namespace: _wNs).length;
+    final int fallbackRowCount = table.findAllElements('tr').length;
+    final int score = rowCount > 0 ? rowCount : fallbackRowCount;
+    if (score > bestRowCount) {
+      bestRowCount = score;
+      baseTable = table;
+    }
+  }
+
+  // Important: the template typically declares namespaces like `xmlns:w` on the
+  // root document element, not on the table itself. If we serialize the table
+  // alone and parse it back, the prefixes become unbound and the `xml` package
+  // will treat those elements as having no namespace.
+  final String baseTableWrapperXml =
+      '<root${wrapperNamespaceDecls.isEmpty ? '' : ' $wrapperNamespaceDecls'}>'
+      '${baseTable.toXmlString()}'
+      '</root>';
 
   body.children
     ..clear()
@@ -152,8 +200,8 @@ Future<Uint8List> buildAttendanceDocxFromTemplate({
       studentPageIndex++
     ) {
       final XmlElement pageTable = XmlDocument.parse(
-        baseTable.toXmlString(),
-      ).rootElement;
+        baseTableWrapperXml,
+      ).findAllElements('tbl', namespace: _wNs).first.copy();
       _fillSingleTable(
         table: pageTable,
         header: header,
@@ -175,7 +223,7 @@ Future<Uint8List> buildAttendanceDocxFromTemplate({
   }
 
   if (sectPr != null) {
-    body.children.add(sectPr);
+    body.children.add(sectPr.copy());
   }
 
   final String updatedXml = document.toXmlString(pretty: false);
@@ -192,10 +240,7 @@ Future<Uint8List> buildAttendanceDocxFromTemplate({
     }
   }
 
-  final List<int>? outBytes = ZipEncoder().encode(outputArchive);
-  if (outBytes == null) {
-    throw StateError('Failed to encode DOCX');
-  }
+  final List<int> outBytes = ZipEncoder().encode(outputArchive);
   return Uint8List.fromList(outBytes);
 }
 
@@ -217,10 +262,22 @@ void _fillSingleTable({
   required String? checkedBy,
   required String? submittedTo,
 }) {
-  final List<XmlElement> rows = table
+  List<XmlElement> rows = table
       .findElements('tr', namespace: _wNs)
       .cast<XmlElement>()
       .toList();
+  if (rows.isEmpty) {
+    rows = table.findElements('tr').cast<XmlElement>().toList();
+  }
+  if (rows.isEmpty) {
+    rows = table
+        .findAllElements('tr', namespace: _wNs)
+        .cast<XmlElement>()
+        .toList();
+  }
+  if (rows.isEmpty) {
+    rows = table.findAllElements('tr').cast<XmlElement>().toList();
+  }
   if (rows.length < _templateFooterRowStartIndex + 1) {
     throw StateError('Unexpected template table row count: ${rows.length}');
   }
@@ -339,9 +396,10 @@ void _setRowCellText(
   required String value,
 }) {
   final XmlElement row = rows[rowIndex];
-  final List<XmlElement> cells = row
-      .findElements('tc', namespace: _wNs)
-      .toList();
+  List<XmlElement> cells = row.findElements('tc', namespace: _wNs).toList();
+  if (cells.isEmpty) {
+    cells = row.findElements('tc').toList();
+  }
   if (cellIndex < 0 || cellIndex >= cells.length) {
     throw StateError(
       'Template cell index out of range (row=$rowIndex cell=$cellIndex cells=${cells.length}).',
@@ -349,9 +407,10 @@ void _setRowCellText(
   }
   final XmlElement cell = cells[cellIndex];
 
-  final List<XmlElement> texts = cell
-      .findAllElements('t', namespace: _wNs)
-      .toList();
+  List<XmlElement> texts = cell.findAllElements('t', namespace: _wNs).toList();
+  if (texts.isEmpty) {
+    texts = cell.findAllElements('t').toList();
+  }
   if (texts.isEmpty) {
     // Fallback: create a minimal paragraph/run/text.
     cell.children.add(

@@ -175,6 +175,20 @@ service cloud.firestore {
              assignedInstructorIsValid(data.instructorId);
     }
 
+    function isValidAttendanceReportTemplate(data) {
+      return data is map &&
+        request.resource.data.keys().hasOnly([
+          'documentCodeNo',
+          'revisionNo',
+          'effectiveDate',
+          'updatedAt'
+        ]) &&
+        optionalString(data, 'documentCodeNo') &&
+        optionalString(data, 'revisionNo') &&
+        optionalString(data, 'effectiveDate') &&
+        optionalTimestamp(data, 'updatedAt');
+    }
+
     match /users/{userId} {
       function isOwner() {
         return isSignedIn() && request.auth.uid == userId;
@@ -285,6 +299,20 @@ service cloud.firestore {
     match /alerts/{alertId} {
       allow read: if isAdmin() || isRoleAdmin();
       allow create, update, delete: if isAdmin();
+    }
+
+    // App-level settings (small, controlled documents).
+    match /settings/{settingId} {
+      // Template meta is used in report generation (instructor + admin).
+      // Keep this readable for any signed-in user to avoid report generation
+      // failures if role/approval state is still being configured.
+      allow read: if settingId == 'attendanceReportTemplate' && isSignedIn();
+
+      // Only true admins (custom claim) can edit settings.
+      allow create, update: if settingId == 'attendanceReportTemplate' &&
+        isAdmin() && isValidAttendanceReportTemplate(request.resource.data);
+
+      allow delete: if false;
     }
 
     // Unique Student ID index.

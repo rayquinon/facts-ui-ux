@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:pdf/pdf.dart';
@@ -9,8 +10,11 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 
 import 'attendance_mark.dart';
+import 'attendance_report_template_meta.dart';
 import 'docx_attendance_builder.dart';
+import 'docx_attendance_template_builder.dart';
 import 'save_bytes.dart';
+import '../services/user_role_service.dart';
 
 const Set<int> _defaultMeetingWeekdays = <int>{
   DateTime.monday,
@@ -21,9 +25,6 @@ const Set<int> _defaultMeetingWeekdays = <int>{
   DateTime.saturday,
 };
 
-const String _documentCode = 'FM-USTP-ACAD-06';
-const String _documentRevision = '00';
-const String _documentEffectiveDate = '03.17.25';
 const int _pdfDatesPerPage = 14;
 const int _pdfRowsPerPage = 19;
 const double _pdfNumberColumnWidth = 24;
@@ -42,22 +43,152 @@ class GenerateReportPage extends StatefulWidget {
 
 class _GenerateReportPageState extends State<GenerateReportPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FirebaseAuth _auth = FirebaseAuth.instance;
   bool _isLoadingClasses = true;
   bool _isLoadingPreview = false;
   bool _isPrintingReport = false;
   bool _isExportingDocx = false;
+  bool _isLoadingInstructors = false;
+  bool _isAdminFlow = false;
+  AttendanceReportTemplateMeta _templateMeta =
+      AttendanceReportTemplateMeta.defaults;
+  List<_InstructorOption> _instructors = <_InstructorOption>[];
+  String? _selectedInstructorId;
+  String? _selectedSubjectKey;
   List<_ClassOption> _classes = <_ClassOption>[];
+  String? _selectedSectionLabel;
   String? _selectedClassId;
   DateTimeRange? _selectedRange;
   List<DateTime> _workingDays = <DateTime>[];
   List<_ReportRow> _previewRows = <_ReportRow>[];
   Uint8List? _headerLogoBytes;
 
+  List<String> _availableSections() {
+    final Set<String> set = <String>{};
+    for (final _ClassOption option in _classes) {
+      final String value = option.sectionLabel.trim();
+      if (value.isNotEmpty) set.add(value);
+    }
+    final List<String> sections = set.toList()..sort();
+    return sections;
+  }
+
+  List<_ClassOption> _classesForSection(String? sectionLabel) {
+    final String section = (sectionLabel ?? '').trim();
+    if (section.isEmpty) return <_ClassOption>[];
+    return _classes.where((c) => c.sectionLabel.trim() == section).toList()
+      ..sort((a, b) {
+        final int codeCmp = a.subjectCode.compareTo(b.subjectCode);
+        if (codeCmp != 0) return codeCmp;
+        final int nameCmp = a.subjectName.compareTo(b.subjectName);
+        if (nameCmp != 0) return nameCmp;
+        return a.termLabel.compareTo(b.termLabel);
+      });
+  }
+
+  List<_SubjectOption> _subjectsForAdmin() {
+    final Map<String, _SubjectOption> map = <String, _SubjectOption>{};
+    for (final _ClassOption option in _classes) {
+      final String key = option.subjectKey;
+      map.putIfAbsent(
+        key,
+        () => _SubjectOption(
+          key: key,
+          subjectCode: option.subjectCode,
+          subjectName: option.subjectName,
+        ),
+      );
+    }
+    final List<_SubjectOption> subjects = map.values.toList()
+      ..sort((a, b) {
+        final int codeCmp = a.subjectCode.compareTo(b.subjectCode);
+        if (codeCmp != 0) return codeCmp;
+        return a.subjectName.compareTo(b.subjectName);
+      });
+    return subjects;
+  }
+
+  List<_ClassOption> _classesForSubject(String? subjectKey) {
+    final String key = (subjectKey ?? '').trim();
+    if (key.isEmpty) return <_ClassOption>[];
+    return _classes.where((c) => c.subjectKey == key).toList()..sort((a, b) {
+      final int sectionCmp = a.sectionLabel.compareTo(b.sectionLabel);
+      if (sectionCmp != 0) return sectionCmp;
+      return a.termLabel.compareTo(b.termLabel);
+    });
+  }
+
   @override
   void initState() {
     super.initState();
-    _loadClassOptions();
+    _initAccessAndLoad();
     _loadHeaderLogo();
+    _loadTemplateMeta();
+  }
+
+  Future<void> _initAccessAndLoad() async {
+    final String? uid = _auth.currentUser?.uid;
+    final String? role = await UserRoleService.fetchRoleByUid(uid);
+    if (!mounted) return;
+
+    final bool isAdmin = (role ?? '').toLowerCase() == 'admin';
+    setState(() {
+      _isAdminFlow = isAdmin;
+      _selectedInstructorId = isAdmin ? null : uid;
+    });
+
+    if (isAdmin) {
+      await _loadInstructors();
+    } else {
+      await _loadClassOptions();
+    }
+  }
+
+  Future<void> _loadInstructors() async {
+    setState(() => _isLoadingInstructors = true);
+    try {
+      final QuerySnapshot<Map<String, dynamic>> snapshot = await _firestore
+          .collection('users')
+          .where('role', isEqualTo: 'instructor')
+          .get();
+
+      final List<_InstructorOption> instructors =
+          snapshot.docs
+              .map(_InstructorOption.fromDoc)
+              .whereType<_InstructorOption>()
+              .toList()
+            ..sort((a, b) => a.displayName.compareTo(b.displayName));
+
+      if (!mounted) return;
+      setState(() {
+        _instructors = instructors;
+        _selectedInstructorId =
+            (_selectedInstructorId != null &&
+                _instructors.any((i) => i.uid == _selectedInstructorId))
+            ? _selectedInstructorId
+            : (_instructors.isNotEmpty ? _instructors.first.uid : null);
+        _isLoadingInstructors = false;
+      });
+
+      await _loadClassOptions();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _isLoadingInstructors = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to load instructors: $error')),
+      );
+    }
+  }
+
+  Future<void> _loadTemplateMeta() async {
+    try {
+      final AttendanceReportTemplateMeta meta =
+          await AttendanceReportTemplateMeta.fetch(_firestore);
+      if (!mounted) return;
+      setState(() => _templateMeta = meta);
+    } catch (_) {
+      // Keep defaults if fetching fails.
+    }
   }
 
   Future<void> _loadHeaderLogo() async {
@@ -77,9 +208,24 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
   Future<void> _loadClassOptions() async {
     setState(() => _isLoadingClasses = true);
     try {
+      final String instructorId = (_selectedInstructorId ?? '').trim();
+      if (instructorId.isEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _classes = <_ClassOption>[];
+          _isLoadingClasses = false;
+          _selectedSectionLabel = null;
+          _selectedSubjectKey = null;
+          _selectedClassId = null;
+          _workingDays = <DateTime>[];
+          _previewRows = <_ReportRow>[];
+        });
+        return;
+      }
+
       final QuerySnapshot<Map<String, dynamic>> snapshot = await _firestore
           .collection('classes')
-          .orderBy('subjectCode')
+          .where('instructorId', isEqualTo: instructorId)
           .get();
       final List<_ClassOption> options = snapshot.docs
           .map(_ClassOption.fromDoc)
@@ -87,20 +233,74 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
           .toList();
       if (!mounted) return;
       setState(() {
-        _classes = options;
+        _classes = options
+          ..sort((a, b) {
+            final int codeCmp = a.subjectCode.compareTo(b.subjectCode);
+            if (codeCmp != 0) return codeCmp;
+            final int sectionCmp = a.sectionLabel.compareTo(b.sectionLabel);
+            if (sectionCmp != 0) return sectionCmp;
+            return a.termLabel.compareTo(b.termLabel);
+          });
         _isLoadingClasses = false;
         if (_classes.isEmpty) {
+          _selectedSectionLabel = null;
+          _selectedSubjectKey = null;
           _selectedClassId = null;
           _workingDays = <DateTime>[];
+          _previewRows = <_ReportRow>[];
         } else {
-          final bool selectionMissing =
-              _selectedClassId == null ||
-              !_classes.any(
-                (_ClassOption option) => option.id == _selectedClassId,
-              );
-          if (selectionMissing) {
-            _selectedClassId = _classes.first.id;
+          if (_isAdminFlow) {
+            final List<_SubjectOption> subjects = _subjectsForAdmin();
+            final bool subjectValid =
+                _selectedSubjectKey != null &&
+                subjects.any((s) => s.key == _selectedSubjectKey);
+            _selectedSubjectKey = subjectValid
+                ? _selectedSubjectKey
+                : (subjects.isNotEmpty ? subjects.first.key : null);
+
+            final List<_ClassOption> classesForSubject = _classesForSubject(
+              _selectedSubjectKey,
+            );
+            final bool selectedClassValid =
+                _selectedClassId != null &&
+                classesForSubject.any((c) => c.id == _selectedClassId);
+            _selectedClassId = selectedClassValid
+                ? _selectedClassId
+                : (classesForSubject.isNotEmpty
+                      ? classesForSubject.first.id
+                      : null);
+          } else {
+            final List<String> sections = _availableSections();
+            final _ClassOption? previouslySelectedClass = _findClassById(
+              _selectedClassId,
+            );
+            final String? inferredSection =
+                previouslySelectedClass?.sectionLabel;
+            final String? candidateSection =
+                (_selectedSectionLabel != null &&
+                    sections.contains(_selectedSectionLabel))
+                ? _selectedSectionLabel
+                : (inferredSection != null &&
+                      sections.contains(inferredSection))
+                ? inferredSection
+                : (sections.isNotEmpty ? sections.first : null);
+            _selectedSectionLabel = candidateSection;
+
+            final List<_ClassOption> classesInSection = _classesForSection(
+              _selectedSectionLabel,
+            );
+            final bool selectedClassValid =
+                _selectedClassId != null &&
+                classesInSection.any((c) => c.id == _selectedClassId);
+            _selectedClassId = selectedClassValid
+                ? _selectedClassId
+                : (classesInSection.isNotEmpty
+                      ? classesInSection.first.id
+                      : null);
           }
+
+          _previewRows = <_ReportRow>[];
+
           if (_selectedRange != null) {
             _workingDays = _expandMeetingDays(
               _selectedRange!,
@@ -366,35 +566,43 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
       final List<_StudentRosterEntry> roster = await _fetchRoster(
         selectedClass,
       );
-      final ({
-        List<DateTime> sessionDays,
-        Map<DateTime, Map<String, AttendanceMark>> matrix,
-        String? instructorId,
-      })
-      sessionData = await _fetchSessionAttendanceMatrix(
-        classId: selectedClass.id,
-        range: range,
-      );
 
-      if (sessionData.sessionDays.isEmpty) {
+      // Use the same meeting-day list as the preview so dates/marks match.
+      final List<DateTime> meetingDays = _workingDays;
+      if (meetingDays.isEmpty) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('No attendance sessions found in this range.'),
-          ),
+          const SnackBar(content: Text('Generate a preview first.')),
         );
         return;
       }
+
+      final Map<DateTime, Map<String, AttendanceMark>> matrix =
+          await _fetchAttendanceMatrix(
+            classId: selectedClass.id,
+            range: range,
+            dateKeys: meetingDays,
+          );
+
+      final String? instructorId = await _fetchMostCommonInstructorIdForSessions(
+        classId: selectedClass.id,
+        range: range,
+      );
 
       final List<DocxAttendanceRow> rows = roster.map((
         _StudentRosterEntry student,
       ) {
         final Map<DateTime, AttendanceMark> marks =
             <DateTime, AttendanceMark>{};
-        for (final DateTime day in sessionData.sessionDays) {
+        final DateTime today = _dayKey(DateTime.now());
+        for (final DateTime day in meetingDays) {
           final DateTime key = _dayKey(day);
-          final AttendanceMark? mark = sessionData.matrix[key]?[student.id];
-          marks[key] = mark ?? AttendanceMark.absent;
+          final AttendanceMark? mark = matrix[key]?[student.id];
+          if (mark != null) {
+            marks[key] = mark;
+          } else if (key.isBefore(today)) {
+            marks[key] = AttendanceMark.absent;
+          }
         }
         final String courseYear = (student.courseYear?.isNotEmpty == true)
             ? student.courseYear!
@@ -430,6 +638,10 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
                 .where((e) => e.isNotEmpty)
                 .join(' • ');
 
+      // Fetch latest template meta (admins can update this at runtime).
+      final AttendanceReportTemplateMeta meta =
+          await AttendanceReportTemplateMeta.fetch(_firestore);
+
       final DocxAttendanceHeader header = DocxAttendanceHeader(
         officeOrUnit: selectedClass.departmentName,
         subject: '${selectedClass.subjectCode} • ${selectedClass.subjectName}',
@@ -441,19 +653,22 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
                   .where((e) => e.isNotEmpty)
                   .join(' • ')
             : '',
+        documentCodeNo: meta.documentCodeNo,
+        revisionNo: meta.revisionNo,
+        effectiveDate: meta.effectiveDate,
       );
 
       final String? checkedBy = await _resolveInstructorName(
-        sessionData.instructorId,
+        instructorId,
       );
       final String? submittedTo = await _resolveDepartmentHeadName(
         selectedClass.departmentName,
       );
 
-      final Uint8List docxBytes = await buildAttendanceDocxFromTemplate(
+      final Uint8List docxBytes = await buildAttendanceDocxFromContentControls(
         templateDocxBytes: templateBytes,
         header: header,
-        sessionDays: sessionData.sessionDays,
+        sessionDays: meetingDays,
         students: rows,
         checkedBy: checkedBy,
         submittedTo: submittedTo,
@@ -475,8 +690,9 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
           ),
         ),
       );
-    } catch (error) {
+    } catch (error, stackTrace) {
       if (!mounted) return;
+      debugPrint('DOCX export failed: $error\n$stackTrace');
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Failed to export DOCX: $error')));
@@ -487,122 +703,38 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
     }
   }
 
-  Future<
-    ({
-      List<DateTime> sessionDays,
-      Map<DateTime, Map<String, AttendanceMark>> matrix,
-      String? instructorId,
-    })
-  >
-  _fetchSessionAttendanceMatrix({
+  Future<String?> _fetchMostCommonInstructorIdForSessions({
     required String classId,
     required DateTimeRange range,
   }) async {
-    final Map<DateTime, Map<String, AttendanceMark>> matrix =
-        <DateTime, Map<String, AttendanceMark>>{};
-    final Set<DateTime> sessionDayKeys = <DateTime>{};
-
-    final DateTime rangeStart = _dayKey(range.start);
-    final DateTime rangeEndExclusive = _dayKey(
-      range.end,
-    ).add(const Duration(days: 1));
-    final Query<Map<String, dynamic>> query = _firestore
-        .collection('attendanceSessions')
-        .where('classId', isEqualTo: classId)
-        .where(
-          'startedAt',
-          isGreaterThanOrEqualTo: Timestamp.fromDate(rangeStart),
-        )
-        .where('startedAt', isLessThan: Timestamp.fromDate(rangeEndExclusive));
-    final QuerySnapshot<Map<String, dynamic>> sessionsSnapshot = await query
-        .get();
-    final List<QueryDocumentSnapshot<Map<String, dynamic>>> sessions =
-        sessionsSnapshot.docs;
-
-    final String? instructorId = _mostCommonNonEmpty(
-      sessions
-          .map((doc) => doc.data()['instructorId'] as String?)
-          .whereType<String>()
-          .toList(),
-    );
-
-    await Future.wait(
-      sessions.map((QueryDocumentSnapshot<Map<String, dynamic>> doc) async {
-        final Map<String, dynamic> data = doc.data();
-        final Timestamp? startedAt =
-            (data['startedAt'] as Timestamp?) ??
-            (data['createdAt'] as Timestamp?);
-        if (startedAt == null) return;
-
-        final DateTime dayKey = _dayKey(startedAt.toDate());
-        sessionDayKeys.add(dayKey);
-        final QuerySnapshot<Map<String, dynamic>> attendeesSnapshot = await doc
-            .reference
-            .collection('attendees')
-            .get();
-        final Map<String, AttendanceMark> dayMarks = matrix.putIfAbsent(
-          dayKey,
-          () => <String, AttendanceMark>{},
-        );
-        for (final QueryDocumentSnapshot<Map<String, dynamic>> attendee
-            in attendeesSnapshot.docs) {
-          final Map<String, dynamic> attendeeData = attendee.data();
-          final AttendanceMark? mark = _statusToMark(
-            attendeeData['status'] as String?,
-          );
-          if (mark != null) {
-            dayMarks[attendee.id] = mark;
-          }
-        }
-      }),
-    );
-
-    // Apply overrides (best-effort) but only for days that have a session.
     try {
-      final DateTime startDay = _dayKey(range.start);
-      final DateTime endDay = _dayKey(range.end);
-      final String startKey = _dateKeyString(startDay);
-      final String endKey = _dateKeyString(endDay);
-      final QuerySnapshot<Map<String, dynamic>> overridesSnapshot =
+      final DateTime rangeStart = _dayKey(range.start);
+      final DateTime rangeEndExclusive = _dayKey(range.end)
+          .add(const Duration(days: 1));
+
+      final QuerySnapshot<Map<String, dynamic>> sessionsSnapshot =
           await _firestore
-              .collection('classes')
-              .doc(classId)
-              .collection('attendanceOverrides')
-              .where('dateKey', isGreaterThanOrEqualTo: startKey)
-              .where('dateKey', isLessThanOrEqualTo: endKey)
+              .collection('attendanceSessions')
+              .where('classId', isEqualTo: classId)
+              .where(
+                'startedAt',
+                isGreaterThanOrEqualTo: Timestamp.fromDate(rangeStart),
+              )
+              .where(
+                'startedAt',
+                isLessThan: Timestamp.fromDate(rangeEndExclusive),
+              )
               .get();
 
-      for (final QueryDocumentSnapshot<Map<String, dynamic>> override
-          in overridesSnapshot.docs) {
-        final Map<String, dynamic> overrideData = override.data();
-        final String? dateKeyString = overrideData['dateKey'] as String?;
-        final String? studentId = overrideData['studentId'] as String?;
-        final String? status = overrideData['status'] as String?;
-        if (dateKeyString == null || studentId == null || status == null) {
-          continue;
-        }
-        final AttendanceMark? mark = _statusToMark(status);
-        if (mark == null) continue;
-        final DateTime? overrideDay = _parseDateKey(dateKeyString);
-        if (overrideDay == null) continue;
-        final DateTime dayKey = _dayKey(overrideDay);
-        if (!sessionDayKeys.contains(dayKey)) continue;
-        matrix.putIfAbsent(
-          dayKey,
-          () => <String, AttendanceMark>{},
-        )[studentId] = mark;
-      }
+      return _mostCommonNonEmpty(
+        sessionsSnapshot.docs
+            .map((doc) => doc.data()['instructorId'] as String?)
+            .whereType<String>()
+            .toList(),
+      );
     } catch (_) {
-      // Best-effort only.
+      return null;
     }
-
-    final List<DateTime> sessionDays = sessionDayKeys.toList()
-      ..sort((a, b) => a.compareTo(b));
-    return (
-      sessionDays: sessionDays,
-      matrix: matrix,
-      instructorId: instructorId,
-    );
   }
 
   String? _mostCommonNonEmpty(List<String> values) {
@@ -824,7 +956,7 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
               crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: <pw.Widget>[
                 pw.Text('Document Code No.', style: headerLabelStyle),
-                pw.Text(_documentCode, style: headerValueStyle),
+                pw.Text(_templateMeta.documentCodeNo, style: headerValueStyle),
               ],
             ),
           ),
@@ -855,8 +987,8 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
                 ),
                 pw.TableRow(
                   children: <pw.Widget>[
-                    _pdfMetaDetailCell(_documentRevision, valueStyle),
-                    _pdfMetaDetailCell(_documentEffectiveDate, valueStyle),
+                    _pdfMetaDetailCell(_templateMeta.revisionNo, valueStyle),
+                    _pdfMetaDetailCell(_templateMeta.effectiveDate, valueStyle),
                     _pdfMetaDetailCell('$page of $totalPages', valueStyle),
                   ],
                 ),
@@ -1558,7 +1690,7 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
                     Text(
-                      'Configure the report range, select a section, then review the roster before exporting.',
+                      'Configure the report range, select a section and subject, then review the roster before exporting.',
                       style: theme.textTheme.bodyLarge,
                     ),
                     const SizedBox(height: 24),
@@ -1578,9 +1710,27 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
   }
 
   Widget _buildFiltersCard(ThemeData theme) {
+    final List<String> sectionOptions = _availableSections();
+    final List<_ClassOption> subjectOptions = _classesForSection(
+      _selectedSectionLabel,
+    );
+    final List<_SubjectOption> adminSubjectOptions = _subjectsForAdmin();
+    final List<_ClassOption> adminClassOptions = _classesForSubject(
+      _selectedSubjectKey,
+    );
     final _ClassOption selectedClass =
         _resolveSelectedClass() ??
-        (_classes.isNotEmpty ? _classes.first : _ClassOption.empty());
+        (_isAdminFlow
+            ? (adminClassOptions.isNotEmpty
+                  ? adminClassOptions.first
+                  : (_classes.isNotEmpty
+                        ? _classes.first
+                        : _ClassOption.empty()))
+            : (subjectOptions.isNotEmpty
+                  ? subjectOptions.first
+                  : (_classes.isNotEmpty
+                        ? _classes.first
+                        : _ClassOption.empty())));
     final String rangeLabel = _selectedRange == null
         ? 'Select date range'
         : '${_formatDate(_selectedRange!.start)} → ${_formatDate(_selectedRange!.end)}';
@@ -1601,41 +1751,186 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
               ),
             ),
             const SizedBox(height: 16),
-            DropdownButtonFormField<String>(
-              initialValue: _selectedClassId,
-              isExpanded: true,
-              decoration: const InputDecoration(labelText: 'Subject section'),
-              items: _classes
-                  .map(
-                    (_ClassOption option) => DropdownMenuItem<String>(
-                      value: option.id,
-                      child: Text(
-                        '${option.subjectCode} • ${option.sectionLabel}',
+            if (_isAdminFlow) ...<Widget>[
+              DropdownButtonFormField<String>(
+                initialValue: _selectedInstructorId,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'Instructor'),
+                items: _instructors
+                    .map(
+                      (_InstructorOption option) => DropdownMenuItem<String>(
+                        value: option.uid,
+                        child: Text(option.displayName),
                       ),
-                    ),
-                  )
-                  .toList(),
-              onChanged: _isLoadingClasses
-                  ? null
-                  : (String? value) {
-                      setState(() {
-                        _selectedClassId = value;
-                        if (_selectedRange != null) {
-                          _workingDays = _selectedClassId == null
-                              ? <DateTime>[]
-                              : _expandMeetingDays(
-                                  _selectedRange!,
-                                  _resolveSelectedClass(),
-                                );
-                        }
-                      });
-                    },
-            ),
-            if (_isLoadingClasses)
-              const Padding(
-                padding: EdgeInsets.only(top: 8),
-                child: LinearProgressIndicator(),
+                    )
+                    .toList(),
+                onChanged: _isLoadingInstructors
+                    ? null
+                    : (String? value) async {
+                        setState(() {
+                          _selectedInstructorId = value;
+                          _classes = <_ClassOption>[];
+                          _selectedSubjectKey = null;
+                          _selectedClassId = null;
+                          _selectedSectionLabel = null;
+                          _previewRows = <_ReportRow>[];
+                          _workingDays = <DateTime>[];
+                        });
+                        await _loadClassOptions();
+                      },
               ),
+              if (_isLoadingInstructors)
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: LinearProgressIndicator(),
+                ),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<String>(
+                initialValue: _selectedSubjectKey,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'Subject'),
+                items: adminSubjectOptions
+                    .map(
+                      (_SubjectOption option) => DropdownMenuItem<String>(
+                        value: option.key,
+                        child: Text(
+                          '${option.subjectCode} • ${option.subjectName}',
+                        ),
+                      ),
+                    )
+                    .toList(),
+                onChanged: _isLoadingClasses
+                    ? null
+                    : (String? value) {
+                        setState(() {
+                          _selectedSubjectKey = value;
+                          final List<_ClassOption> inSubject =
+                              _classesForSubject(_selectedSubjectKey);
+                          _selectedClassId = inSubject.isNotEmpty
+                              ? inSubject.first.id
+                              : null;
+                          _previewRows = <_ReportRow>[];
+                          if (_selectedRange != null) {
+                            _workingDays = _selectedClassId == null
+                                ? <DateTime>[]
+                                : _expandMeetingDays(
+                                    _selectedRange!,
+                                    _resolveSelectedClass(),
+                                  );
+                          }
+                        });
+                      },
+              ),
+              if (_isLoadingClasses)
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: LinearProgressIndicator(),
+                ),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<String>(
+                initialValue: _selectedClassId,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'Class / Section'),
+                items: adminClassOptions
+                    .map(
+                      (_ClassOption option) => DropdownMenuItem<String>(
+                        value: option.id,
+                        child: Text(
+                          '${option.sectionLabel}${option.termLabel.isEmpty ? '' : ' • ${option.termLabel}'}',
+                        ),
+                      ),
+                    )
+                    .toList(),
+                onChanged: _isLoadingClasses
+                    ? null
+                    : (String? value) {
+                        setState(() {
+                          _selectedClassId = value;
+                          _previewRows = <_ReportRow>[];
+                          if (_selectedRange != null) {
+                            _workingDays = _selectedClassId == null
+                                ? <DateTime>[]
+                                : _expandMeetingDays(
+                                    _selectedRange!,
+                                    _resolveSelectedClass(),
+                                  );
+                          }
+                        });
+                      },
+              ),
+            ] else ...<Widget>[
+              DropdownButtonFormField<String>(
+                initialValue: _selectedSectionLabel,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'Section'),
+                items: sectionOptions
+                    .map(
+                      (String section) => DropdownMenuItem<String>(
+                        value: section,
+                        child: Text(section),
+                      ),
+                    )
+                    .toList(),
+                onChanged: _isLoadingClasses
+                    ? null
+                    : (String? value) {
+                        setState(() {
+                          _selectedSectionLabel = value;
+                          final List<_ClassOption> inSection =
+                              _classesForSection(_selectedSectionLabel);
+                          _selectedClassId = inSection.isNotEmpty
+                              ? inSection.first.id
+                              : null;
+                          _previewRows = <_ReportRow>[];
+                          if (_selectedRange != null) {
+                            _workingDays = _selectedClassId == null
+                                ? <DateTime>[]
+                                : _expandMeetingDays(
+                                    _selectedRange!,
+                                    _resolveSelectedClass(),
+                                  );
+                          }
+                        });
+                      },
+              ),
+              if (_isLoadingClasses)
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: LinearProgressIndicator(),
+                ),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<String>(
+                initialValue: _selectedClassId,
+                isExpanded: true,
+                decoration: const InputDecoration(labelText: 'Subject'),
+                items: subjectOptions
+                    .map(
+                      (_ClassOption option) => DropdownMenuItem<String>(
+                        value: option.id,
+                        child: Text(
+                          '${option.subjectCode} • ${option.subjectName}',
+                        ),
+                      ),
+                    )
+                    .toList(),
+                onChanged: _isLoadingClasses
+                    ? null
+                    : (String? value) {
+                        setState(() {
+                          _selectedClassId = value;
+                          _previewRows = <_ReportRow>[];
+                          if (_selectedRange != null) {
+                            _workingDays = _selectedClassId == null
+                                ? <DateTime>[]
+                                : _expandMeetingDays(
+                                    _selectedRange!,
+                                    _resolveSelectedClass(),
+                                  );
+                          }
+                        });
+                      },
+              ),
+            ],
             const SizedBox(height: 16),
             OutlinedButton.icon(
               onPressed: _pickDateRange,
@@ -1891,9 +2186,55 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
   }
 }
 
+class _InstructorOption {
+  const _InstructorOption({required this.uid, required this.displayName});
+
+  final String uid;
+  final String displayName;
+
+  static _InstructorOption? fromDoc(
+    QueryDocumentSnapshot<Map<String, dynamic>> doc,
+  ) {
+    final Map<String, dynamic> data = doc.data();
+    final List<String?> candidates = <String?>[
+      data['displayName'] as String?,
+      data['Full Name'] as String?,
+      data['fullName'] as String?,
+      data['name'] as String?,
+      data['Email'] as String?,
+      data['email'] as String?,
+    ];
+    String best = '';
+    for (final String? candidate in candidates) {
+      final String value = (candidate ?? '').trim();
+      if (value.isNotEmpty) {
+        best = value;
+        break;
+      }
+    }
+    if (best.isEmpty) {
+      best = doc.id;
+    }
+    return _InstructorOption(uid: doc.id, displayName: best);
+  }
+}
+
+class _SubjectOption {
+  const _SubjectOption({
+    required this.key,
+    required this.subjectCode,
+    required this.subjectName,
+  });
+
+  final String key;
+  final String subjectCode;
+  final String subjectName;
+}
+
 class _ClassOption {
   const _ClassOption({
     required this.id,
+    required this.subjectId,
     required this.subjectCode,
     required this.subjectName,
     required this.sectionLabel,
@@ -1905,6 +2246,7 @@ class _ClassOption {
   });
 
   final String id;
+  final String subjectId;
   final String subjectCode;
   final String subjectName;
   final String sectionLabel;
@@ -1914,10 +2256,17 @@ class _ClassOption {
   final String departmentName;
   final List<_ClassScheduleEntry> schedules;
 
+  String get subjectKey {
+    final String sid = subjectId.trim();
+    if (sid.isNotEmpty) return sid;
+    return '${subjectCode.trim()}|${subjectName.trim()}|${departmentName.trim()}';
+  }
+
   static _ClassOption? fromDoc(
     QueryDocumentSnapshot<Map<String, dynamic>> doc,
   ) {
     final Map<String, dynamic> data = doc.data();
+    final String subjectId = (data['subjectId'] as String?) ?? '';
     final String subjectCode = (data['subjectCode'] as String?) ?? 'N/A';
     final String subjectName =
         (data['subjectName'] as String?) ?? 'Untitled Subject';
@@ -1938,6 +2287,7 @@ class _ClassOption {
         .toList();
     return _ClassOption(
       id: doc.id,
+      subjectId: subjectId,
       subjectCode: subjectCode,
       subjectName: subjectName,
       sectionLabel: section.isEmpty ? 'Section' : section,
@@ -1951,6 +2301,7 @@ class _ClassOption {
 
   factory _ClassOption.empty() => const _ClassOption(
     id: 'placeholder-class',
+    subjectId: '',
     subjectCode: 'N/A',
     subjectName: 'No subject',
     sectionLabel: 'Section',

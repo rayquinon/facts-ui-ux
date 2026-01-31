@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:printing/printing.dart';
 
 import 'reports/generate_report_page.dart';
+import 'reports/attendance_report_template_meta.dart';
 import 'services/excuse_request_service.dart';
 import 'services/user_role_service.dart';
 
@@ -390,6 +391,17 @@ class _AdminPageState extends State<AdminPage> {
         Icons.verified_user_outlined,
         onTap: () => setState(() => _selectedSection = _AdminSection.users),
       ),
+      _AdminAction(
+        'Edit Report Header Details',
+        Icons.description_outlined,
+        onTap: () async {
+          await showDialog<void>(
+            context: context,
+            builder: (BuildContext context) =>
+                const _AttendanceReportTemplateMetaDialog(),
+          );
+        },
+      ),
     ];
 
     return Scaffold(
@@ -680,6 +692,136 @@ class _AdminPageState extends State<AdminPage> {
   Future<int> _countDocuments(Query<Map<String, dynamic>> query) async {
     final QuerySnapshot<Map<String, dynamic>> snapshot = await query.get();
     return snapshot.size;
+  }
+}
+
+class _AttendanceReportTemplateMetaDialog extends StatefulWidget {
+  const _AttendanceReportTemplateMetaDialog();
+
+  @override
+  State<_AttendanceReportTemplateMetaDialog> createState() =>
+      _AttendanceReportTemplateMetaDialogState();
+}
+
+class _AttendanceReportTemplateMetaDialogState
+    extends State<_AttendanceReportTemplateMetaDialog> {
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final TextEditingController _revNoController = TextEditingController();
+  final TextEditingController _effectiveDateController = TextEditingController();
+  String _documentCodeNo = AttendanceReportTemplateMeta.defaults.documentCodeNo;
+  bool _isLoading = true;
+  bool _isSaving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _isLoading = true);
+    try {
+      final AttendanceReportTemplateMeta meta =
+          await AttendanceReportTemplateMeta.fetch(_firestore);
+      if (!mounted) return;
+      _documentCodeNo = meta.documentCodeNo;
+      _revNoController.text = meta.revisionNo;
+      _effectiveDateController.text = meta.effectiveDate;
+    } catch (_) {
+      _documentCodeNo = AttendanceReportTemplateMeta.defaults.documentCodeNo;
+      _revNoController.text = AttendanceReportTemplateMeta.defaults.revisionNo;
+      _effectiveDateController.text =
+          AttendanceReportTemplateMeta.defaults.effectiveDate;
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _save() async {
+    if (_isSaving) return;
+    setState(() => _isSaving = true);
+    try {
+      final AttendanceReportTemplateMeta meta = AttendanceReportTemplateMeta(
+        documentCodeNo: _documentCodeNo.trim(),
+        revisionNo: _revNoController.text.trim(),
+        effectiveDate: _effectiveDateController.text.trim(),
+      );
+      await AttendanceReportTemplateMeta.docRef(
+        _firestore,
+      ).set(meta.toFirestore(), SetOptions(merge: true));
+      if (!mounted) return;
+      Navigator.of(context).pop();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to save: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    _revNoController.dispose();
+    _effectiveDateController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Attendance Report Header Details'),
+      content: SizedBox(
+        width: 520,
+        child: _isLoading
+            ? const Padding(
+                padding: EdgeInsets.symmetric(vertical: 12),
+                child: Center(child: CircularProgressIndicator()),
+              )
+            : Column(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  TextField(
+                    controller: _revNoController,
+                    decoration: const InputDecoration(labelText: 'Rev. No.'),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _effectiveDateController,
+                    decoration: const InputDecoration(
+                      labelText: 'Effective Date',
+                      hintText: 'e.g. 03.17.25',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'Document Code No. stays fixed in the Word template (currently: $_documentCodeNo).',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                ],
+              ),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: _isSaving ? null : () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: (_isLoading || _isSaving) ? null : _save,
+          child: _isSaving
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Save'),
+        ),
+      ],
+    );
   }
 }
 

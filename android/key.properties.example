@@ -1,0 +1,9 @@
+# Copy this file to android/key.properties (this file is ignored by git)
+# then fill in the values below.
+#
+# storeFile can be an absolute path or a path relative to the android/ folder.
+
+storeFile=../keystore/facts-release.jks
+storePassword=CHANGE_ME
+keyAlias=CHANGE_ME
+keyPassword=CHANGE_ME

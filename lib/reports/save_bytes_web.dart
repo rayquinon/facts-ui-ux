@@ -4,14 +4,26 @@ import 'dart:typed_data';
 import 'dart:html' as html;
 
 Future<String?> saveBytesAsFileImpl(Uint8List bytes, String fileName) async {
-  final html.Blob blob = html.Blob(<dynamic>[bytes]);
+  final html.Blob blob = html.Blob(
+    <dynamic>[bytes],
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  );
   final String url = html.Url.createObjectUrlFromBlob(blob);
   final html.AnchorElement a = html.AnchorElement(href: url)
     ..download = fileName
     ..style.display = 'none';
-  html.document.body?.children.add(a);
-  a.click();
-  a.remove();
-  html.Url.revokeObjectUrl(url);
+  final html.Element? body = html.document.body;
+  if (body == null) {
+    html.Url.revokeObjectUrl(url);
+    return null;
+  }
+
+  body.append(a);
+  try {
+    a.click();
+  } finally {
+    a.remove();
+    html.Url.revokeObjectUrl(url);
+  }
   return null;
 }
