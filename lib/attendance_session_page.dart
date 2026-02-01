@@ -112,17 +112,36 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     });
 
     try {
-      await _embeddingService.initialize();
-      await _ensureSessionDocument();
-      await _loadRosterEmbeddings();
+      // Start long-running initialization tasks early, but do not block
+      // opening the camera preview on them. This improves perceived
+      // performance (especially when offline and Firestore server calls hang).
+      final Future<void> modelInit = _embeddingService.initialize();
+      final Future<void> rosterInit = _loadRosterEmbeddings();
+
+      // Best-effort: creating the session document can fail offline.
+      final Future<void> sessionDocInit = _ensureSessionDocumentBestEffort();
+
+      setState(() {
+        _statusMessage = 'Opening camera...';
+      });
+
       if (kIsWeb) {
         await _initializeWebCamera();
       } else {
         await _initializeDeviceCamera();
       }
+
       if (!mounted) return;
       setState(() {
         _initializing = false;
+        _statusMessage = 'Camera ready. Loading recognition...';
+      });
+
+      // Continue the remaining initialization steps.
+      await Future.wait(<Future<void>>[modelInit, rosterInit, sessionDocInit]);
+
+      if (!mounted) return;
+      setState(() {
         _statusMessage =
             'Session live. Keep students centered for best recognition results.';
       });
@@ -163,6 +182,15 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     _sessionDocId = doc.id;
   }
 
+  Future<void> _ensureSessionDocumentBestEffort() async {
+    try {
+      // Time-box this so offline sessions don't hang camera startup.
+      await _ensureSessionDocument().timeout(const Duration(seconds: 3));
+    } catch (_) {
+      // Offline or slow network: skip for now.
+    }
+  }
+
   Future<void> _loadRosterEmbeddings() async {
     Query<Map<String, dynamic>> query = _firestore
         .collection('users')
@@ -175,9 +203,13 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
     QuerySnapshot<Map<String, dynamic>> snapshot;
     try {
-      snapshot = await query.get(const GetOptions(source: Source.server));
+      snapshot = await query
+          .get(const GetOptions(source: Source.server))
+          .timeout(const Duration(seconds: 3));
     } catch (_) {
-      snapshot = await query.get(const GetOptions(source: Source.cache));
+      snapshot = await query
+          .get(const GetOptions(source: Source.cache))
+          .timeout(const Duration(seconds: 3));
     }
     final List<_RecognizedStudent> roster = snapshot.docs
         .map(_RecognizedStudent.fromDocument)
