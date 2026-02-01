@@ -164,10 +164,21 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   }
 
   Future<void> _loadRosterEmbeddings() async {
-    final QuerySnapshot<Map<String, dynamic>> snapshot = await _firestore
+    Query<Map<String, dynamic>> query = _firestore
         .collection('users')
-        .where('role', isEqualTo: 'student')
-        .get();
+        .where('role', isEqualTo: 'student');
+
+    final String sectionLabel = (widget.config.section ?? '').trim();
+    if (sectionLabel.isNotEmpty) {
+      query = query.where('section', isEqualTo: sectionLabel);
+    }
+
+    QuerySnapshot<Map<String, dynamic>> snapshot;
+    try {
+      snapshot = await query.get(const GetOptions(source: Source.server));
+    } catch (_) {
+      snapshot = await query.get(const GetOptions(source: Source.cache));
+    }
     final List<_RecognizedStudent> roster = snapshot.docs
         .map(_RecognizedStudent.fromDocument)
         .whereType<_RecognizedStudent>()

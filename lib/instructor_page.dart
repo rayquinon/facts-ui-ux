@@ -6,8 +6,11 @@ import 'package:flutter/material.dart';
 import 'package:printing/printing.dart';
 
 import 'attendance_session_page.dart';
+import 'offline_mode_checklist_page.dart';
 import 'reports/generate_report_page.dart';
 import 'services/excuse_request_service.dart';
+import 'services/offline_mode_service.dart';
+import 'services/offline_mode_service_types.dart';
 
 class InstructorPage extends StatefulWidget {
   const InstructorPage({super.key});
@@ -35,6 +38,11 @@ class _InstructorPageState extends State<InstructorPage> {
   bool _isLaunchingSession = false;
   bool _isApprovingExcuse = false;
   final ExcuseRequestService _excuseService = ExcuseRequestService();
+
+  final OfflineModeService _offlineModeService = OfflineModeService();
+  OfflineModeStatus? _offlineModeStatus;
+  bool _offlineModeChecking = false;
+  int _offlineModeRequestId = 0;
 
   DateTime get _activeTime =>
       _simulationEnabled ? _simulatedTime : DateTime.now();
@@ -612,6 +620,8 @@ class _InstructorPageState extends State<InstructorPage> {
               _isLoadingAssignments = false;
               _assignmentError = null;
             });
+
+            _refreshOfflineModeStatus();
           },
           onError: (Object error, StackTrace stackTrace) {
             setState(() {
@@ -620,8 +630,96 @@ class _InstructorPageState extends State<InstructorPage> {
               _assignments = <_InstructorClassAssignment>[];
               _scheduleEntries = <_InstructorSchedule>[];
             });
+
+            _refreshOfflineModeStatus();
           },
         );
+  }
+
+  List<String> _sectionLabelsForAssignments() {
+    return _assignments
+        .map((a) => a.section?.trim() ?? '')
+        .where((s) => s.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
+  }
+
+  Future<void> _refreshOfflineModeStatus() async {
+    if (!mounted) return;
+
+    final List<String> sectionLabels = _sectionLabelsForAssignments();
+    final int requestId = ++_offlineModeRequestId;
+    setState(() => _offlineModeChecking = true);
+
+    try {
+      final OfflineModeStatus status =
+          await _offlineModeService.getStatusForSections(sectionLabels);
+      if (!mounted || requestId != _offlineModeRequestId) return;
+      setState(() {
+        _offlineModeStatus = status;
+        _offlineModeChecking = false;
+      });
+    } catch (_) {
+      if (!mounted || requestId != _offlineModeRequestId) return;
+      setState(() {
+        _offlineModeStatus = null;
+        _offlineModeChecking = false;
+      });
+    }
+  }
+
+  Future<void> _openOfflineModeChecklist() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (BuildContext context) => OfflineModeChecklistPage(
+          sectionLabels: _sectionLabelsForAssignments(),
+        ),
+      ),
+    );
+    await _refreshOfflineModeStatus();
+  }
+
+  Widget _buildOfflineModeAction() {
+    final bool ready = _offlineModeStatus?.isReady == true;
+    final Color fg = ready ? Colors.green : Colors.red;
+    final Color bg = const Color(0xFF3B3B3B);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+      child: TextButton(
+        onPressed: _openOfflineModeChecklist,
+        style: TextButton.styleFrom(
+          backgroundColor: bg,
+          foregroundColor: fg,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            if (_offlineModeChecking)
+              SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  valueColor: AlwaysStoppedAnimation<Color>(fg),
+                ),
+              )
+            else
+              Icon(ready ? Icons.check : Icons.close, size: 18, color: fg),
+            const SizedBox(width: 8),
+            Text(
+              'offline mode',
+              style: TextStyle(
+                color: fg,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   _InstructorSchedule? _resolveActiveSchedule(DateTime time) {
@@ -786,6 +884,7 @@ class _InstructorPageState extends State<InstructorPage> {
       appBar: AppBar(
         title: const Text('Instructor Workspace'),
         actions: <Widget>[
+          _buildOfflineModeAction(),
           TextButton.icon(
             onPressed: _handleSignOut,
             icon: const Icon(Icons.logout, size: 18),
