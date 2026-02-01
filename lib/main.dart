@@ -307,7 +307,7 @@ class _BootstrapAdminClaimViewState extends State<_BootstrapAdminClaimView> {
               ),
               const SizedBox(height: 12),
               TextButton(
-                onPressed: () async {
+                onPressed: () async { 
                   await FirebaseAuth.instance.signOut();
                 },
                 child: const Text('Back to login'),
