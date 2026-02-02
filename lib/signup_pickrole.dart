@@ -814,7 +814,7 @@ class _SignUpPageState extends State<SignUpPage> {
                           controller: _nameController,
                           textInputAction: TextInputAction.next,
                           decoration: const InputDecoration(
-                            labelText: 'Full name',
+                            labelText: 'Lastname, Firstname Middleinitial.',
                             prefixIcon: Icon(Icons.person_outline),
                           ),
                           validator: (String? value) {

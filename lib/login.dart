@@ -1,13 +1,17 @@
 import 'dart:math' as math;
 
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'admin_page.dart';
 import 'instructor_page.dart';
 import 'signup_pickrole.dart';
 import 'student_page.dart';
 import 'services/user_role_service.dart';
+import 'services/app_update_service.dart';
+import 'services/app_update_types.dart';
 import 'verify_email_page.dart';
 
 /// Standalone login page with simple validation and submit feedback.
@@ -151,6 +155,86 @@ class _LoginPageState extends State<LoginPage> {
         setState(() => _isSubmitting = false);
       }
     }
+  }
+
+  Future<void> _checkForUpdates() async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Updates are available on Android builds only.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    final AppUpdateInfo? update = await AppUpdateService.instance.checkForUpdate();
+    if (!mounted) return;
+
+    if (update == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not check for updates right now.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    final String currentLabel = '${update.currentVersion}+${update.currentBuildNumber}';
+    final String latestLabel = update.latestVersion.isEmpty
+        ? 'build ${update.latestBuildNumber}'
+        : '${update.latestVersion}+${update.latestBuildNumber}';
+
+    if (!update.updateAvailable) {
+      await showDialog<void>(
+        context: context,
+        builder: (BuildContext dialogContext) {
+          return AlertDialog(
+            title: const Text('Up to date'),
+            content: Text('You are on the latest version ($currentLabel).'),
+            actions: <Widget>[
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('OK'),
+              ),
+            ],
+          );
+        },
+      );
+      return;
+    }
+
+    final bool? shouldUpdate = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          title: const Text('Update available'),
+          content: Text(
+            'A newer version is available.\n\n'
+            'Current: $currentLabel\n'
+            'Latest:  $latestLabel\n\n'
+            'Download and install the update now?',
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Update now'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldUpdate != true) return;
+    final String? url = update.preferredUrl;
+    if (url == null) return;
+    await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
   }
 
   String _mapAuthError(FirebaseAuthException error) {
@@ -417,6 +501,16 @@ class _LoginPageState extends State<LoginPage> {
                       ),
                     ],
                   ),
+                  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android)
+                    Align(
+                      alignment:
+                          isTablet ? Alignment.centerLeft : Alignment.center,
+                      child: TextButton.icon(
+                        onPressed: _checkForUpdates,
+                        icon: const Icon(Icons.system_update_alt, size: 18),
+                        label: const Text('Check for updates'),
+                      ),
+                    ),
                 ],
               ),
             ),

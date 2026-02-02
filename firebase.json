@@ -41,6 +41,15 @@
     ],
     "headers": [
       {
+        "source": "/downloads/version.json",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
+      },
+      {
         "source": "/downloads/app-latest.apk",
         "headers": [
           {

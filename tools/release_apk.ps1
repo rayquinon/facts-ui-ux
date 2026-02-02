@@ -20,6 +20,15 @@ $latestArm64Versioned = Join-Path $downloads "app-latest-arm64-$versionSafe.apk"
 $latestArmeabiVersioned = Join-Path $downloads "app-latest-armeabi-v7a-$versionSafe.apk"
 $latestX64Versioned = Join-Path $downloads "app-latest-x86_64-$versionSafe.apk"
 
+$manifestPath = Join-Path $downloads "version.json"
+
+$versionName = $versionRaw
+$buildNumber = 0
+if ($versionRaw -match '^(.+?)\+(\d+)$') {
+  $versionName = $Matches[1]
+  $buildNumber = [int]$Matches[2]
+}
+
 Write-Host "Building Flutter Android release APKs (split-per-ABI)…"
 flutter build apk --release --split-per-abi
 
@@ -63,6 +72,19 @@ Copy-Item -Force $srcUniversal $latestVersioned
 Copy-Item -Force $srcArm64 $latestArm64Versioned
 Copy-Item -Force $srcArmeabi $latestArmeabiVersioned
 Copy-Item -Force $srcX64 $latestX64Versioned
+
+Write-Host "Writing update manifest: $manifestPath"
+$manifest = @{
+  latestBuildNumber = $buildNumber
+  latestVersionName = $versionName
+  apkUrl = 'https://simple-distributed-database.web.app/downloads/app-latest.apk'
+  arm64Url = 'https://simple-distributed-database.web.app/downloads/app-latest-arm64.apk'
+  androidPageUrl = 'https://simple-distributed-database.web.app/android/'
+  updatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+}
+
+$manifestJson = $manifest | ConvertTo-Json -Depth 4
+Set-Content -Path $manifestPath -Value $manifestJson -Encoding UTF8
 
 Write-Host "Building Flutter web release…"
 flutter build web --release --base-href /app/

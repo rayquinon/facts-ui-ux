@@ -5,6 +5,7 @@ import 'instructor_page.dart';
 import 'login.dart';
 import 'services/user_role_service.dart';
 import 'student_page.dart';
+import 'widgets/confirm_sign_out_dialog.dart';
 
 class VerifyEmailPageArgs {
   const VerifyEmailPageArgs({required this.destinationRoute});
@@ -182,12 +183,15 @@ class _VerifyEmailPageState extends State<VerifyEmailPage> {
       appBar: AppBar(
         title: const Text('Verify your email'),
         actions: <Widget>[
-          TextButton(
-            onPressed: () async {
-              await FirebaseAuth.instance.signOut();
-            },
-            child: const Text('Sign out'),
-          ),
+              TextButton(
+                onPressed: () async {
+                  final bool shouldSignOut = await showConfirmSignOutDialog(context);
+                  if (!shouldSignOut) return;
+
+                  await FirebaseAuth.instance.signOut();
+                },
+                child: const Text('Sign out'),
+              ),
         ],
       ),
       body: Center(

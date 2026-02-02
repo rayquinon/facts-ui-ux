@@ -4,6 +4,7 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'admin_page.dart';
 import 'face_enrollment_page.dart';
@@ -15,8 +16,11 @@ import 'student_page.dart';
 import 'attendance_session_page.dart';
 import 'services/crash_reporter.dart';
 import 'services/user_role_service.dart';
+import 'services/app_update_service.dart';
+import 'services/app_update_types.dart';
 import 'reports/generate_report_page.dart';
 import 'verify_email_page.dart';
+import 'widgets/confirm_sign_out_dialog.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -130,9 +134,66 @@ class AuthGate extends StatefulWidget {
 
 class _AuthGateState extends State<AuthGate> {
   int _authRefreshKey = 0;
+  bool _updateCheckedThisLaunch = false;
 
   void _triggerAuthRefresh() {
     setState(() => _authRefreshKey++);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkForAndroidUpdateOnce();
+    });
+  }
+
+  Future<void> _checkForAndroidUpdateOnce() async {
+    if (_updateCheckedThisLaunch) return;
+    _updateCheckedThisLaunch = true;
+
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+
+    final AppUpdateInfo? update = await AppUpdateService.instance.checkForUpdate();
+    if (!mounted || update == null || !update.updateAvailable) return;
+
+    final bool? shouldUpdate = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        final String latestLabel = update.latestVersion.isEmpty
+            ? 'build ${update.latestBuildNumber}'
+            : '${update.latestVersion}+${update.latestBuildNumber}';
+        final String currentLabel = '${update.currentVersion}+${update.currentBuildNumber}';
+        return AlertDialog(
+          title: const Text('Update available'),
+          content: Text(
+            'A newer version of FACTS is available.\n\n'
+            'Current: $currentLabel\n'
+            'Latest:  $latestLabel\n\n'
+            'Do you want to download and install the update now?',
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Later'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Update now'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldUpdate != true) return;
+    final String? url = update.preferredUrl;
+    if (url == null) return;
+
+    final Uri uri = Uri.parse(url);
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
   Future<Map<String, dynamic>> _fetchAuthInfo(User user, int refreshKey) async {
@@ -308,6 +369,9 @@ class _BootstrapAdminClaimViewState extends State<_BootstrapAdminClaimView> {
               const SizedBox(height: 12),
               TextButton(
                 onPressed: () async { 
+                  final bool shouldSignOut = await showConfirmSignOutDialog(context);
+                  if (!shouldSignOut) return;
+
                   await FirebaseAuth.instance.signOut();
                 },
                 child: const Text('Back to login'),
@@ -351,6 +415,9 @@ class _AuthErrorView extends StatelessWidget {
               const SizedBox(height: 16),
               FilledButton(
                 onPressed: () async {
+                  final bool shouldSignOut = await showConfirmSignOutDialog(context);
+                  if (!shouldSignOut) return;
+
                   await FirebaseAuth.instance.signOut();
                 },
                 child: const Text('Back to login'),

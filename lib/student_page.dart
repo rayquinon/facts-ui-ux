@@ -6,6 +6,7 @@ import 'package:printing/printing.dart';
 
 import 'face_enrollment_page.dart';
 import 'services/excuse_request_service.dart';
+import 'widgets/confirm_sign_out_dialog.dart';
 import 'widgets/request_excuse_dialog.dart';
 
 class StudentPage extends StatefulWidget {
@@ -19,6 +20,10 @@ class StudentPage extends StatefulWidget {
 
 class _StudentPageState extends State<StudentPage> {
   Future<void> _handleSignOut() async {
+    final bool shouldSignOut = await showConfirmSignOutDialog(context);
+    if (!shouldSignOut) return;
+    if (!mounted) return;
+
     try {
       await FirebaseAuth.instance.signOut();
     } catch (_) {

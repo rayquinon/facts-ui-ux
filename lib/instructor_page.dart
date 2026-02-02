@@ -11,6 +11,7 @@ import 'reports/generate_report_page.dart';
 import 'services/excuse_request_service.dart';
 import 'services/offline_mode_service.dart';
 import 'services/offline_mode_service_types.dart';
+import 'widgets/confirm_sign_out_dialog.dart';
 
 class InstructorPage extends StatefulWidget {
   const InstructorPage({super.key});
@@ -504,6 +505,10 @@ class _InstructorPageState extends State<InstructorPage> {
   }
 
   Future<void> _handleSignOut() async {
+    final bool shouldSignOut = await showConfirmSignOutDialog(context);
+    if (!shouldSignOut) return;
+    if (!mounted) return;
+
     try {
       await FirebaseAuth.instance.signOut();
     } catch (_) {

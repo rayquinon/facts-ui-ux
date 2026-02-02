@@ -12,6 +12,17 @@ import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'services/face_embedding_service.dart';
 import 'services/web_camera_service.dart';
 
+List<double> _l2NormalizeVector(List<double> v) {
+  if (v.isEmpty) return <double>[];
+  double sumSquares = 0;
+  for (final double x in v) {
+    sumSquares += x * x;
+  }
+  if (sumSquares <= 0) return <double>[];
+  final double inv = 1.0 / math.sqrt(sumSquares);
+  return v.map((double x) => x * inv).toList(growable: false);
+}
+
 class AttendanceSessionConfig {
   const AttendanceSessionConfig({
     required this.classId,
@@ -50,8 +61,10 @@ class AttendanceSessionPage extends StatefulWidget {
 }
 
 class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
-  static const double _similarityThreshold = 0.45;
-  static const double _minAcceptedConfidence = 0.85;
+  // Recognition is strictly gated to minimize false positives.
+  // Tune these with real class data if needed.
+  static const double _similarityThreshold = 0.55;
+  static const double _similarityMargin = 0.08;
   static const double _confidenceSpan = 0.20;
   static const Duration _captureCooldown = Duration(seconds: 2);
   static const Duration _duplicateCaptureCooldown = Duration(seconds: 10);
@@ -345,18 +358,32 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         return;
       }
       _lastUnrecognizedTime = captureTime;
-      final double? similarity = result.similarity;
-      if (similarity == null || similarity.isNaN) {
+      final double? best = result.similarity;
+      final double? second = result.secondBestSimilarity;
+      if (best == null || best.isNaN) {
         _updateStatus('Face detected but no match found in roster.');
       } else {
-        final String hint = similarity < 0.30
+        final String hint = best < 0.30
             ? ' Re-enroll this student in the Android app.'
             : '';
-        _updateStatus(
-          'Face detected but no match found in roster. '
-          '(best similarity ${similarity.toStringAsFixed(2)}, '
-          'threshold ${_similarityThreshold.toStringAsFixed(2)})$hint',
-        );
+        if (second != null && !second.isNaN) {
+          final double margin = best - second;
+          final String reason =
+              result.rejectionReason == 'ambiguous' ? ' Ambiguous match.' : '';
+          _updateStatus(
+            'Face detected but no match found in roster.$reason '
+            '(top1 ${best.toStringAsFixed(2)}, top2 ${second.toStringAsFixed(2)}, '
+            'margin ${margin.toStringAsFixed(2)}, '
+            'threshold ${_similarityThreshold.toStringAsFixed(2)}, '
+            'min margin ${_similarityMargin.toStringAsFixed(2)})$hint',
+          );
+        } else {
+          _updateStatus(
+            'Face detected but no match found in roster. '
+            '(best similarity ${best.toStringAsFixed(2)}, '
+            'threshold ${_similarityThreshold.toStringAsFixed(2)})$hint',
+          );
+        }
       }
       return;
     }
@@ -390,28 +417,65 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     if (_roster.isEmpty) {
       return _MatchResult(embedding: embedding);
     }
+
+    final List<double> probe = _l2NormalizeVector(embedding);
+    if (probe.isEmpty) {
+      return _MatchResult(embedding: embedding, similarity: -1);
+    }
+
     _RecognizedStudent? bestCandidate;
     double bestSimilarity = -1;
+    double secondBestSimilarity = -1;
+
+    // Compare on a per-student basis: each student contributes their best
+    // similarity across their stored embeddings.
     for (final _RecognizedStudent student in _roster) {
+      double bestForStudent = -1;
       for (final List<double> candidate in student.embeddings) {
-        final double similarity = _cosineSimilarity(embedding, candidate);
-        if (similarity > bestSimilarity) {
-          bestSimilarity = similarity;
-          bestCandidate = student;
+        final double similarity = _cosineSimilarityNormalized(probe, candidate);
+        if (similarity > bestForStudent) {
+          bestForStudent = similarity;
         }
       }
+
+      if (bestForStudent > bestSimilarity) {
+        secondBestSimilarity = bestSimilarity;
+        bestSimilarity = bestForStudent;
+        bestCandidate = student;
+      } else if (bestForStudent > secondBestSimilarity) {
+        secondBestSimilarity = bestForStudent;
+      }
     }
-    if (bestCandidate == null || bestSimilarity < _similarityThreshold) {
-      return _MatchResult(embedding: embedding, similarity: bestSimilarity);
+
+    if (bestCandidate == null) {
+      return _MatchResult(embedding: embedding);
     }
+
+    if (bestSimilarity < _similarityThreshold) {
+      return _MatchResult(
+        embedding: embedding,
+        similarity: bestSimilarity,
+        secondBestSimilarity: secondBestSimilarity,
+        rejectionReason: 'below-threshold',
+      );
+    }
+
+    final double margin = bestSimilarity - secondBestSimilarity;
+    if (secondBestSimilarity >= 0 && margin < _similarityMargin) {
+      return _MatchResult(
+        embedding: embedding,
+        similarity: bestSimilarity,
+        secondBestSimilarity: secondBestSimilarity,
+        rejectionReason: 'ambiguous',
+      );
+    }
+
     final double confidence = _similarityToDisplayConfidence(bestSimilarity);
-    if (confidence < _minAcceptedConfidence) {
-      return _MatchResult(embedding: embedding, similarity: bestSimilarity);
-    }
     return _MatchResult(
       embedding: embedding,
       student: bestCandidate,
       similarity: bestSimilarity,
+      secondBestSimilarity: secondBestSimilarity,
       confidence: confidence,
     );
   }
@@ -761,22 +825,15 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     return nv21;
   }
 
-  double _cosineSimilarity(List<double> a, List<double> b) {
-    final int length = math.min(a.length, b.length);
+  double _cosineSimilarityNormalized(List<double> aUnit, List<double> bUnit) {
+    final int length = math.min(aUnit.length, bUnit.length);
+    if (length <= 0) return -1;
     double dot = 0;
-    double normA = 0;
-    double normB = 0;
     for (int i = 0; i < length; i++) {
-      final double valueA = a[i];
-      final double valueB = b[i];
-      dot += valueA * valueB;
-      normA += valueA * valueA;
-      normB += valueB * valueB;
+      dot += aUnit[i] * bUnit[i];
     }
-    if (normA == 0 || normB == 0) {
-      return -1;
-    }
-    return dot / (math.sqrt(normA) * math.sqrt(normB));
+    // Avoid tiny numeric drift.
+    return dot.clamp(-1.0, 1.0);
   }
 
   double _similarityToDisplayConfidence(double similarity) {
@@ -1199,8 +1256,9 @@ class _RecognizedStudent {
         final List<double> vec = rawVec
             .map((num v) => v.toDouble())
             .toList(growable: false);
-        if (vec.isNotEmpty) {
-          parsed.add(vec);
+        final List<double> normalized = _l2NormalizeVector(vec);
+        if (normalized.isNotEmpty) {
+          parsed.add(normalized);
         }
       }
       if (parsed.isNotEmpty) {
@@ -1213,9 +1271,10 @@ class _RecognizedStudent {
       return <List<double>>[];
     }
     final List<double> embedding = rawSingle
-        .map((dynamic value) => (value as num).toDouble())
-        .toList(growable: false);
-    return <List<double>>[embedding];
+      .map((dynamic value) => (value as num).toDouble())
+      .toList(growable: false);
+    final List<double> normalized = _l2NormalizeVector(embedding);
+    return normalized.isEmpty ? <List<double>>[] : <List<double>>[normalized];
   }
 
   static String _resolveDisplayName(Map<String, dynamic> data, String docId) {
@@ -1250,11 +1309,15 @@ class _MatchResult {
     required this.embedding,
     this.student,
     this.similarity,
+    this.secondBestSimilarity,
     this.confidence,
+    this.rejectionReason,
   });
 
   final List<double> embedding;
   final _RecognizedStudent? student;
   final double? similarity;
+  final double? secondBestSimilarity;
   final double? confidence;
+  final String? rejectionReason;
 }

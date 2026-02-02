@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'widgets/confirm_sign_out_dialog.dart';
 import 'package:printing/printing.dart';
 
 import 'reports/generate_report_page.dart';
@@ -410,6 +411,9 @@ class _AdminPageState extends State<AdminPage> {
         actions: <Widget>[
           TextButton.icon(
             onPressed: () async {
+              final bool shouldSignOut = await showConfirmSignOutDialog(context);
+              if (!shouldSignOut) return;
+
               try {
                 await FirebaseAuth.instance.signOut();
               } catch (_) {
@@ -2711,6 +2715,13 @@ class _UserManagementPanel extends StatefulWidget {
   State<_UserManagementPanel> createState() => _UserManagementPanelState();
 }
 
+enum _BulkUserAction {
+  editProfile,
+  fixFaceEnrollment,
+  clearFaceEnrollment,
+  deleteUser,
+}
+
 class _UserManagementPanelState extends State<_UserManagementPanel> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseFunctions _functions = FirebaseFunctions.instanceFor(
@@ -2722,6 +2733,10 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
   bool _showStudents = true;
   bool _showInstructors = true;
   String _searchQuery = '';
+
+  bool _multiSelectEnabled = false;
+  bool _bulkActionRunning = false;
+  final Set<String> _selectedUserIds = <String>{};
 
   static const int _usersPageSize = 50;
   bool _loadingUsers = false;
@@ -2744,6 +2759,245 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     _refreshUsers();
   }
 
+  void _toggleMultiSelect() {
+    setState(() {
+      _multiSelectEnabled = !_multiSelectEnabled;
+      _selectedUserIds.clear();
+    });
+  }
+
+  void _toggleUserSelected(String uid) {
+    setState(() {
+      if (_selectedUserIds.contains(uid)) {
+        _selectedUserIds.remove(uid);
+      } else {
+        _selectedUserIds.add(uid);
+      }
+    });
+  }
+
+  Future<bool> _confirmBulkAction({
+    required String title,
+    required String message,
+    required String confirmLabel,
+  }) async {
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: Text(confirmLabel),
+          ),
+        ],
+      ),
+    );
+    return confirmed == true;
+  }
+
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _selectedDocs() {
+    if (_selectedUserIds.isEmpty) return const [];
+    final Set<String> ids = _selectedUserIds;
+    return _loadedUserDocs
+        .where((QueryDocumentSnapshot<Map<String, dynamic>> d) => ids.contains(d.id))
+        .toList(growable: false);
+  }
+
+  Future<void> _runBulkFixFaceEnrollment() async {
+    if (_bulkActionRunning) return;
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = _selectedDocs();
+    if (docs.isEmpty) return;
+
+    final List<String> uidsWithEnrollment = docs
+        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+          final Map<String, dynamic> data = doc.data();
+          final bool hasEnrollment =
+              ((data['faceEmbeds'] is List) && (data['faceEmbeds'] as List).isNotEmpty) ||
+              ((data['faceEmbed'] is List) && (data['faceEmbed'] as List).isNotEmpty);
+          return hasEnrollment;
+        })
+        .map((QueryDocumentSnapshot<Map<String, dynamic>> d) => d.id)
+        .toList(growable: false);
+
+    final int totalSelected = docs.length;
+    final int totalTargeted = uidsWithEnrollment.length;
+    if (totalTargeted == 0) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No selected users have face enrollment data.')),
+      );
+      return;
+    }
+
+    final bool confirmed = await _confirmBulkAction(
+      title: 'Fix Face Enrollment',
+      message:
+          'Fix face enrollment format for $totalTargeted of $totalSelected selected user(s)?',
+      confirmLabel: 'Fix',
+    );
+    if (!confirmed) return;
+
+    setState(() => _bulkActionRunning = true);
+    int success = 0;
+    int failed = 0;
+    for (final String uid in uidsWithEnrollment) {
+      try {
+        await _functions
+            .httpsCallable('adminMigrateFaceEmbeds')
+            .call(<String, dynamic>{'uid': uid});
+        success++;
+      } catch (_) {
+        failed++;
+      }
+    }
+
+    if (!mounted) return;
+    setState(() => _bulkActionRunning = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Fix completed. Success: $success, Failed: $failed.')),
+    );
+  }
+
+  Future<void> _runBulkClearFaceEnrollment() async {
+    if (_bulkActionRunning) return;
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = _selectedDocs();
+    if (docs.isEmpty) return;
+
+    final List<String> uidsWithEnrollment = docs
+        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+          final Map<String, dynamic> data = doc.data();
+          final bool hasEnrollment =
+              ((data['faceEmbeds'] is List) && (data['faceEmbeds'] as List).isNotEmpty) ||
+              ((data['faceEmbed'] is List) && (data['faceEmbed'] as List).isNotEmpty);
+          return hasEnrollment;
+        })
+        .map((QueryDocumentSnapshot<Map<String, dynamic>> d) => d.id)
+        .toList(growable: false);
+
+    final int totalSelected = docs.length;
+    final int totalTargeted = uidsWithEnrollment.length;
+    if (totalTargeted == 0) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No selected users have face enrollment data.')),
+      );
+      return;
+    }
+
+    final bool confirmed = await _confirmBulkAction(
+      title: 'Clear Face Enrollment',
+      message:
+          'Clear face enrollment for $totalTargeted of $totalSelected selected user(s)? This cannot be undone.',
+      confirmLabel: 'Clear',
+    );
+    if (!confirmed) return;
+
+    setState(() => _bulkActionRunning = true);
+    int success = 0;
+    int failed = 0;
+    for (final String uid in uidsWithEnrollment) {
+      try {
+        await _functions
+            .httpsCallable('adminClearFaceEnrollment')
+            .call(<String, dynamic>{'uid': uid});
+        success++;
+      } catch (_) {
+        failed++;
+      }
+    }
+
+    if (!mounted) return;
+    setState(() => _bulkActionRunning = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Clear completed. Success: $success, Failed: $failed.')),
+    );
+  }
+
+  Future<void> _runBulkDeleteUsers() async {
+    if (_bulkActionRunning) return;
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = _selectedDocs();
+    if (docs.isEmpty) return;
+
+    final int total = docs.length;
+    final bool confirmed = await _confirmBulkAction(
+      title: 'Delete Users',
+      message:
+          'This will permanently delete $total user(s), remove their profiles, and attempt to remove their attendance references. This cannot be undone.',
+      confirmLabel: 'Delete',
+    );
+    if (!confirmed) return;
+
+    setState(() => _bulkActionRunning = true);
+    int success = 0;
+    int failed = 0;
+    final Set<String> deleted = <String>{};
+
+    for (final QueryDocumentSnapshot<Map<String, dynamic>> doc in docs) {
+      try {
+        await _functions
+            .httpsCallable('adminDeleteUser')
+            .call(<String, dynamic>{'uid': doc.id});
+        deleted.add(doc.id);
+        success++;
+      } catch (_) {
+        failed++;
+      }
+    }
+
+    if (!mounted) return;
+
+    setState(() {
+      _bulkActionRunning = false;
+      _selectedUserIds.removeAll(deleted);
+      _loadedUserDocs = _loadedUserDocs
+          .where((QueryDocumentSnapshot<Map<String, dynamic>> d) => !deleted.contains(d.id))
+          .toList(growable: false);
+      _multiSelectEnabled = false;
+    });
+
+    // Re-fetch to keep pagination consistent.
+    _refreshUsers();
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Delete completed. Success: $success, Failed: $failed.')),
+    );
+  }
+
+  Future<void> _runBulkEditProfiles() async {
+    if (_bulkActionRunning) return;
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = _selectedDocs();
+    if (docs.isEmpty) return;
+
+    final int total = docs.length;
+    final bool confirmed = await _confirmBulkAction(
+      title: 'Edit Profile',
+      message:
+          total == 1
+              ? 'Edit the selected user profile?'
+              : 'You selected $total users. This will open the Edit Profile dialog for each user, one-by-one.',
+      confirmLabel: 'Continue',
+    );
+    if (!confirmed) return;
+
+    setState(() => _bulkActionRunning = true);
+    for (final QueryDocumentSnapshot<Map<String, dynamic>> doc in docs) {
+      if (!mounted) break;
+      await _editUserProfile(doc);
+    }
+    if (!mounted) return;
+    setState(() {
+      _bulkActionRunning = false;
+      _multiSelectEnabled = false;
+      _selectedUserIds.clear();
+    });
+  }
+
   Query<Map<String, dynamic>> _buildUsersPageQuery() {
     Query<Map<String, dynamic>> q = _firestore
         .collection('users')
@@ -2761,6 +3015,7 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
       _hasMoreUsers = true;
       _lastUserDoc = null;
       _loadedUserDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+      _selectedUserIds.clear();
     });
 
     try {
@@ -3342,11 +3597,81 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                         ),
                       ),
                     ),
+                    if (_multiSelectEnabled)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: Chip(
+                          label: Text('Selected: ${_selectedUserIds.length}'),
+                        ),
+                      ),
                     TextButton.icon(
                       onPressed: _loadingUsers ? null : _refreshUsers,
                       icon: const Icon(Icons.refresh, size: 18),
                       label: const Text('Refresh'),
                     ),
+                    const SizedBox(width: 6),
+                    TextButton.icon(
+                      onPressed: _bulkActionRunning ? null : _toggleMultiSelect,
+                      icon: Icon(
+                        _multiSelectEnabled
+                            ? Icons.close
+                            : Icons.checklist_rtl,
+                        size: 18,
+                      ),
+                      label: Text(
+                        _multiSelectEnabled ? 'Cancel' : 'Select Multiple',
+                      ),
+                    ),
+                    if (_multiSelectEnabled) ...<Widget>[
+                      const SizedBox(width: 6),
+                      if (_selectedUserIds.isEmpty || _bulkActionRunning)
+                        TextButton.icon(
+                          onPressed: null,
+                          icon: const Icon(Icons.tune, size: 18),
+                          label: const Text('Options'),
+                        )
+                      else
+                        PopupMenuButton<_BulkUserAction>(
+                          onSelected: (_BulkUserAction action) async {
+                            switch (action) {
+                              case _BulkUserAction.editProfile:
+                                await _runBulkEditProfiles();
+                              case _BulkUserAction.fixFaceEnrollment:
+                                await _runBulkFixFaceEnrollment();
+                              case _BulkUserAction.clearFaceEnrollment:
+                                await _runBulkClearFaceEnrollment();
+                              case _BulkUserAction.deleteUser:
+                                await _runBulkDeleteUsers();
+                            }
+                          },
+                          itemBuilder: (BuildContext context) {
+                            return const <PopupMenuEntry<_BulkUserAction>>[
+                              PopupMenuItem<_BulkUserAction>(
+                                value: _BulkUserAction.editProfile,
+                                child: Text('Edit profile'),
+                              ),
+                              PopupMenuItem<_BulkUserAction>(
+                                value: _BulkUserAction.fixFaceEnrollment,
+                                child: Text('Fix Face Enrollment'),
+                              ),
+                              PopupMenuItem<_BulkUserAction>(
+                                value: _BulkUserAction.clearFaceEnrollment,
+                                child: Text('Clear Face Enrollment'),
+                              ),
+                              PopupMenuDivider(),
+                              PopupMenuItem<_BulkUserAction>(
+                                value: _BulkUserAction.deleteUser,
+                                child: Text('Delete User'),
+                              ),
+                            ];
+                          },
+                          child: TextButton.icon(
+                            onPressed: null,
+                            icon: const Icon(Icons.tune, size: 18),
+                            label: const Text('Options'),
+                          ),
+                        ),
+                    ],
                   ],
                 ),
                 const SizedBox(height: 8),
@@ -3497,9 +3822,21 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                 ((data['faceEmbed'] is List) &&
                                     (data['faceEmbed'] as List).isNotEmpty);
                             final bool approved = data['approved'] == true;
+                            final bool selected = _selectedUserIds.contains(doc.id);
 
                             return ListTile(
                               contentPadding: EdgeInsets.zero,
+                              onTap: _multiSelectEnabled
+                                  ? () => _toggleUserSelected(doc.id)
+                                  : null,
+                              leading: _multiSelectEnabled
+                                  ? Checkbox(
+                                      value: selected,
+                                      onChanged: (bool? value) {
+                                        _toggleUserSelected(doc.id);
+                                      },
+                                    )
+                                  : null,
                               title: Text(name),
                               subtitle: Text(
                                 role.isEmpty
@@ -3510,7 +3847,13 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                                 : 'Instructor (pending)')
                                           : role),
                               ),
-                              trailing: PopupMenuButton<String>(
+                              trailing: _multiSelectEnabled
+                                  ? (selected
+                                        ? const Icon(Icons.check_circle)
+                                        : const Icon(
+                                            Icons.radio_button_unchecked,
+                                          ))
+                                  : PopupMenuButton<String>(
                                 onSelected: (String action) {
                                   switch (action) {
                                     case 'edit':
