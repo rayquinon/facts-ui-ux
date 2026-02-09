@@ -10,7 +10,6 @@ import 'package:flutter/services.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 
 import 'services/face_embedding_service.dart';
-import 'services/web_camera_service.dart';
 
 List<double> _l2NormalizeVector(List<double> v) {
   if (v.isEmpty) return <double>[];
@@ -81,8 +80,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
   CameraController? _cameraController;
   FaceDetector? _faceDetector;
-  WebCameraService? _webCameraService;
-  Timer? _webCaptureTimer;
   Timer? _sessionUiTimer;
 
   bool _isProcessingFrame = false;
@@ -96,6 +93,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   DateTime? _lastCaptureTime;
   DateTime? _lastUnrecognizedTime;
   int _lastRotationCompensation = 0;
+
+  bool get _recognitionSupported => !kIsWeb;
 
   List<_RecognizedStudent> _roster = <_RecognizedStudent>[];
   final List<_AttendanceCapture> _recentCaptures = <_AttendanceCapture>[];
@@ -188,11 +187,25 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         _statusMessage = 'Opening camera...';
       });
 
-      if (kIsWeb) {
-        await _initializeWebCamera();
-      } else {
-        await _initializeDeviceCamera();
+      if (!_recognitionSupported) {
+        // Attendance recognition is not supported on web because the web build
+        // uses a lightweight fallback embedding (no MLKit face detection / ONNX).
+        // Make this explicit to avoid misleading results.
+        if (!mounted) return;
+        setState(() {
+          _initializing = false;
+          _captureEnabled = false;
+          _statusMessage =
+              'Attendance recognition is not supported on web. Use the Android app to scan faces.';
+        });
+
+        // Still complete best-effort initialization so the session can be
+        // created/ended cleanly and roster count can load.
+        await Future.wait(<Future<void>>[modelInit, rosterInit, sessionDocInit]);
+        return;
       }
+
+      await _initializeDeviceCamera();
 
       if (!mounted) return;
       setState(() {
@@ -342,20 +355,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         .replaceAll(RegExp(r'\s+'), ' ');
   }
 
-  Future<void> _initializeWebCamera() async {
-    final WebCameraService service = WebCameraService();
-    await service.initialize();
-    if (!mounted) {
-      service.dispose();
-      return;
-    }
-    setState(() => _webCameraService = service);
-    _webCaptureTimer = Timer.periodic(
-      const Duration(milliseconds: 900),
-      (_) => _processWebFrame(),
-    );
-  }
-
   Future<void> _initializeDeviceCamera() async {
     final List<CameraDescription> cameras = await availableCameras();
     if (cameras.isEmpty) {
@@ -399,8 +398,39 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       if (faces.isEmpty) {
         _updateStatus('No face detected. Ask the student to step closer.');
       } else {
+        Face primary = faces.first;
+        if (faces.length > 1) {
+          final List<Face> sorted = List<Face>.from(faces)
+            ..sort((Face a, Face b) {
+              final double areaA = a.boundingBox.width.abs() * a.boundingBox.height.abs();
+              final double areaB = b.boundingBox.width.abs() * b.boundingBox.height.abs();
+              return areaB.compareTo(areaA);
+            });
+
+          final double bestArea = sorted.first.boundingBox.width.abs() *
+              sorted.first.boundingBox.height.abs();
+          final double secondArea = sorted.length > 1
+              ? (sorted[1].boundingBox.width.abs() *
+                  sorted[1].boundingBox.height.abs())
+              : 0.0;
+
+          // Only proceed when one face is clearly dominant. This reduces
+          // false positives when multiple students are in frame.
+          const double dominanceRatio = 1.8;
+          final bool dominant =
+              secondArea <= 0.0 || (bestArea / secondArea) >= dominanceRatio;
+          if (!dominant) {
+            _lastCaptureTime = _now();
+            _updateStatus(
+              'Multiple faces detected. Only one student should be in frame.',
+            );
+            return;
+          }
+          primary = sorted.first;
+        }
+
         final Rect bbox = _mapMlKitBboxToRaw(
-          faces.first.boundingBox,
+          primary.boundingBox,
           rotationCompensation: _lastRotationCompensation,
           rawWidth: image.width.toDouble(),
           rawHeight: image.height.toDouble(),
@@ -412,39 +442,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       }
     } catch (error) {
       debugPrint('Camera frame processing error: $error');
-    } finally {
-      _isProcessingFrame = false;
-    }
-  }
-
-  Future<void> _processWebFrame() async {
-    if (!kIsWeb ||
-        !_captureEnabled ||
-        _isProcessingFrame ||
-        !_embeddingService.isReady) {
-      return;
-    }
-    if (_isWithinCooldown()) {
-      return;
-    }
-    _isProcessingFrame = true;
-    try {
-      final WebCameraFrame? frame = await _webCameraService?.captureFrame();
-      if (frame == null) return;
-      final Size size = frame.size;
-      final double cropSize = math.min(size.width, size.height) * 0.7;
-      final Rect bbox = Rect.fromLTWH(
-        (size.width - cropSize) / 2,
-        (size.height - cropSize) / 2,
-        cropSize,
-        cropSize,
-      );
-      final List<double> embedding = await _embeddingService
-          .generateEmbeddingFromImage(frame.image, bbox);
-      _lastCaptureTime = _now();
-      await _handleEmbeddingCapture(embedding);
-    } catch (error) {
-      debugPrint('Web frame processing error: $error');
     } finally {
       _isProcessingFrame = false;
     }
@@ -1058,6 +1055,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   }
 
   void _toggleCapture() {
+    if (!_recognitionSupported) {
+      return;
+    }
     setState(() {
       _captureEnabled = !_captureEnabled;
       _statusMessage = _captureEnabled
@@ -1121,9 +1121,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   void dispose() {
     _cameraController?.stopImageStream();
     _cameraController?.dispose();
-    _webCaptureTimer?.cancel();
     _sessionUiTimer?.cancel();
-    _webCameraService?.dispose();
     _faceDetector?.close();
     _captureListController.dispose();
     _completeSessionDocument();
@@ -1135,6 +1133,20 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     final AttendanceSessionConfig config = widget.config;
     final ThemeData theme = Theme.of(context);
     final Widget preview = _buildPreviewPlaceholder();
+    final bool endNow = _shouldEndSessionNow();
+    final bool canToggleCapture = _recognitionSupported;
+    final bool primaryEnabled =
+      !_initializing && !_isEndingSession && (endNow || canToggleCapture);
+    final IconData primaryIcon = endNow
+      ? Icons.stop_circle_outlined
+      : (canToggleCapture
+        ? (_captureEnabled ? Icons.pause_circle : Icons.play_circle)
+        : Icons.block);
+    final String primaryLabel = endNow
+      ? 'End session now'
+      : (canToggleCapture
+        ? (_captureEnabled ? 'Pause session' : 'Continue session')
+        : 'Web not supported');
 
     return PopScope(
       canPop: false,
@@ -1147,25 +1159,15 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           title: const Text('Recognition session'),
           actions: <Widget>[
             TextButton.icon(
-              onPressed: _isEndingSession ? null : _handlePrimarySessionAction,
+              onPressed: primaryEnabled ? _handlePrimarySessionAction : null,
               icon: _isEndingSession
                   ? const SizedBox(
                       width: 16,
                       height: 16,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  : Icon(
-                      _shouldEndSessionNow()
-                          ? Icons.stop_circle_outlined
-                          : (_captureEnabled
-                              ? Icons.pause_circle
-                              : Icons.play_circle),
-                    ),
-              label: Text(
-                _shouldEndSessionNow()
-                    ? 'End session now'
-                    : (_captureEnabled ? 'Pause session' : 'Continue session'),
-              ),
+                  : Icon(primaryIcon),
+              label: Text(primaryLabel),
             ),
           ],
         ),
@@ -1218,12 +1220,12 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
   Widget _buildPreviewPlaceholder() {
     if (kIsWeb) {
-      return _webCameraService?.buildPreview() ??
-          Center(
-            child: _initializing
-                ? const CircularProgressIndicator()
-                : const Text('Camera initializing...'),
-          );
+      return const Center(
+        child: Text(
+          'Web builds do not support face recognition.\nUse the Android app to scan faces.',
+          textAlign: TextAlign.center,
+        ),
+      );
     }
     final CameraController? controller = _cameraController;
     if (controller == null || !controller.value.isInitialized) {

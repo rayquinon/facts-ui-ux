@@ -86,6 +86,60 @@
       bottom: 0;
       right: 0;
     }
+
+    #update-banner {
+      position: fixed;
+      left: 12px;
+      right: 12px;
+      bottom: 12px;
+      z-index: 9999;
+      display: none;
+      padding: 12px 14px;
+      border-radius: 12px;
+      border: 1px solid rgba(0, 0, 0, 0.12);
+      background: rgba(255, 255, 255, 0.96);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      color: #111;
+    }
+
+    #update-banner .row {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+
+    #update-banner .message {
+      font-size: 14px;
+      line-height: 1.3;
+    }
+
+    #update-banner .actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    #update-banner button {
+      appearance: none;
+      border: none;
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    #update-banner button.primary {
+      background: #1a73e8;
+      color: white;
+    }
+
+    #update-banner button.secondary {
+      background: rgba(0, 0, 0, 0.06);
+      color: #111;
+    }
   </style>
   <script id="splash-screen-script">
     function removeSplashFromWeb() {
@@ -94,9 +148,143 @@
       document.body.style.background = "transparent";
     }
   </script>
+
+  <script>
+    (function () {
+      const banner = () => document.getElementById('update-banner');
+      const bannerMessage = () => document.getElementById('update-banner-message');
+
+      function showBanner(message) {
+        const el = banner();
+        const msg = bannerMessage();
+        if (!el || !msg) return;
+        msg.textContent = message;
+        el.style.display = 'block';
+      }
+
+      function hideBanner() {
+        const el = banner();
+        if (!el) return;
+        el.style.display = 'none';
+      }
+
+      async function getRegistration() {
+        if (!('serviceWorker' in navigator)) return null;
+        // Wait for the SW to be ready (if it exists).
+        try {
+          await navigator.serviceWorker.ready;
+        } catch (_) {
+          // Ignore.
+        }
+        return await navigator.serviceWorker.getRegistration();
+      }
+
+      async function checkForUpdates(options) {
+        const opts = options || {};
+        const verbose = !!opts.verbose;
+
+        if (!('serviceWorker' in navigator)) {
+          if (verbose) console.log('[update] Service workers not supported.');
+          return { supported: false };
+        }
+
+        const reg = await getRegistration();
+        if (!reg) {
+          if (verbose) console.log('[update] No service worker registration found.');
+          return { supported: true, registered: false };
+        }
+
+        // Ask the browser to check for an updated SW.
+        try {
+          await reg.update();
+        } catch (e) {
+          if (verbose) console.log('[update] SW update() failed:', e);
+          return { supported: true, registered: true, error: String(e) };
+        }
+
+        // If a new worker is already waiting, we can prompt the user to reload.
+        if (reg.waiting) {
+          showBanner('An update is available. Reload to use the latest version.');
+          return { supported: true, registered: true, updateAvailable: true };
+        }
+
+        // Listen briefly for an update to be found.
+        const found = await new Promise((resolve) => {
+          let resolved = false;
+          const timeoutMs = 2500;
+
+          function done(value) {
+            if (resolved) return;
+            resolved = true;
+            resolve(value);
+          }
+
+          const timer = setTimeout(() => done(false), timeoutMs);
+
+          reg.addEventListener('updatefound', () => {
+            const installing = reg.installing;
+            if (!installing) {
+              clearTimeout(timer);
+              done(false);
+              return;
+            }
+            installing.addEventListener('statechange', () => {
+              // waiting means the new SW is installed but won't activate until reload/close.
+              if (reg.waiting) {
+                clearTimeout(timer);
+                done(true);
+              }
+            });
+          }, { once: true });
+        });
+
+        if (found) {
+          showBanner('An update is ready. Reload to use the latest version.');
+          return { supported: true, registered: true, updateAvailable: true };
+        }
+
+        if (verbose) console.log('[update] No update found.');
+        return { supported: true, registered: true, updateAvailable: false };
+      }
+
+      // Expose functions so Flutter can call them from a "Check for updates" button.
+      window.checkForUpdates = checkForUpdates;
+      window.dismissUpdateBanner = hideBanner;
+      window.reloadForUpdate = function () {
+        // A reload is the most reliable way to activate the updated service worker.
+        location.reload();
+      };
+
+      // Optional: light periodic checks (won't reload automatically).
+      // This keeps users reasonably up-to-date without being intrusive.
+      setTimeout(() => {
+        checkForUpdates({ verbose: false });
+        setInterval(() => checkForUpdates({ verbose: false }), 15 * 60 * 1000);
+      }, 5000);
+
+      // If the controlling SW changes, reload to pick up new assets.
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+          // Avoid infinite reload loops.
+          if (window.__reloadedForUpdate) return;
+          window.__reloadedForUpdate = true;
+          location.reload();
+        });
+      }
+    })();
+  </script>
   <meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" name="viewport">
 </head>
 <body>
+  <div id="update-banner" role="status" aria-live="polite">
+    <div class="row">
+      <div class="message" id="update-banner-message">An update is available.</div>
+      <div class="actions">
+        <button class="secondary" type="button" onclick="dismissUpdateBanner()">Not now</button>
+        <button class="primary" type="button" onclick="reloadForUpdate()">Reload</button>
+      </div>
+    </div>
+  </div>
   <picture id="splash">
       <source srcset="splash/img/light-1x.png 1x, splash/img/light-2x.png 2x, splash/img/light-3x.png 3x, splash/img/light-4x.png 4x" media="(prefers-color-scheme: light)">
       <source srcset="splash/img/dark-1x.png 1x, splash/img/dark-2x.png 2x, splash/img/dark-3x.png 3x, splash/img/dark-4x.png 4x" media="(prefers-color-scheme: dark)">

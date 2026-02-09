@@ -74,6 +74,8 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   static const int _storedEmbeddingsPerPhase = 3;
   static final List<_OrientationPhase> _phaseOrder = <_OrientationPhase>[
     _OrientationPhase.front,
+    _OrientationPhase.left,
+    _OrientationPhase.right,
   ];
 
   CameraController? _cameraController;

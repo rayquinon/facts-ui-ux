@@ -13,6 +13,7 @@ import 'student_page.dart';
 import 'services/user_role_service.dart';
 import 'services/app_update_service.dart';
 import 'services/app_update_types.dart';
+import 'services/web_update_service.dart';
 import 'verify_email_page.dart';
 
 /// Standalone login page with simple validation and submit feedback.
@@ -178,7 +179,59 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _checkForUpdates() async {
-    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+    if (kIsWeb) {
+      if (!mounted) return;
+      final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Checking for updates...'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+
+      final WebUpdateCheck result =
+          await WebUpdateService.instance.checkForUpdates();
+      if (!mounted) return;
+
+      if (!result.supported) {
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text('This browser does not support update checks.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+
+      if (result.error != null && result.error!.isNotEmpty) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text('Update check failed: ${result.error}'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+
+      if (result.updateAvailable == true) {
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text('Update available. Tap Reload on the prompt.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      } else {
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text('No update found right now.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
+    if (defaultTargetPlatform != TargetPlatform.android) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -521,7 +574,7 @@ class _LoginPageState extends State<LoginPage> {
                       ),
                     ],
                   ),
-                  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android)
+                  if (kIsWeb || defaultTargetPlatform == TargetPlatform.android)
                     Align(
                       alignment:
                           isTablet ? Alignment.centerLeft : Alignment.center,
