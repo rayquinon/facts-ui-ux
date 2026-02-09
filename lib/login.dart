@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'admin_page.dart';
@@ -30,6 +31,25 @@ class _LoginPageState extends State<LoginPage> {
   final TextEditingController _passwordController = TextEditingController();
   bool _obscurePassword = true;
   bool _isSubmitting = false;
+  String? _appVersionLabel;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAppVersionLabel();
+  }
+
+  Future<void> _loadAppVersionLabel() async {
+    try {
+      final PackageInfo info = await PackageInfo.fromPlatform();
+      if (!mounted) return;
+      setState(() {
+        _appVersionLabel = '${info.version}+${info.buildNumber}';
+      });
+    } catch (_) {
+      // Best-effort only.
+    }
+  }
 
   void _openSignUpPage() {
     Navigator.of(context).pushNamed(SignupPickRolePage.routeName);
@@ -509,6 +529,20 @@ class _LoginPageState extends State<LoginPage> {
                         onPressed: _checkForUpdates,
                         icon: const Icon(Icons.system_update_alt, size: 18),
                         label: const Text('Check for updates'),
+                      ),
+                    ),
+                  if (_appVersionLabel != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(
+                        'Version: ${_appVersionLabel!}',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurface.withValues(
+                            alpha: 0.6,
+                          ),
+                        ),
+                        textAlign:
+                            isTablet ? TextAlign.left : TextAlign.center,
                       ),
                     ),
                 ],

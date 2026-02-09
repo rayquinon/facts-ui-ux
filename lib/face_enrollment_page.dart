@@ -68,9 +68,13 @@ class FaceEnrollmentPage extends StatefulWidget {
 }
 
 class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
-  static const int _capturesPerPhase = 10;
+  // Keep enrollment fast while still storing multiple templates for matching.
+  // We capture 3 embeddings and store all 3 as `faceEmbeds`.
+  static const int _capturesPerPhase = 3;
   static const int _storedEmbeddingsPerPhase = 3;
-  static final List<_OrientationPhase> _phaseOrder = _OrientationPhase.values;
+  static final List<_OrientationPhase> _phaseOrder = <_OrientationPhase>[
+    _OrientationPhase.front,
+  ];
 
   CameraController? _cameraController;
   FaceDetector? _faceDetector;
@@ -91,6 +95,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   List<double>? _latestEmbedding;
   String? _statusMessage;
   int _currentPhaseIndex = 0;
+  bool _autoSaveTriggered = false;
   final Map<_OrientationPhase, List<List<double>>> _phaseEmbeddings = {
     _OrientationPhase.front: <List<double>>[],
     _OrientationPhase.left: <List<double>>[],
@@ -593,9 +598,16 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
               'Great! ${_phaseLabel(phase)} captures complete. ${_phaseInstruction(_currentPhase)}';
         } else {
           _latestEmbedding = _averageAllEmbeddings();
-          _statusMessage =
-              'All angles captured. Tap "Save & Continue" to store your profile.';
+          _statusMessage = 'Captures complete. Saving your profile...';
           _stopStreams();
+
+          if (!_autoSaveTriggered) {
+            _autoSaveTriggered = true;
+            Future<void>.microtask(() async {
+              if (!mounted) return;
+              await _handleSaveEmbedding();
+            });
+          }
         }
       } else {
         final int remaining = _capturesPerPhase - captured;

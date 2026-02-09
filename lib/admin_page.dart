@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'widgets/confirm_sign_out_dialog.dart';
 import 'package:printing/printing.dart';
@@ -10,6 +11,7 @@ import 'package:printing/printing.dart';
 import 'reports/generate_report_page.dart';
 import 'reports/attendance_report_template_meta.dart';
 import 'services/excuse_request_service.dart';
+import 'services/open_external_url.dart';
 import 'services/user_role_service.dart';
 
 enum _AdminSection { overview, users, departments, subjects, classes, excuses }
@@ -62,11 +64,158 @@ class _AdminPageState extends State<AdminPage> {
     ),
   ];
 
+  String _labelForSection(_AdminSection section) {
+    for (final _SectionNavItem item in _navItems) {
+      if (item.section == section) return item.label;
+    }
+    return section.name;
+  }
+
+  IconData _iconForSection(_AdminSection section) {
+    for (final _SectionNavItem item in _navItems) {
+      if (item.section == section) return item.icon;
+    }
+    return Icons.dashboard_outlined;
+  }
+
+  Future<void> _handleSignOut() async {
+    final bool shouldSignOut = await showConfirmSignOutDialog(context);
+    if (!mounted) return;
+    if (!shouldSignOut) return;
+
+    try {
+      await FirebaseAuth.instance.signOut();
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Failed to sign out. Please try again.')),
+      );
+      return;
+    }
+
+    if (!mounted) return;
+    Navigator.of(
+      context,
+    ).pushNamedAndRemoveUntil('/login', (Route<dynamic> route) => false);
+  }
+
+  Widget _buildAdminDrawer() {
+    return Drawer(
+      child: SafeArea(
+        child: Column(
+          children: <Widget>[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+              child: Row(
+                children: <Widget>[
+                  const Expanded(
+                    child: Text(
+                      'Admin Modules',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Close',
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: ListView(
+                padding: EdgeInsets.zero,
+                children: <Widget>[
+                  for (final _SectionNavItem item in _navItems)
+                    ListTile(
+                      leading: Icon(item.icon),
+                      title: Text(item.label),
+                      selected: item.section == _selectedSection,
+                      onTap: () {
+                        setState(() => _selectedSection = item.section);
+                        Navigator.of(context).pop();
+                      },
+                    ),
+                  const Divider(height: 1),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                    child: Text(
+                      'Admin Actions',
+                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.verified_user_outlined),
+                    title: const Text('Approve Instructor Accounts'),
+                    onTap: () {
+                      setState(() => _selectedSection = _AdminSection.users);
+                      Navigator.of(context).pop();
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.description_outlined),
+                    title: const Text('Edit Report Header Details'),
+                    onTap: () async {
+                      Navigator.of(context).pop();
+                      await showDialog<void>(
+                        context: context,
+                        builder: (BuildContext context) =>
+                            const _AttendanceReportTemplateMetaDialog(),
+                      );
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.insights_outlined),
+                    title: const Text('Generate Attendance Reports'),
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      Navigator.of(
+                        context,
+                      ).pushNamed(GenerateReportPage.routeName);
+                    },
+                  ),
+                  const Divider(height: 1),
+                  ListTile(
+                    leading: const Icon(Icons.logout),
+                    title: const Text('Sign out'),
+                    onTap: () async {
+                      Navigator.of(context).pop();
+                      await _handleSignOut();
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _openPdfFromAttachment(Map<String, dynamic>? attachment) async {
     if (attachment == null) return;
     final String path = (attachment['path'] as String?) ?? '';
     if (path.isEmpty) return;
     try {
+      if (kIsWeb) {
+        final String? existingUrl = attachment['url'] as String?;
+        final String url = (existingUrl != null && existingUrl.isNotEmpty)
+            ? existingUrl
+            : await _excuseService.getPdfDownloadUrl(path: path);
+        final bool launched = await openExternalUrl(url);
+        if (!launched) {
+          throw StateError('Unable to launch PDF');
+        }
+        return;
+      }
+
       final bytes = await _excuseService.downloadPdfBytes(path: path);
       await Printing.layoutPdf(onLayout: (_) async => bytes);
     } catch (error) {
@@ -196,11 +345,6 @@ class _AdminPageState extends State<AdminPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
-        const Text(
-          'Excuse requests',
-          style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
-        ),
-        const SizedBox(height: 12),
         Card(
           child: Padding(
             padding: const EdgeInsets.all(20),
@@ -271,15 +415,32 @@ class _AdminPageState extends State<AdminPage> {
                                 (data['attachment'] as Map?)
                                     ?.cast<String, dynamic>();
 
+                            final String titleText =
+                                '$studentName${section.isEmpty ? '' : ' • $section'}';
+                            final String statusLabel = status.toUpperCase();
+                            final bool canReview =
+                                isPending && !_isApprovingExcuse;
+                            final bool canDelete = !_isDeletingExcuse;
+                            final bool isBusy =
+                                (_isApprovingExcuse && isPending) ||
+                                _isDeletingExcuse;
+
                             return ListTile(
                               contentPadding: EdgeInsets.zero,
+                              isThreeLine: reason.isNotEmpty,
                               title: Text(
-                                '$studentName${section.isEmpty ? '' : ' • $section'}',
+                                titleText,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                               ),
                               subtitle: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: <Widget>[
-                                  Text(dateLabel),
+                                  Text(
+                                    dateLabel,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
                                   if (reason.isNotEmpty)
                                     Text(
                                       reason,
@@ -288,64 +449,140 @@ class _AdminPageState extends State<AdminPage> {
                                     ),
                                 ],
                               ),
-                              trailing: Wrap(
-                                spacing: 8,
-                                children: <Widget>[
-                                  Chip(label: Text(status.toUpperCase())),
-                                  IconButton(
-                                    tooltip: 'Open PDF',
-                                    onPressed: attachment == null
-                                        ? null
-                                        : () => _openPdfFromAttachment(
-                                            attachment,
+                              trailing: SizedBox(
+                                width: 190,
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.end,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: <Widget>[
+                                    Flexible(
+                                      child: ConstrainedBox(
+                                        constraints: const BoxConstraints(
+                                          maxWidth: 140,
+                                        ),
+                                        child: Chip(
+                                          visualDensity: VisualDensity.compact,
+                                          label: Text(
+                                            statusLabel,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
                                           ),
-                                    icon: const Icon(
-                                      Icons.picture_as_pdf_outlined,
+                                        ),
+                                      ),
                                     ),
-                                  ),
-                                  IconButton(
-                                    tooltip: 'Disapprove',
-                                    onPressed:
-                                        (!isPending || _isApprovingExcuse)
-                                        ? null
-                                        : () =>
-                                              _disapproveExcuseRequest(doc.id),
-                                    icon: const Icon(Icons.cancel_outlined),
-                                  ),
-                                  IconButton(
-                                    tooltip: 'Approve',
-                                    onPressed:
-                                        (!isPending || _isApprovingExcuse)
-                                        ? null
-                                        : () => _approveExcuseRequest(doc.id),
-                                    icon: _isApprovingExcuse && isPending
-                                        ? const SizedBox(
-                                            width: 18,
-                                            height: 18,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 2,
+                                    const SizedBox(width: 8),
+                                    if (isBusy)
+                                      const SizedBox(
+                                        width: 24,
+                                        height: 24,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    else ...<Widget>[
+                                      IconButton(
+                                        tooltip: 'Delete',
+                                        onPressed: canDelete
+                                            ? () => _deleteExcuseRequest(doc.id)
+                                            : null,
+                                        constraints: const BoxConstraints(
+                                          minWidth: 36,
+                                          minHeight: 36,
+                                        ),
+                                        padding: EdgeInsets.zero,
+                                        icon: const Icon(
+                                          Icons.delete_outline,
+                                          size: 20,
+                                        ),
+                                      ),
+                                      PopupMenuButton<String>(
+                                        tooltip: 'Actions',
+                                        onSelected: (String action) {
+                                          switch (action) {
+                                            case 'pdf':
+                                              if (attachment != null) {
+                                                _openPdfFromAttachment(
+                                                  attachment,
+                                                );
+                                              }
+                                              break;
+                                            case 'approve':
+                                              _approveExcuseRequest(doc.id);
+                                              break;
+                                            case 'disapprove':
+                                              _disapproveExcuseRequest(doc.id);
+                                              break;
+                                            case 'delete':
+                                              _deleteExcuseRequest(doc.id);
+                                              break;
+                                          }
+                                        },
+                                        itemBuilder: (BuildContext context) {
+                                          return <PopupMenuEntry<String>>[
+                                            PopupMenuItem<String>(
+                                              value: 'pdf',
+                                              enabled: attachment != null,
+                                              child: const Row(
+                                                children: <Widget>[
+                                                  Icon(
+                                                    Icons
+                                                        .picture_as_pdf_outlined,
+                                                    size: 18,
+                                                  ),
+                                                  SizedBox(width: 10),
+                                                  Text('Open PDF'),
+                                                ],
+                                              ),
                                             ),
-                                          )
-                                        : const Icon(
-                                            Icons.check_circle_outline,
-                                          ),
-                                  ),
-                                  IconButton(
-                                    tooltip: 'Delete',
-                                    onPressed: _isDeletingExcuse
-                                        ? null
-                                        : () => _deleteExcuseRequest(doc.id),
-                                    icon: _isDeletingExcuse
-                                        ? const SizedBox(
-                                            width: 18,
-                                            height: 18,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 2,
+                                            PopupMenuItem<String>(
+                                              value: 'approve',
+                                              enabled: canReview,
+                                              child: const Row(
+                                                children: <Widget>[
+                                                  Icon(
+                                                    Icons.check_circle_outline,
+                                                    size: 18,
+                                                  ),
+                                                  SizedBox(width: 10),
+                                                  Text('Approve'),
+                                                ],
+                                              ),
                                             ),
-                                          )
-                                        : const Icon(Icons.delete_outline),
-                                  ),
-                                ],
+                                            PopupMenuItem<String>(
+                                              value: 'disapprove',
+                                              enabled: canReview,
+                                              child: const Row(
+                                                children: <Widget>[
+                                                  Icon(
+                                                    Icons.cancel_outlined,
+                                                    size: 18,
+                                                  ),
+                                                  SizedBox(width: 10),
+                                                  Text('Disapprove'),
+                                                ],
+                                              ),
+                                            ),
+                                            const PopupMenuDivider(),
+                                            PopupMenuItem<String>(
+                                              value: 'delete',
+                                              enabled: canDelete,
+                                              child: const Row(
+                                                children: <Widget>[
+                                                  Icon(
+                                                    Icons.delete_outline,
+                                                    size: 18,
+                                                  ),
+                                                  SizedBox(width: 10),
+                                                  Text('Delete'),
+                                                ],
+                                              ),
+                                            ),
+                                          ];
+                                        },
+                                      ),
+                                    ],
+                                  ],
+                                ),
                               ),
                             );
                           },
@@ -369,75 +606,20 @@ class _AdminPageState extends State<AdminPage> {
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
-    final List<_AdminAction> actions = <_AdminAction>[
-      _AdminAction(
-        'Review Attendance Reports',
-        Icons.insights_outlined,
-        onTap: () =>
-            Navigator.of(context).pushNamed(GenerateReportPage.routeName),
-      ),
-      _AdminAction(
-        'Review Excuse Requests',
-        Icons.report_problem_outlined,
-        onTap: () => setState(() => _selectedSection = _AdminSection.excuses),
-      ),
-      _AdminAction(
-        'Manage Departments',
-        Icons.account_tree_outlined,
-        onTap: () =>
-            setState(() => _selectedSection = _AdminSection.departments),
-      ),
-      _AdminAction(
-        'Approve Instructor Accounts',
-        Icons.verified_user_outlined,
-        onTap: () => setState(() => _selectedSection = _AdminSection.users),
-      ),
-      _AdminAction(
-        'Edit Report Header Details',
-        Icons.description_outlined,
-        onTap: () async {
-          await showDialog<void>(
-            context: context,
-            builder: (BuildContext context) =>
-                const _AttendanceReportTemplateMetaDialog(),
-          );
-        },
-      ),
-    ];
 
     return Scaffold(
+      drawer: _buildAdminDrawer(),
       appBar: AppBar(
         title: const Text('Admin Dashboard'),
-        actions: <Widget>[
-          TextButton.icon(
-            onPressed: () async {
-              final bool shouldSignOut = await showConfirmSignOutDialog(context);
-              if (!shouldSignOut) return;
-
-              try {
-                await FirebaseAuth.instance.signOut();
-              } catch (_) {
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Failed to sign out. Please try again.'),
-                    ),
-                  );
-                }
-                return;
-              }
-
-              if (context.mounted) {
-                Navigator.of(context).pushNamedAndRemoveUntil(
-                  '/login',
-                  (Route<dynamic> route) => false,
-                );
-              }
-            },
-            icon: const Icon(Icons.logout, size: 18),
-            label: const Text('Sign out'),
-          ),
-        ],
+        leading: Builder(
+          builder: (BuildContext context) {
+            return IconButton(
+              tooltip: 'Menu',
+              icon: const Icon(Icons.menu),
+              onPressed: () => Scaffold.of(context).openDrawer(),
+            );
+          },
+        ),
       ),
       body: LayoutBuilder(
         builder: (BuildContext context, BoxConstraints constraints) {
@@ -451,8 +633,21 @@ class _AdminPageState extends State<AdminPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                _buildSectionNavigation(),
-                const SizedBox(height: 24),
+                Row(
+                  children: <Widget>[
+                    Icon(_iconForSection(_selectedSection), size: 22),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        _labelForSection(_selectedSection),
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
                 AnimatedSwitcher(
                   duration: const Duration(milliseconds: 250),
                   switchInCurve: Curves.easeInOut,
@@ -463,7 +658,6 @@ class _AdminPageState extends State<AdminPage> {
                       section: _selectedSection,
                       theme: theme,
                       isWide: isWide,
-                      actions: actions,
                     ),
                   ),
                 ),
@@ -475,36 +669,10 @@ class _AdminPageState extends State<AdminPage> {
     );
   }
 
-  Widget _buildSectionNavigation() {
-    return Wrap(
-      spacing: 12,
-      runSpacing: 12,
-      children: _navItems.map((_SectionNavItem item) {
-        final bool isSelected = item.section == _selectedSection;
-        return ChoiceChip(
-          label: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              Icon(item.icon, size: 18),
-              const SizedBox(width: 6),
-              Text(item.label),
-            ],
-          ),
-          selected: isSelected,
-          onSelected: (_) {
-            if (isSelected) return;
-            setState(() => _selectedSection = item.section);
-          },
-        );
-      }).toList(),
-    );
-  }
-
   Widget _buildSectionContent({
     required _AdminSection section,
     required ThemeData theme,
     required bool isWide,
-    required List<_AdminAction> actions,
   }) {
     switch (section) {
       case _AdminSection.overview:
@@ -582,77 +750,29 @@ class _AdminPageState extends State<AdminPage> {
 
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    Text(
-                      'System overview',
-                      style: theme.textTheme.headlineSmall?.copyWith(
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-                    statsContent,
-                    const SizedBox(height: 32),
-                    Text(
-                      'Quick actions',
-                      style: theme.textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    ...actions.map(
-                      (_AdminAction action) => _AdminActionTile(action: action),
-                    ),
-                  ],
+                  children: <Widget>[const SizedBox(height: 8), statsContent],
                 );
               },
         );
       case _AdminSection.departments:
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          children: const <Widget>[
-            Text(
-              'Department maintenance',
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
-            ),
-            SizedBox(height: 12),
-            _DepartmentMaintenancePanel(),
-          ],
+          children: const <Widget>[_DepartmentMaintenancePanel()],
         );
       case _AdminSection.users:
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          children: const <Widget>[
-            Text(
-              'User management',
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
-            ),
-            SizedBox(height: 12),
-            _UserManagementPanel(),
-          ],
+          children: const <Widget>[_UserManagementPanel()],
         );
       case _AdminSection.subjects:
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          children: const <Widget>[
-            Text(
-              'Subject catalog',
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
-            ),
-            SizedBox(height: 12),
-            _SubjectCatalogPanel(),
-          ],
+          children: const <Widget>[_SubjectCatalogPanel()],
         );
       case _AdminSection.classes:
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          children: const <Widget>[
-            Text(
-              'Class maintenance',
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
-            ),
-            SizedBox(height: 12),
-            _ClassMaintenancePanel(),
-          ],
+          children: const <Widget>[_ClassMaintenancePanel()],
         );
       case _AdminSection.excuses:
         return _buildExcuseRequestsPanel();
@@ -711,7 +831,8 @@ class _AttendanceReportTemplateMetaDialogState
     extends State<_AttendanceReportTemplateMetaDialog> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final TextEditingController _revNoController = TextEditingController();
-  final TextEditingController _effectiveDateController = TextEditingController();
+  final TextEditingController _effectiveDateController =
+      TextEditingController();
   String _documentCodeNo = AttendanceReportTemplateMeta.defaults.documentCodeNo;
   bool _isLoading = true;
   bool _isSaving = false;
@@ -757,9 +878,9 @@ class _AttendanceReportTemplateMetaDialogState
       Navigator.of(context).pop();
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to save: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to save: $error')));
     } finally {
       if (mounted) setState(() => _isSaving = false);
     }
@@ -1544,14 +1665,36 @@ class _SubjectDialogState extends State<_SubjectDialog> {
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
               DropdownButtonFormField<String>(
+                isExpanded: true,
                 initialValue: _selectedDepartmentId,
                 decoration: const InputDecoration(labelText: 'Department'),
+                selectedItemBuilder: (BuildContext context) {
+                  return widget.departments
+                      .map(
+                        (_DepartmentOption department) => SizedBox(
+                          width: double.infinity,
+                          child: Text(
+                            department.name,
+                            overflow: TextOverflow.ellipsis,
+                            maxLines: 1,
+                          ),
+                        ),
+                      )
+                      .toList();
+                },
                 items: widget.departments
                     .map(
                       (_DepartmentOption department) =>
                           DropdownMenuItem<String>(
                             value: department.id,
-                            child: Text(department.name),
+                            child: SizedBox(
+                              width: double.infinity,
+                              child: Text(
+                                department.name,
+                                overflow: TextOverflow.ellipsis,
+                                maxLines: 1,
+                              ),
+                            ),
                           ),
                     )
                     .toList(),
@@ -1647,6 +1790,7 @@ class _ClassMaintenancePanelState extends State<_ClassMaintenancePanel> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   bool _isLoadingInstructors = true;
   bool _isLoadingSubjects = true;
+  bool _isDeletingClass = false;
   List<_InstructorOption> _instructors = <_InstructorOption>[];
   List<_SubjectOption> _subjects = <_SubjectOption>[];
   Map<String, String> _instructorLookup = <String, String>{};
@@ -1802,6 +1946,46 @@ class _ClassMaintenancePanelState extends State<_ClassMaintenancePanel> {
     }
   }
 
+  Future<void> _deleteClass({required String id, required String label}) async {
+    if (_isDeletingClass) return;
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('Remove class?'),
+        content: Text(
+          'This will permanently delete "$label" from Class Maintenance. This cannot be undone.',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    setState(() => _isDeletingClass = true);
+    try {
+      await _firestore.collection('classes').doc(id).delete();
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Removed class: $label')));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to remove class: $error')));
+    } finally {
+      if (mounted) setState(() => _isDeletingClass = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Card(
@@ -1920,9 +2104,10 @@ class _ClassMaintenancePanelState extends State<_ClassMaintenancePanel> {
                               : '${end['hour']}:${(end['minute'] as int?)?.toString().padLeft(2, '0') ?? '00'} ${end['period'] ?? ''}';
                           return '$type • $day • $formattedStart - $formattedEnd';
                         });
+                        final String classLabel = '$subjectCode • $section';
                         return ListTile(
                           contentPadding: EdgeInsets.zero,
-                          title: Text('$subjectCode • $section'),
+                          title: Text(classLabel),
                           subtitle: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: <Widget>[
@@ -1936,9 +2121,37 @@ class _ClassMaintenancePanelState extends State<_ClassMaintenancePanel> {
                               ...scheduleSummaries.map(Text.new),
                             ],
                           ),
-                          trailing: IconButton(
-                            icon: const Icon(Icons.edit_note_outlined),
-                            onPressed: () => _openClassDialog(existing: doc),
+                          trailing: PopupMenuButton<String>(
+                            tooltip: 'Class actions',
+                            onSelected: (String value) {
+                              switch (value) {
+                                case 'edit':
+                                  _openClassDialog(existing: doc);
+                                  return;
+                                case 'delete':
+                                  _deleteClass(id: doc.id, label: classLabel);
+                                  return;
+                              }
+                            },
+                            itemBuilder: (BuildContext context) {
+                              return <PopupMenuEntry<String>>[
+                                const PopupMenuItem<String>(
+                                  value: 'edit',
+                                  child: ListTile(
+                                    leading: Icon(Icons.edit_note_outlined),
+                                    title: Text('Edit'),
+                                  ),
+                                ),
+                                PopupMenuItem<String>(
+                                  value: 'delete',
+                                  enabled: !_isDeletingClass,
+                                  child: const ListTile(
+                                    leading: Icon(Icons.delete_outline),
+                                    title: Text('Remove'),
+                                  ),
+                                ),
+                              ];
+                            },
                           ),
                         );
                       },
@@ -2634,14 +2847,6 @@ extension on String {
       isEmpty ? this : '${this[0].toUpperCase()}${substring(1)}';
 }
 
-class _AdminAction {
-  const _AdminAction(this.label, this.icon, {this.onTap});
-
-  final String label;
-  final IconData icon;
-  final VoidCallback? onTap;
-}
-
 class _AdminStatCard extends StatelessWidget {
   const _AdminStatCard({required this.stat, required this.isWide});
 
@@ -2680,26 +2885,6 @@ class _AdminStatCard extends StatelessWidget {
   }
 }
 
-class _AdminActionTile extends StatelessWidget {
-  const _AdminActionTile({required this.action});
-
-  final _AdminAction action;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 8),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: ListTile(
-        leading: Icon(action.icon),
-        title: Text(action.label),
-        trailing: const Icon(Icons.chevron_right),
-        onTap: action.onTap,
-      ),
-    );
-  }
-}
-
 class _SectionNavItem {
   const _SectionNavItem(this.section, this.label, this.icon);
 
@@ -2722,6 +2907,23 @@ enum _BulkUserAction {
   deleteUser,
 }
 
+class _BulkProgressInfo {
+  _BulkProgressInfo({required this.label, required this.total});
+
+  final String label;
+  final int total;
+  int processed = 0;
+  int success = 0;
+  int failed = 0;
+  String? currentLabel;
+
+  double? get fraction {
+    if (total <= 0) return null;
+    final int clamped = processed.clamp(0, total);
+    return clamped / total;
+  }
+}
+
 class _UserManagementPanelState extends State<_UserManagementPanel> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseFunctions _functions = FirebaseFunctions.instanceFor(
@@ -2736,7 +2938,42 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
 
   bool _multiSelectEnabled = false;
   bool _bulkActionRunning = false;
+  _BulkProgressInfo? _bulkProgress;
   final Set<String> _selectedUserIds = <String>{};
+
+  Widget _buildBulkProgressBanner() {
+    final _BulkProgressInfo? p = _bulkProgress;
+    if (!_bulkActionRunning || p == null) return const SizedBox.shrink();
+
+    final String counts =
+        '${p.processed}/${p.total} • Success ${p.success} • Failed ${p.failed}';
+    final String current = (p.currentLabel == null || p.currentLabel!.isEmpty)
+        ? ''
+        : '\nCurrent: ${p.currentLabel}';
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Card(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(
+                '${p.label}…',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 8),
+              LinearProgressIndicator(value: p.fraction),
+              const SizedBox(height: 8),
+              Text('$counts$current'),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   static const int _usersPageSize = 50;
   bool _loadingUsers = false;
@@ -2805,32 +3042,64 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     if (_selectedUserIds.isEmpty) return const [];
     final Set<String> ids = _selectedUserIds;
     return _loadedUserDocs
-        .where((QueryDocumentSnapshot<Map<String, dynamic>> d) => ids.contains(d.id))
+        .where(
+          (QueryDocumentSnapshot<Map<String, dynamic>> d) => ids.contains(d.id),
+        )
         .toList(growable: false);
+  }
+
+  void _startBulkProgress(String label, int total) {
+    setState(() {
+      _bulkProgress = _BulkProgressInfo(label: label, total: total);
+    });
+  }
+
+  void _finishBulkProgress() {
+    if (!mounted) return;
+    setState(() => _bulkProgress = null);
+  }
+
+  void _tickBulkProgress({required bool succeeded, String? currentLabel}) {
+    if (!mounted) return;
+    setState(() {
+      final _BulkProgressInfo? p = _bulkProgress;
+      if (p == null) return;
+      p.processed++;
+      if (succeeded) {
+        p.success++;
+      } else {
+        p.failed++;
+      }
+      p.currentLabel = currentLabel;
+    });
   }
 
   Future<void> _runBulkFixFaceEnrollment() async {
     if (_bulkActionRunning) return;
-    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = _selectedDocs();
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
+        _selectedDocs();
     if (docs.isEmpty) return;
 
-    final List<String> uidsWithEnrollment = docs
-        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-          final Map<String, dynamic> data = doc.data();
-          final bool hasEnrollment =
-              ((data['faceEmbeds'] is List) && (data['faceEmbeds'] as List).isNotEmpty) ||
-              ((data['faceEmbed'] is List) && (data['faceEmbed'] as List).isNotEmpty);
-          return hasEnrollment;
-        })
-        .map((QueryDocumentSnapshot<Map<String, dynamic>> d) => d.id)
-        .toList(growable: false);
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docsWithEnrollment =
+        docs
+            .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+              final Map<String, dynamic> data = doc.data();
+              final bool hasEnrollment =
+                  ((data['faceEmbeds'] is List) &&
+                      (data['faceEmbeds'] as List).isNotEmpty) ||
+                  ((data['faceEmbed'] is List) &&
+                      (data['faceEmbed'] as List).isNotEmpty);
+              return hasEnrollment;
+            })
+            .toList(growable: false);
 
-    final int totalSelected = docs.length;
-    final int totalTargeted = uidsWithEnrollment.length;
+    final int totalTargeted = docsWithEnrollment.length;
     if (totalTargeted == 0) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No selected users have face enrollment data.')),
+        const SnackBar(
+          content: Text('No selected users have face enrollment data.'),
+        ),
       );
       return;
     }
@@ -2838,54 +3107,66 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     final bool confirmed = await _confirmBulkAction(
       title: 'Fix Face Enrollment',
       message:
-          'Fix face enrollment format for $totalTargeted of $totalSelected selected user(s)?',
+          'Are you sure you want to Fix Face Enrollment of $totalTargeted selected user(s)?',
       confirmLabel: 'Fix',
     );
     if (!confirmed) return;
 
     setState(() => _bulkActionRunning = true);
+    _startBulkProgress('Fixing face enrollment', totalTargeted);
     int success = 0;
     int failed = 0;
-    for (final String uid in uidsWithEnrollment) {
+    for (final QueryDocumentSnapshot<Map<String, dynamic>> doc
+        in docsWithEnrollment) {
+      final String name = _resolveDisplayName(doc.data(), doc.id);
       try {
-        await _functions
-            .httpsCallable('adminMigrateFaceEmbeds')
-            .call(<String, dynamic>{'uid': uid});
+        await _functions.httpsCallable('adminMigrateFaceEmbeds').call(
+          <String, dynamic>{'uid': doc.id},
+        );
         success++;
+        _tickBulkProgress(succeeded: true, currentLabel: name);
       } catch (_) {
         failed++;
+        _tickBulkProgress(succeeded: false, currentLabel: name);
       }
     }
 
     if (!mounted) return;
     setState(() => _bulkActionRunning = false);
+    _finishBulkProgress();
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Fix completed. Success: $success, Failed: $failed.')),
+      SnackBar(
+        content: Text('Fix completed. Success: $success, Failed: $failed.'),
+      ),
     );
   }
 
   Future<void> _runBulkClearFaceEnrollment() async {
     if (_bulkActionRunning) return;
-    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = _selectedDocs();
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
+        _selectedDocs();
     if (docs.isEmpty) return;
 
-    final List<String> uidsWithEnrollment = docs
-        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-          final Map<String, dynamic> data = doc.data();
-          final bool hasEnrollment =
-              ((data['faceEmbeds'] is List) && (data['faceEmbeds'] as List).isNotEmpty) ||
-              ((data['faceEmbed'] is List) && (data['faceEmbed'] as List).isNotEmpty);
-          return hasEnrollment;
-        })
-        .map((QueryDocumentSnapshot<Map<String, dynamic>> d) => d.id)
-        .toList(growable: false);
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docsWithEnrollment =
+        docs
+            .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+              final Map<String, dynamic> data = doc.data();
+              final bool hasEnrollment =
+                  ((data['faceEmbeds'] is List) &&
+                      (data['faceEmbeds'] as List).isNotEmpty) ||
+                  ((data['faceEmbed'] is List) &&
+                      (data['faceEmbed'] as List).isNotEmpty);
+              return hasEnrollment;
+            })
+            .toList(growable: false);
 
-    final int totalSelected = docs.length;
-    final int totalTargeted = uidsWithEnrollment.length;
+    final int totalTargeted = docsWithEnrollment.length;
     if (totalTargeted == 0) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No selected users have face enrollment data.')),
+        const SnackBar(
+          content: Text('No selected users have face enrollment data.'),
+        ),
       );
       return;
     }
@@ -2893,60 +3174,73 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     final bool confirmed = await _confirmBulkAction(
       title: 'Clear Face Enrollment',
       message:
-          'Clear face enrollment for $totalTargeted of $totalSelected selected user(s)? This cannot be undone.',
+          'Are you sure you want to Clear Face Enrollment of $totalTargeted selected user(s)? This cannot be undone.',
       confirmLabel: 'Clear',
     );
     if (!confirmed) return;
 
     setState(() => _bulkActionRunning = true);
+    _startBulkProgress('Clearing face enrollment', totalTargeted);
     int success = 0;
     int failed = 0;
-    for (final String uid in uidsWithEnrollment) {
+    for (final QueryDocumentSnapshot<Map<String, dynamic>> doc
+        in docsWithEnrollment) {
+      final String name = _resolveDisplayName(doc.data(), doc.id);
       try {
-        await _functions
-            .httpsCallable('adminClearFaceEnrollment')
-            .call(<String, dynamic>{'uid': uid});
+        await _functions.httpsCallable('adminClearFaceEnrollment').call(
+          <String, dynamic>{'uid': doc.id},
+        );
         success++;
+        _tickBulkProgress(succeeded: true, currentLabel: name);
       } catch (_) {
         failed++;
+        _tickBulkProgress(succeeded: false, currentLabel: name);
       }
     }
 
     if (!mounted) return;
     setState(() => _bulkActionRunning = false);
+    _finishBulkProgress();
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Clear completed. Success: $success, Failed: $failed.')),
+      SnackBar(
+        content: Text('Clear completed. Success: $success, Failed: $failed.'),
+      ),
     );
   }
 
   Future<void> _runBulkDeleteUsers() async {
     if (_bulkActionRunning) return;
-    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = _selectedDocs();
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
+        _selectedDocs();
     if (docs.isEmpty) return;
 
     final int total = docs.length;
     final bool confirmed = await _confirmBulkAction(
       title: 'Delete Users',
       message:
-          'This will permanently delete $total user(s), remove their profiles, and attempt to remove their attendance references. This cannot be undone.',
+          'Are you sure you want to Delete User of $total selected user(s)? This cannot be undone.',
       confirmLabel: 'Delete',
     );
     if (!confirmed) return;
 
     setState(() => _bulkActionRunning = true);
+    _startBulkProgress('Deleting users', total);
     int success = 0;
     int failed = 0;
     final Set<String> deleted = <String>{};
 
     for (final QueryDocumentSnapshot<Map<String, dynamic>> doc in docs) {
+      final String name = _resolveDisplayName(doc.data(), doc.id);
       try {
-        await _functions
-            .httpsCallable('adminDeleteUser')
-            .call(<String, dynamic>{'uid': doc.id});
+        await _functions.httpsCallable('adminDeleteUser').call(
+          <String, dynamic>{'uid': doc.id},
+        );
         deleted.add(doc.id);
         success++;
+        _tickBulkProgress(succeeded: true, currentLabel: name);
       } catch (_) {
         failed++;
+        _tickBulkProgress(succeeded: false, currentLabel: name);
       }
     }
 
@@ -2954,9 +3248,13 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
 
     setState(() {
       _bulkActionRunning = false;
+      _bulkProgress = null;
       _selectedUserIds.removeAll(deleted);
       _loadedUserDocs = _loadedUserDocs
-          .where((QueryDocumentSnapshot<Map<String, dynamic>> d) => !deleted.contains(d.id))
+          .where(
+            (QueryDocumentSnapshot<Map<String, dynamic>> d) =>
+                !deleted.contains(d.id),
+          )
           .toList(growable: false);
       _multiSelectEnabled = false;
     });
@@ -2965,34 +3263,40 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     _refreshUsers();
 
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Delete completed. Success: $success, Failed: $failed.')),
+      SnackBar(
+        content: Text('Delete completed. Success: $success, Failed: $failed.'),
+      ),
     );
   }
 
   Future<void> _runBulkEditProfiles() async {
     if (_bulkActionRunning) return;
-    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = _selectedDocs();
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
+        _selectedDocs();
     if (docs.isEmpty) return;
 
     final int total = docs.length;
     final bool confirmed = await _confirmBulkAction(
       title: 'Edit Profile',
-      message:
-          total == 1
-              ? 'Edit the selected user profile?'
-              : 'You selected $total users. This will open the Edit Profile dialog for each user, one-by-one.',
+      message: total == 1
+          ? 'Are you sure you want to Edit Profile of the selected user?'
+          : 'Are you sure you want to Edit Profile of $total selected user(s)?',
       confirmLabel: 'Continue',
     );
     if (!confirmed) return;
 
     setState(() => _bulkActionRunning = true);
+    _startBulkProgress('Editing profiles', docs.length);
     for (final QueryDocumentSnapshot<Map<String, dynamic>> doc in docs) {
       if (!mounted) break;
       await _editUserProfile(doc);
+      final String name = _resolveDisplayName(doc.data(), doc.id);
+      _tickBulkProgress(succeeded: true, currentLabel: name);
     }
     if (!mounted) return;
     setState(() {
       _bulkActionRunning = false;
+      _bulkProgress = null;
       _multiSelectEnabled = false;
       _selectedUserIds.clear();
     });
@@ -3586,52 +3890,62 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                Row(
-                  children: <Widget>[
-                    const Expanded(
-                      child: Text(
-                        'All users',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                    if (_multiSelectEnabled)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: Chip(
-                          label: Text('Selected: ${_selectedUserIds.length}'),
-                        ),
-                      ),
-                    TextButton.icon(
-                      onPressed: _loadingUsers ? null : _refreshUsers,
-                      icon: const Icon(Icons.refresh, size: 18),
-                      label: const Text('Refresh'),
-                    ),
-                    const SizedBox(width: 6),
-                    TextButton.icon(
-                      onPressed: _bulkActionRunning ? null : _toggleMultiSelect,
-                      icon: Icon(
-                        _multiSelectEnabled
-                            ? Icons.close
-                            : Icons.checklist_rtl,
-                        size: 18,
-                      ),
-                      label: Text(
-                        _multiSelectEnabled ? 'Cancel' : 'Select Multiple',
-                      ),
-                    ),
-                    if (_multiSelectEnabled) ...<Widget>[
-                      const SizedBox(width: 6),
-                      if (_selectedUserIds.isEmpty || _bulkActionRunning)
-                        TextButton.icon(
-                          onPressed: null,
-                          icon: const Icon(Icons.tune, size: 18),
-                          label: const Text('Options'),
-                        )
-                      else
-                        PopupMenuButton<_BulkUserAction>(
+                LayoutBuilder(
+                  builder: (BuildContext context, BoxConstraints constraints) {
+                    final bool isNarrow = constraints.maxWidth < 520;
+
+                    final Widget refreshButton = isNarrow
+                        ? IconButton(
+                            tooltip: 'Refresh',
+                            onPressed: _loadingUsers ? null : _refreshUsers,
+                            icon: const Icon(Icons.refresh),
+                          )
+                        : TextButton.icon(
+                            onPressed: _loadingUsers ? null : _refreshUsers,
+                            icon: const Icon(Icons.refresh, size: 18),
+                            label: const Text('Refresh'),
+                          );
+
+                    final String multiLabel = _multiSelectEnabled
+                        ? 'Cancel'
+                        : 'Select Multiple';
+                    final IconData multiIcon = _multiSelectEnabled
+                        ? Icons.close
+                        : Icons.checklist_rtl;
+                    final Widget multiSelectButton = isNarrow
+                        ? IconButton(
+                            tooltip: multiLabel,
+                            onPressed: _bulkActionRunning
+                                ? null
+                                : _toggleMultiSelect,
+                            icon: Icon(multiIcon),
+                          )
+                        : TextButton.icon(
+                            onPressed: _bulkActionRunning
+                                ? null
+                                : _toggleMultiSelect,
+                            icon: Icon(multiIcon, size: 18),
+                            label: Text(multiLabel),
+                          );
+
+                    Widget? optionsWidget;
+                    if (_multiSelectEnabled) {
+                      final bool disabled =
+                          _selectedUserIds.isEmpty || _bulkActionRunning;
+                      if (disabled) {
+                        optionsWidget = isNarrow
+                            ? IconButton(
+                                tooltip: 'Options',
+                                onPressed: null,
+                                icon: const Icon(Icons.tune),
+                              )
+                            : TextButton.icon(
+                                onPressed: null,
+                                icon: const Icon(Icons.tune, size: 18),
+                                label: const Text('Options'),
+                              );
+                      } else {
+                        optionsWidget = PopupMenuButton<_BulkUserAction>(
                           onSelected: (_BulkUserAction action) async {
                             switch (action) {
                               case _BulkUserAction.editProfile:
@@ -3665,15 +3979,57 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                               ),
                             ];
                           },
-                          child: TextButton.icon(
-                            onPressed: null,
-                            icon: const Icon(Icons.tune, size: 18),
-                            label: const Text('Options'),
+                          icon: isNarrow ? const Icon(Icons.tune) : null,
+                          child: isNarrow
+                              ? null
+                              : TextButton.icon(
+                                  onPressed: null,
+                                  icon: const Icon(Icons.tune, size: 18),
+                                  label: const Text('Options'),
+                                ),
+                        );
+                      }
+                    }
+
+                    final List<Widget> actions = <Widget>[
+                      if (_multiSelectEnabled)
+                        Chip(
+                          label: Text('Selected: ${_selectedUserIds.length}'),
+                        ),
+                      refreshButton,
+                      multiSelectButton,
+                      if (optionsWidget != null) optionsWidget,
+                    ];
+
+                    return Row(
+                      children: <Widget>[
+                        const Expanded(
+                          child: Text(
+                            'All users',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                         ),
-                    ],
-                  ],
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Align(
+                            alignment: Alignment.centerRight,
+                            child: Wrap(
+                              spacing: 6,
+                              runSpacing: 6,
+                              alignment: WrapAlignment.end,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              children: actions,
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
                 ),
+                _buildBulkProgressBanner(),
                 const SizedBox(height: 8),
                 TextField(
                   controller: _userSearchController,
@@ -3763,8 +4119,13 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                       return const Text('No users found.');
                     }
 
+                    final double listHeight =
+                        (MediaQuery.sizeOf(context).height * 0.50)
+                            .clamp(280.0, 520.0)
+                            .toDouble();
+
                     return SizedBox(
-                      height: 420,
+                      height: listHeight,
                       child: Scrollbar(
                         controller: _allUsersScrollController,
                         thumbVisibility: true,
@@ -3822,7 +4183,9 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                 ((data['faceEmbed'] is List) &&
                                     (data['faceEmbed'] as List).isNotEmpty);
                             final bool approved = data['approved'] == true;
-                            final bool selected = _selectedUserIds.contains(doc.id);
+                            final bool selected = _selectedUserIds.contains(
+                              doc.id,
+                            );
 
                             return ListTile(
                               contentPadding: EdgeInsets.zero,
@@ -3854,57 +4217,62 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                             Icons.radio_button_unchecked,
                                           ))
                                   : PopupMenuButton<String>(
-                                onSelected: (String action) {
-                                  switch (action) {
-                                    case 'edit':
-                                      _editUserProfile(doc);
-                                      break;
-                                    case 'approve':
-                                      _approveInstructor(doc.id);
-                                      break;
-                                    case 'migrateEnrollment':
-                                      _migrateFaceEnrollmentFormat(doc.id);
-                                      break;
-                                    case 'clearEnrollment':
-                                      _clearFaceEnrollment(doc.id);
-                                      break;
-                                    case 'delete':
-                                      _deleteUser(doc.id, name);
-                                      break;
-                                  }
-                                },
-                                itemBuilder: (BuildContext context) {
-                                  return <PopupMenuEntry<String>>[
-                                    const PopupMenuItem<String>(
-                                      value: 'edit',
-                                      child: Text('Edit profile'),
+                                      onSelected: (String action) {
+                                        switch (action) {
+                                          case 'edit':
+                                            _editUserProfile(doc);
+                                            break;
+                                          case 'approve':
+                                            _approveInstructor(doc.id);
+                                            break;
+                                          case 'migrateEnrollment':
+                                            _migrateFaceEnrollmentFormat(
+                                              doc.id,
+                                            );
+                                            break;
+                                          case 'clearEnrollment':
+                                            _clearFaceEnrollment(doc.id);
+                                            break;
+                                          case 'delete':
+                                            _deleteUser(doc.id, name);
+                                            break;
+                                        }
+                                      },
+                                      itemBuilder: (BuildContext context) {
+                                        return <PopupMenuEntry<String>>[
+                                          const PopupMenuItem<String>(
+                                            value: 'edit',
+                                            child: Text('Edit profile'),
+                                          ),
+                                          if (role.toLowerCase() ==
+                                                  'instructor' &&
+                                              !approved)
+                                            const PopupMenuItem<String>(
+                                              value: 'approve',
+                                              child: Text('Approve instructor'),
+                                            ),
+                                          if (hasEnrollment)
+                                            const PopupMenuItem<String>(
+                                              value: 'migrateEnrollment',
+                                              child: Text(
+                                                'Fix face enrollment format',
+                                              ),
+                                            ),
+                                          if (hasEnrollment)
+                                            const PopupMenuItem<String>(
+                                              value: 'clearEnrollment',
+                                              child: Text(
+                                                'Clear face enrollment',
+                                              ),
+                                            ),
+                                          const PopupMenuDivider(),
+                                          const PopupMenuItem<String>(
+                                            value: 'delete',
+                                            child: Text('Delete user'),
+                                          ),
+                                        ];
+                                      },
                                     ),
-                                    if (role.toLowerCase() == 'instructor' &&
-                                        !approved)
-                                      const PopupMenuItem<String>(
-                                        value: 'approve',
-                                        child: Text('Approve instructor'),
-                                      ),
-                                    if (hasEnrollment)
-                                      const PopupMenuItem<String>(
-                                        value: 'migrateEnrollment',
-                                        child: Text(
-                                          'Fix face enrollment format',
-                                        ),
-                                      ),
-                                    if (hasEnrollment)
-                                      const PopupMenuItem<String>(
-                                        value: 'clearEnrollment',
-                                        child: Text('Clear face enrollment'),
-                                      ),
-                                    const PopupMenuDivider(),
-                                    const PopupMenuItem<String>(
-                                      value: 'delete',
-                                      child: Text('Delete user'),
-                                    ),
-                                  ];
-                                },
-                              ),
                             );
                           },
                         ),

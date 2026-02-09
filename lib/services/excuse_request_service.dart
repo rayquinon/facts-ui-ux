@@ -12,10 +12,11 @@ class ExcuseRequestService {
     FirebaseFunctions? functions,
     String functionsRegion = 'us-central1',
     FirebaseStorage? storage,
-  })  : _auth = auth ?? FirebaseAuth.instance,
-        _firestore = firestore ?? FirebaseFirestore.instance,
-        _functions = functions ?? FirebaseFunctions.instanceFor(region: functionsRegion),
-        _storage = storage ?? FirebaseStorage.instance;
+  }) : _auth = auth ?? FirebaseAuth.instance,
+       _firestore = firestore ?? FirebaseFirestore.instance,
+       _functions =
+           functions ?? FirebaseFunctions.instanceFor(region: functionsRegion),
+       _storage = storage ?? FirebaseStorage.instance;
 
   final FirebaseAuth _auth;
   final FirebaseFirestore _firestore;
@@ -34,13 +35,13 @@ class ExcuseRequestService {
     required String reason,
     required List<Map<String, Object?>> entries,
   }) async {
-    final HttpsCallable callable = _functions.httpsCallable('createExcuseRequest');
+    final HttpsCallable callable = _functions.httpsCallable(
+      'createExcuseRequest',
+    );
     try {
-      final HttpsCallableResult<dynamic> result =
-          await callable.call(<String, Object?>{
-        'reason': reason,
-        'entries': entries,
-      });
+      final HttpsCallableResult<dynamic> result = await callable.call(
+        <String, Object?>{'reason': reason, 'entries': entries},
+      );
 
       final Map<String, dynamic> data =
           (result.data as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
@@ -79,10 +80,13 @@ class ExcuseRequestService {
     final Reference ref = _storage.ref(uploadPath);
     await ref.putData(
       bytes,
-      SettableMetadata(contentType: 'application/pdf', customMetadata: <String, String>{
-        'originalFileName': fileName,
-        'uploadedBy': _user.uid,
-      }),
+      SettableMetadata(
+        contentType: 'application/pdf',
+        customMetadata: <String, String>{
+          'originalFileName': fileName,
+          'uploadedBy': _user.uid,
+        },
+      ),
     );
   }
 
@@ -108,17 +112,23 @@ class ExcuseRequestService {
   }
 
   Future<void> approve({required String requestId}) async {
-    final HttpsCallable callable = _functions.httpsCallable('approveExcuseRequest');
+    final HttpsCallable callable = _functions.httpsCallable(
+      'approveExcuseRequest',
+    );
     await callable.call(<String, Object?>{'requestId': requestId});
   }
 
   Future<void> disapprove({required String requestId}) async {
-    final HttpsCallable callable = _functions.httpsCallable('disapproveExcuseRequest');
+    final HttpsCallable callable = _functions.httpsCallable(
+      'disapproveExcuseRequest',
+    );
     await callable.call(<String, Object?>{'requestId': requestId});
   }
 
   Future<void> delete({required String requestId}) async {
-    final HttpsCallable callable = _functions.httpsCallable('deleteExcuseRequest');
+    final HttpsCallable callable = _functions.httpsCallable(
+      'deleteExcuseRequest',
+    );
     await callable.call(<String, Object?>{'requestId': requestId});
   }
 
@@ -132,10 +142,17 @@ class ExcuseRequestService {
     }
     return data;
   }
+
+  Future<String> getPdfDownloadUrl({required String path}) async {
+    return _storage.ref(path).getDownloadURL();
+  }
 }
 
 class CreateExcuseRequestResult {
-  const CreateExcuseRequestResult({required this.requestId, required this.uploadPath});
+  const CreateExcuseRequestResult({
+    required this.requestId,
+    required this.uploadPath,
+  });
 
   final String requestId;
   final String uploadPath;

@@ -9,6 +9,14 @@
       ]
     },
     {
+      "collectionGroup": "attendanceSessions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "section", "order": "ASCENDING" },
+        { "fieldPath": "startedAt", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "excuseRequests",
       "queryScope": "COLLECTION",
       "fields": [

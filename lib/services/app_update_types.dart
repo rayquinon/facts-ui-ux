@@ -21,5 +21,7 @@ class AppUpdateInfo {
 
   bool get updateAvailable => latestBuildNumber > currentBuildNumber;
 
-  String? get preferredUrl => arm64Url ?? apkUrl ?? androidPageUrl;
+  // Prefer the universal APK first. An arm64-only APK can be incompatible on
+  // 32-bit devices, causing confusing "not compatible" install errors.
+  String? get preferredUrl => apkUrl ?? arm64Url ?? androidPageUrl;
 }

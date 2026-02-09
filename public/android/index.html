@@ -3,28 +3,59 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>FACTS Android APK</title>
+    <title>FACTS — Android download</title>
     <link rel="stylesheet" href="/styles.css?v=20260201-2" />
+    <link rel="icon" href="/app/favicon.png" />
   </head>
   <body>
-    <main class="container">
-      <section class="card">
-        <header class="header">
-          <div class="brand">
-            <h1>FACTS (Android)</h1>
-            <p>Download the latest APK build</p>
+    <div class="page">
+      <div class="bg-orb bg-orb-1" aria-hidden="true"></div>
+      <div class="bg-orb bg-orb-2" aria-hidden="true"></div>
+
+      <header class="nav">
+        <div class="container">
+          <div class="nav-inner">
+            <a class="logo" href="/" aria-label="FACTS home">
+              <span class="logo-mark" aria-hidden="true">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M20.5 12c0 4.694-3.806 8.5-8.5 8.5S3.5 16.694 3.5 12 7.306 3.5 12 3.5s8.5 3.806 8.5 8.5Z" stroke="currentColor" stroke-width="1.5" opacity="0.9"/>
+                  <path d="M8 12.2l2.4 2.5L16.5 9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </span>
+              <span class="logo-text">FACTS</span>
+              <span class="logo-sub">Android download</span>
+            </a>
+
+            <nav class="nav-actions" aria-label="Primary">
+              <a class="btn btn-ghost" href="/app/">Open web app</a>
+              <a class="btn btn-primary" href="/">Back</a>
+            </nav>
           </div>
-          <span class="badge">v1 link</span>
-        </header>
+        </div>
+      </header>
+
+      <main class="container">
+        <section class="card">
+          <header class="header">
+            <div class="brand">
+              <h1>FACTS (Android)</h1>
+              <p>Download the latest APK build</p>
+              <p id="latestVersion" class="muted" style="margin-top: 6px;">
+                Latest: loading…
+              </p>
+            </div>
+            <span class="badge">v1 link</span>
+          </header>
 
         <div class="actions">
-          <a class="btn btn-primary" href="/downloads/app-latest-arm64.apk">Download (recommended)</a>
-          <a class="btn" href="/downloads/app-latest.apk">Download universal APK</a>
+          <a class="btn btn-primary" href="/downloads/app-latest.apk">Download Android APK</a>
           <a class="btn" href="/">Back</a>
         </div>
 
         <p class="muted" style="margin-top: 10px;">
-          Recommended is <strong>arm64</strong> (most phones). Universal works on all devices but is larger.
+          This is a <strong>universal</strong> APK (includes support for most Android phones).
+          <br />
+          Requires Android 8.0+.
         </p>
 
         <h2 class="section-title">Install</h2>
@@ -41,9 +72,37 @@
         </p>
 
         <div class="footer">
-          This page points to <strong>app-latest-arm64.apk</strong> (recommended) and <strong>app-latest.apk</strong> (universal).
+          This page points to <strong>app-latest.apk</strong>.
         </div>
-      </section>
-    </main>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      (async function () {
+        const el = document.getElementById('latestVersion');
+        if (!el) return;
+        try {
+          const res = await fetch('/downloads/version.json', { cache: 'no-store' });
+          if (!res.ok) throw new Error('http ' + res.status);
+          const m = await res.json();
+
+          const versionName = (m.latestVersionName ?? '').toString().trim();
+          const build = (m.latestBuildNumber ?? '').toString().trim();
+          const updatedAt = (m.updatedAtUtc ?? '').toString().trim();
+          const updatedLabel = updatedAt
+            ? new Date(updatedAt).toLocaleString()
+            : '';
+
+          const versionLabel = versionName
+            ? versionName + (build ? '+' + build : '')
+            : (build ? 'build ' + build : 'unknown');
+
+          el.textContent = 'Latest: ' + versionLabel + (updatedLabel ? ' • Updated ' + updatedLabel : '');
+        } catch (e) {
+          el.textContent = 'Latest: unavailable';
+        }
+      })();
+    </script>
   </body>
 </html>

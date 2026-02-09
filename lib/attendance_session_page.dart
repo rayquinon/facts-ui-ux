@@ -63,12 +63,18 @@ class AttendanceSessionPage extends StatefulWidget {
 class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   // Recognition is strictly gated to minimize false positives.
   // Tune these with real class data if needed.
-  static const double _similarityThreshold = 0.55;
+  static const double _similarityThreshold = 0.60;
+  static const double _singleTemplateThreshold = 0.68;
+  static const double _templateHitThreshold = 0.60;
+  static const int _minTemplateHits = 2;
   static const double _similarityMargin = 0.08;
   static const double _confidenceSpan = 0.20;
   static const Duration _captureCooldown = Duration(seconds: 2);
   static const Duration _duplicateCaptureCooldown = Duration(seconds: 10);
   static const Duration _unrecognizedCooldown = Duration(seconds: 4);
+  static const Duration _ambiguousConfirmationWindow = Duration(seconds: 4);
+  static const int _ambiguousConfirmationsRequired = 2;
+  static const Duration _autoEndAfterClassStart = Duration(minutes: 30);
 
   final FaceEmbeddingService _embeddingService = FaceEmbeddingService.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -77,6 +83,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   FaceDetector? _faceDetector;
   WebCameraService? _webCameraService;
   Timer? _webCaptureTimer;
+  Timer? _sessionUiTimer;
 
   bool _isProcessingFrame = false;
   bool _captureEnabled = true;
@@ -85,6 +92,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   String? _statusMessage;
   String? _sessionDocId;
   bool _sessionClosed = false;
+  DateTime? _sessionStartedAt;
   DateTime? _lastCaptureTime;
   DateTime? _lastUnrecognizedTime;
   int _lastRotationCompensation = 0;
@@ -95,6 +103,10 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   final Map<String, DateTime> _lastStudentCaptureTimes = <String, DateTime>{};
   final Set<String> _capturedStudentIds = <String>{};
   final ScrollController _captureListController = ScrollController();
+
+  String? _pendingAmbiguousStudentId;
+  int _pendingAmbiguousConfirmations = 0;
+  DateTime? _pendingAmbiguousExpiresAt;
 
   @override
   void initState() {
@@ -109,6 +121,14 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         ),
       );
     }
+
+    // Refresh the UI periodically so the primary action can automatically
+    // switch to "End session now" once the class-start cutoff is reached.
+    _sessionUiTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      if (!mounted) return;
+      setState(() {});
+    });
+
     _initializeSession();
   }
 
@@ -118,7 +138,37 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     return offset == null ? systemNow : systemNow.add(offset);
   }
 
+  bool _shouldEndSessionNow() {
+    final DateTime now = _now();
+    final DateTime startedAt = _sessionStartedAt ?? now;
+    final DateTime cutoff = startedAt.add(_autoEndAfterClassStart);
+    return now.isAfter(cutoff) || now.isAtSameMomentAs(cutoff);
+  }
+
+  Future<void> _setSessionStatusBestEffort(String status) async {
+    final String? sessionId = _sessionDocId;
+    if (sessionId == null || _sessionClosed) return;
+
+    final String timestampField = switch (status) {
+      'paused' => 'pausedAt',
+      'active' => 'resumedAt',
+      _ => 'statusUpdatedAt',
+    };
+
+    try {
+      await _firestore.collection('attendanceSessions').doc(sessionId).update(
+        <String, dynamic>{
+          'status': status,
+          timestampField: FieldValue.serverTimestamp(),
+        },
+      );
+    } catch (_) {
+      // Best-effort update only.
+    }
+  }
+
   Future<void> _initializeSession() async {
+    _sessionStartedAt ??= _now();
     setState(() {
       _initializing = true;
       _statusMessage = 'Preparing attendance session...';
@@ -193,6 +243,20 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       'createdAt': FieldValue.serverTimestamp(),
     });
     _sessionDocId = doc.id;
+
+    // Anchor the session start time on Firestore server time.
+    // This avoids device clock drift affecting the 30-minute cutoff.
+    try {
+      final DocumentSnapshot<Map<String, dynamic>> snap = await doc
+          .get(const GetOptions(source: Source.server))
+          .timeout(const Duration(seconds: 2));
+      final Object? startedAt = snap.data() != null ? snap.data()!['startedAt'] : null;
+      if (startedAt is Timestamp) {
+        _sessionStartedAt = startedAt.toDate();
+      }
+    } catch (_) {
+      // Offline/slow network: keep the local start time fallback.
+    }
   }
 
   Future<void> _ensureSessionDocumentBestEffort() async {
@@ -205,11 +269,12 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   }
 
   Future<void> _loadRosterEmbeddings() async {
-    Query<Map<String, dynamic>> query = _firestore
+    final Query<Map<String, dynamic>> baseQuery = _firestore
         .collection('users')
         .where('role', isEqualTo: 'student');
 
     final String sectionLabel = (widget.config.section ?? '').trim();
+    Query<Map<String, dynamic>> query = baseQuery;
     if (sectionLabel.isNotEmpty) {
       query = query.where('section', isEqualTo: sectionLabel);
     }
@@ -224,11 +289,57 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           .get(const GetOptions(source: Source.cache))
           .timeout(const Duration(seconds: 3));
     }
+
+    // If a section is provided but the exact-match query returns nothing,
+    // fall back to a best-effort client-side filter. This avoids common
+    // mismatches caused by spacing/casing differences in stored section labels.
+    if (sectionLabel.isNotEmpty && snapshot.docs.isEmpty) {
+      try {
+        final QuerySnapshot<Map<String, dynamic>> fallback = await baseQuery
+            .get(const GetOptions(source: Source.server))
+            .timeout(const Duration(seconds: 3));
+        snapshot = fallback;
+      } catch (_) {
+        try {
+          final QuerySnapshot<Map<String, dynamic>> fallback = await baseQuery
+              .get(const GetOptions(source: Source.cache))
+              .timeout(const Duration(seconds: 3));
+          snapshot = fallback;
+        } catch (_) {
+          // Keep the empty snapshot.
+        }
+      }
+    }
+
+    final String normalizedWanted = _normalizeLabel(sectionLabel);
     final List<_RecognizedStudent> roster = snapshot.docs
+        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+          if (sectionLabel.isEmpty) return true;
+          final Object? rawSection = doc.data()['section'];
+          final String normalizedActual = _normalizeLabel(rawSection?.toString() ?? '');
+          return normalizedActual == normalizedWanted;
+        })
         .map(_RecognizedStudent.fromDocument)
         .whereType<_RecognizedStudent>()
-        .toList();
-    setState(() => _roster = roster);
+        .toList(growable: false);
+
+    if (mounted) {
+      setState(() => _roster = roster);
+      if (roster.isEmpty) {
+        _updateStatus(
+          sectionLabel.isEmpty
+              ? 'No students loaded for recognition. Check connection and enrollment.'
+              : 'No students loaded for section "$sectionLabel". Check section labels and enrollment.',
+        );
+      }
+    }
+  }
+
+  String _normalizeLabel(String input) {
+    return input
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r'\s+'), ' ');
   }
 
   Future<void> _initializeWebCamera() async {
@@ -348,8 +459,61 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   }
 
   Future<void> _handleEmbeddingCapture(List<double> embedding) async {
-    final _MatchResult result = _matchEmbedding(embedding);
+    _MatchResult result = _matchEmbedding(embedding);
     final DateTime captureTime = _now();
+
+    // If the match is ambiguous, require the same top candidate to appear
+    // multiple times within a short window before accepting.
+    if (result.rejectionReason == 'ambiguous' && result.student != null) {
+      final DateTime? expiresAt = _pendingAmbiguousExpiresAt;
+      if (expiresAt != null && captureTime.isAfter(expiresAt)) {
+        _pendingAmbiguousStudentId = null;
+        _pendingAmbiguousConfirmations = 0;
+        _pendingAmbiguousExpiresAt = null;
+      }
+
+      final String candidateId = result.student!.userId;
+      if (_pendingAmbiguousStudentId == candidateId) {
+        _pendingAmbiguousConfirmations++;
+      } else {
+        _pendingAmbiguousStudentId = candidateId;
+        _pendingAmbiguousConfirmations = 1;
+      }
+      _pendingAmbiguousExpiresAt =
+          captureTime.add(_ambiguousConfirmationWindow);
+
+      if (_pendingAmbiguousConfirmations < _ambiguousConfirmationsRequired) {
+        final double best = result.similarity ?? double.nan;
+        final double second = result.secondBestSimilarity ?? double.nan;
+        final double margin = (best.isNaN || second.isNaN) ? double.nan : (best - second);
+        final String name = result.student?.displayName ?? 'this student';
+        final int remaining =
+            _ambiguousConfirmationsRequired - _pendingAmbiguousConfirmations;
+        _updateStatus(
+          'Ambiguous match for $name. Scan again to confirm ($remaining left). '
+          '(top1 ${best.toStringAsFixed(2)}, top2 ${second.toStringAsFixed(2)}, '
+          'margin ${margin.toStringAsFixed(2)})',
+        );
+        return;
+      }
+
+      // Confirmed: accept this candidate.
+      _pendingAmbiguousStudentId = null;
+      _pendingAmbiguousConfirmations = 0;
+      _pendingAmbiguousExpiresAt = null;
+      result = _MatchResult(
+        embedding: result.embedding,
+        student: result.student,
+        similarity: result.similarity,
+        secondBestSimilarity: result.secondBestSimilarity,
+        confidence: result.confidence,
+      );
+    } else if (result.student == null) {
+      // Clear pending confirmation when nothing plausible matched.
+      _pendingAmbiguousStudentId = null;
+      _pendingAmbiguousConfirmations = 0;
+      _pendingAmbiguousExpiresAt = null;
+    }
 
     if (result.student == null) {
       final DateTime? last = _lastUnrecognizedTime;
@@ -424,26 +588,42 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     }
 
     _RecognizedStudent? bestCandidate;
-    double bestSimilarity = -1;
-    double secondBestSimilarity = -1;
+    double bestScore = -1;
+    double secondBestScore = -1;
+    double bestCandidateBestTemplate = -1;
+    int bestCandidateHitCount = 0;
 
-    // Compare on a per-student basis: each student contributes their best
-    // similarity across their stored embeddings.
+    // Compare on a per-student basis. To reduce false positives, we:
+    // - score each student by the average of their top-2 template similarities
+    //   (or top-1 if only 1 template)
+    // - keep a count of templates that strongly match the probe
     for (final _RecognizedStudent student in _roster) {
-      double bestForStudent = -1;
+      if (student.embeddings.isEmpty) continue;
+      final List<double> sims = <double>[];
+      int hitCount = 0;
       for (final List<double> candidate in student.embeddings) {
         final double similarity = _cosineSimilarityNormalized(probe, candidate);
-        if (similarity > bestForStudent) {
-          bestForStudent = similarity;
+        sims.add(similarity);
+        if (similarity >= _templateHitThreshold) {
+          hitCount++;
         }
       }
 
-      if (bestForStudent > bestSimilarity) {
-        secondBestSimilarity = bestSimilarity;
-        bestSimilarity = bestForStudent;
+      sims.sort((double a, double b) => b.compareTo(a));
+      final double bestTemplate = sims.first;
+      final double secondTemplate = sims.length > 1 ? sims[1] : -1;
+      final double score = sims.length > 1
+          ? ((bestTemplate + secondTemplate) / 2.0)
+          : bestTemplate;
+
+      if (score > bestScore) {
+        secondBestScore = bestScore;
+        bestScore = score;
         bestCandidate = student;
-      } else if (bestForStudent > secondBestSimilarity) {
-        secondBestSimilarity = bestForStudent;
+        bestCandidateBestTemplate = bestTemplate;
+        bestCandidateHitCount = hitCount;
+      } else if (score > secondBestScore) {
+        secondBestScore = score;
       }
     }
 
@@ -451,31 +631,55 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       return _MatchResult(embedding: embedding);
     }
 
-    if (bestSimilarity < _similarityThreshold) {
+    if (bestScore < _similarityThreshold) {
       return _MatchResult(
         embedding: embedding,
-        similarity: bestSimilarity,
-        secondBestSimilarity: secondBestSimilarity,
+        similarity: bestScore,
+        secondBestSimilarity: secondBestScore,
         rejectionReason: 'below-threshold',
       );
     }
 
-    final double margin = bestSimilarity - secondBestSimilarity;
-    if (secondBestSimilarity >= 0 && margin < _similarityMargin) {
+    final int templateCount = bestCandidate.embeddings.length;
+    if (templateCount <= 1) {
+      if (bestCandidateBestTemplate < _singleTemplateThreshold) {
+        return _MatchResult(
+          embedding: embedding,
+          similarity: bestScore,
+          secondBestSimilarity: secondBestScore,
+          rejectionReason: 'single-template-too-weak',
+        );
+      }
+    } else {
+      if (bestCandidateHitCount < _minTemplateHits) {
+        return _MatchResult(
+          embedding: embedding,
+          similarity: bestScore,
+          secondBestSimilarity: secondBestScore,
+          rejectionReason: 'insufficient-template-agreement',
+        );
+      }
+    }
+
+    final double margin = bestScore - secondBestScore;
+    if (secondBestScore >= 0 && margin < _similarityMargin) {
+      final double confidence = _similarityToDisplayConfidence(bestScore);
       return _MatchResult(
         embedding: embedding,
-        similarity: bestSimilarity,
-        secondBestSimilarity: secondBestSimilarity,
+        student: bestCandidate,
+        similarity: bestScore,
+        secondBestSimilarity: secondBestScore,
+        confidence: confidence,
         rejectionReason: 'ambiguous',
       );
     }
 
-    final double confidence = _similarityToDisplayConfidence(bestSimilarity);
+    final double confidence = _similarityToDisplayConfidence(bestScore);
     return _MatchResult(
       embedding: embedding,
       student: bestCandidate,
-      similarity: bestSimilarity,
-      secondBestSimilarity: secondBestSimilarity,
+      similarity: bestScore,
+      secondBestSimilarity: secondBestScore,
       confidence: confidence,
     );
   }
@@ -858,8 +1062,19 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       _captureEnabled = !_captureEnabled;
       _statusMessage = _captureEnabled
           ? 'Session live. We will attempt recognition automatically.'
-          : 'Session paused. Tap resume to continue recognition.';
+          : 'Session paused. Tap continue to record late students.';
     });
+
+    _setSessionStatusBestEffort(_captureEnabled ? 'active' : 'paused');
+  }
+
+  Future<void> _handlePrimarySessionAction() async {
+    if (_initializing || _isEndingSession) return;
+    if (_shouldEndSessionNow()) {
+      await _endSession();
+      return;
+    }
+    _toggleCapture();
   }
 
   Future<void> _endSession() async {
@@ -907,6 +1122,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     _cameraController?.stopImageStream();
     _cameraController?.dispose();
     _webCaptureTimer?.cancel();
+    _sessionUiTimer?.cancel();
     _webCameraService?.dispose();
     _faceDetector?.close();
     _captureListController.dispose();
@@ -931,15 +1147,25 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           title: const Text('Recognition session'),
           actions: <Widget>[
             TextButton.icon(
-              onPressed: _isEndingSession ? null : _endSession,
+              onPressed: _isEndingSession ? null : _handlePrimarySessionAction,
               icon: _isEndingSession
                   ? const SizedBox(
                       width: 16,
                       height: 16,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  : const Icon(Icons.stop_circle_outlined),
-              label: const Text('End session'),
+                  : Icon(
+                      _shouldEndSessionNow()
+                          ? Icons.stop_circle_outlined
+                          : (_captureEnabled
+                              ? Icons.pause_circle
+                              : Icons.play_circle),
+                    ),
+              label: Text(
+                _shouldEndSessionNow()
+                    ? 'End session now'
+                    : (_captureEnabled ? 'Pause session' : 'Continue session'),
+              ),
             ),
           ],
         ),
@@ -973,20 +1199,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                           style: theme.textTheme.bodyMedium,
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 8),
-                        FilledButton.icon(
-                          onPressed: _initializing ? null : _toggleCapture,
-                          icon: Icon(
-                            _captureEnabled
-                                ? Icons.pause_circle
-                                : Icons.play_circle,
-                          ),
-                          label: Text(
-                            _captureEnabled
-                                ? 'Pause recognition'
-                                : 'Resume recognition',
-                          ),
                         ),
                       ],
                     ),

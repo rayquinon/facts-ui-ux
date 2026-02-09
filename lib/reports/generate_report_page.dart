@@ -5,9 +5,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
-import 'package:pdf/pdf.dart';
-import 'package:pdf/widgets.dart' as pw;
-import 'package:printing/printing.dart';
 
 import 'attendance_mark.dart';
 import 'attendance_report_template_meta.dart';
@@ -25,12 +22,6 @@ const Set<int> _defaultMeetingWeekdays = <int>{
   DateTime.saturday,
 };
 
-const int _pdfDatesPerPage = 14;
-const int _pdfRowsPerPage = 19;
-const double _pdfNumberColumnWidth = 24;
-const double _pdfNameColumnWidth = 190;
-const double _pdfCourseColumnWidth = 132;
-const double _pdfDateColumnWidth = 32;
 
 class GenerateReportPage extends StatefulWidget {
   const GenerateReportPage({super.key});
@@ -46,12 +37,9 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   bool _isLoadingClasses = true;
   bool _isLoadingPreview = false;
-  bool _isPrintingReport = false;
   bool _isExportingDocx = false;
   bool _isLoadingInstructors = false;
   bool _isAdminFlow = false;
-  AttendanceReportTemplateMeta _templateMeta =
-      AttendanceReportTemplateMeta.defaults;
   List<_InstructorOption> _instructors = <_InstructorOption>[];
   String? _selectedInstructorId;
   String? _selectedSubjectKey;
@@ -61,7 +49,6 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
   DateTimeRange? _selectedRange;
   List<DateTime> _workingDays = <DateTime>[];
   List<_ReportRow> _previewRows = <_ReportRow>[];
-  Uint8List? _headerLogoBytes;
 
   List<String> _availableSections() {
     final Set<String> set = <String>{};
@@ -122,8 +109,6 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
   void initState() {
     super.initState();
     _initAccessAndLoad();
-    _loadHeaderLogo();
-    _loadTemplateMeta();
   }
 
   Future<void> _initAccessAndLoad() async {
@@ -177,31 +162,6 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to load instructors: $error')),
       );
-    }
-  }
-
-  Future<void> _loadTemplateMeta() async {
-    try {
-      final AttendanceReportTemplateMeta meta =
-          await AttendanceReportTemplateMeta.fetch(_firestore);
-      if (!mounted) return;
-      setState(() => _templateMeta = meta);
-    } catch (_) {
-      // Keep defaults if fetching fails.
-    }
-  }
-
-  Future<void> _loadHeaderLogo() async {
-    try {
-      final ByteData data = await rootBundle.load(
-        'assets/reports/ustp_logo.png',
-      );
-      if (!mounted) return;
-      setState(() {
-        _headerLogoBytes = data.buffer.asUint8List();
-      });
-    } catch (error) {
-      debugPrint('Failed to load report header logo: $error');
     }
   }
 
@@ -463,90 +423,6 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Failed to build report: $error')));
-    }
-  }
-
-  Future<void> _printReport() async {
-    final _ClassOption? selectedClass = _resolveSelectedClass();
-    final DateTimeRange? range = _selectedRange;
-    if (selectedClass == null || range == null || !_hasPrintableData) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Generate a preview before printing.')),
-      );
-      return;
-    }
-    if (_isPrintingReport) return;
-    setState(() => _isPrintingReport = true);
-    try {
-      final pw.Document document = pw.Document();
-      final pw.ImageProvider? headerLogo = _headerLogoBytes == null
-          ? null
-          : pw.MemoryImage(_headerLogoBytes!);
-      final List<List<DateTime>> dateChunks = _chunkDates(
-        _workingDays,
-        _pdfDatesPerPage,
-      );
-      final List<List<_ReportRow>> rowChunks = _chunkRows(
-        _previewRows,
-        _pdfRowsPerPage,
-      );
-      if (dateChunks.isEmpty) {
-        throw Exception('No class days available to print.');
-      }
-      int pageNumber = 0;
-      final int totalPages =
-          dateChunks.length * (rowChunks.isEmpty ? 1 : rowChunks.length);
-      for (final List<DateTime> chunk in dateChunks) {
-        if (rowChunks.isEmpty) {
-          pageNumber++;
-          document.addPage(
-            _buildPdfPage(
-              selectedClass: selectedClass,
-              range: range,
-              pageNumber: pageNumber,
-              totalPages: totalPages,
-              days: chunk,
-              rows: const <_ReportRow>[],
-              rowOffset: 0,
-              headerLogo: headerLogo,
-            ),
-          );
-          continue;
-        }
-        for (
-          int rowPageIndex = 0;
-          rowPageIndex < rowChunks.length;
-          rowPageIndex++
-        ) {
-          final List<_ReportRow> rows = rowChunks[rowPageIndex];
-          final int rowOffset = rowPageIndex * _pdfRowsPerPage;
-          pageNumber++;
-          document.addPage(
-            _buildPdfPage(
-              selectedClass: selectedClass,
-              range: range,
-              pageNumber: pageNumber,
-              totalPages: totalPages,
-              days: chunk,
-              rows: rows,
-              rowOffset: rowOffset,
-              headerLogo: headerLogo,
-            ),
-          );
-        }
-      }
-      await Printing.layoutPdf(
-        onLayout: (PdfPageFormat format) async => document.save(),
-      );
-    } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Unable to generate printable report: $error')),
-      );
-    } finally {
-      if (mounted) {
-        setState(() => _isPrintingReport = false);
-      }
     }
   }
 
@@ -814,633 +690,6 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
     }
   }
 
-  List<List<DateTime>> _chunkDates(List<DateTime> days, int size) {
-    if (days.isEmpty) return <List<DateTime>>[];
-    final List<List<DateTime>> chunks = <List<DateTime>>[];
-    for (int i = 0; i < days.length; i += size) {
-      final int end = math.min(i + size, days.length);
-      chunks.add(days.sublist(i, end));
-    }
-    return chunks;
-  }
-
-  List<List<_ReportRow>> _chunkRows(List<_ReportRow> rows, int size) {
-    if (rows.isEmpty) return <List<_ReportRow>>[];
-    final List<List<_ReportRow>> chunks = <List<_ReportRow>>[];
-    for (int i = 0; i < rows.length; i += size) {
-      final int end = math.min(i + size, rows.length);
-      chunks.add(rows.sublist(i, end));
-    }
-    return chunks;
-  }
-
-  pw.MultiPage _buildPdfPage({
-    required _ClassOption selectedClass,
-    required DateTimeRange range,
-    required int pageNumber,
-    required int totalPages,
-    required List<DateTime> days,
-    required List<_ReportRow> rows,
-    required int rowOffset,
-    required pw.ImageProvider? headerLogo,
-  }) {
-    return pw.MultiPage(
-      pageFormat: PdfPageFormat.a4.landscape,
-      margin: const pw.EdgeInsets.all(24),
-      build: (pw.Context context) => <pw.Widget>[
-        _buildPdfHeader(
-          selectedClass,
-          range,
-          pageNumber,
-          totalPages,
-          headerLogo,
-        ),
-        pw.SizedBox(height: 8),
-        _buildPdfTable(rows, days, rowOffset),
-        pw.SizedBox(height: 18),
-        _buildPdfFooter(),
-      ],
-    );
-  }
-
-  pw.Widget _buildPdfHeader(
-    _ClassOption selectedClass,
-    DateTimeRange range,
-    int page,
-    int totalPages,
-    pw.ImageProvider? headerLogo,
-  ) {
-    final String officeUnit = _resolveOfficeUnit(selectedClass);
-    final String subjectLine =
-        '${selectedClass.subjectName} (${selectedClass.sectionLabel})';
-    final String scheduleSummary = _formatClassScheduleSummary(selectedClass);
-    final String roomLabel = _resolvePrimaryRoom(selectedClass);
-    final String dateRangeLabel =
-        '${_formatDate(range.start)} - ${_formatDate(range.end)}';
-    final String scheduleValue = scheduleSummary == '—'
-        ? dateRangeLabel
-        : '$scheduleSummary\n$dateRangeLabel';
-    return pw.Column(
-      crossAxisAlignment: pw.CrossAxisAlignment.start,
-      children: <pw.Widget>[
-        pw.Row(
-          crossAxisAlignment: pw.CrossAxisAlignment.start,
-          children: <pw.Widget>[
-            pw.Expanded(
-              flex: 3,
-              child: headerLogo == null
-                  ? pw.SizedBox(height: 100)
-                  : pw.Align(
-                      alignment: pw.Alignment.centerLeft,
-                      child: pw.Container(
-                        width: 400,
-                        height: 250,
-                        alignment: pw.Alignment.centerLeft,
-                        padding: const pw.EdgeInsets.only(right: 12),
-                        child: pw.Image(headerLogo, fit: pw.BoxFit.contain),
-                      ),
-                    ),
-            ),
-            pw.SizedBox(width: 12),
-            _buildPdfDocumentMeta(page, totalPages),
-          ],
-        ),
-        pw.SizedBox(height: 10),
-        pw.Center(
-          child: pw.Text(
-            'ATTENDANCE AND PUNCTUALITY MONITORING SHEET',
-            style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold),
-          ),
-        ),
-        pw.SizedBox(height: 8),
-        _buildPdfInfoBlock(
-          officeUnit: officeUnit,
-          subjectLine: subjectLine,
-          scheduleSummary: scheduleValue,
-          courseCode: selectedClass.subjectCode,
-          roomLabel: roomLabel,
-        ),
-      ],
-    );
-  }
-
-  pw.Widget _buildPdfDocumentMeta(int page, int totalPages) {
-    final PdfColor borderColor = PdfColors.black;
-    final PdfColor headerColor = PdfColor.fromInt(0xFF0B2C66);
-    final pw.TextStyle headerLabelStyle = pw.TextStyle(
-      fontSize: 8,
-      color: PdfColors.white,
-    );
-    final pw.TextStyle headerValueStyle = pw.TextStyle(
-      fontSize: 12,
-      fontWeight: pw.FontWeight.bold,
-      color: PdfColors.white,
-    );
-    final pw.TextStyle labelStyle = pw.TextStyle(
-      fontSize: 8,
-      fontWeight: pw.FontWeight.bold,
-    );
-    const pw.TextStyle valueStyle = pw.TextStyle(fontSize: 10);
-    return pw.Container(
-      width: 200,
-      decoration: pw.BoxDecoration(
-        border: pw.Border.all(color: borderColor, width: 0.8),
-      ),
-      child: pw.Column(
-        crossAxisAlignment: pw.CrossAxisAlignment.stretch,
-        children: <pw.Widget>[
-          pw.Container(
-            color: headerColor,
-            padding: const pw.EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-            child: pw.Column(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: <pw.Widget>[
-                pw.Text('Document Code No.', style: headerLabelStyle),
-                pw.Text(_templateMeta.documentCodeNo, style: headerValueStyle),
-              ],
-            ),
-          ),
-          pw.Container(
-            padding: const pw.EdgeInsets.all(4),
-            child: pw.Table(
-              border: pw.TableBorder(
-                horizontalInside: pw.BorderSide(color: borderColor, width: 0.5),
-                verticalInside: pw.BorderSide(color: borderColor, width: 0.5),
-                top: pw.BorderSide(color: borderColor, width: 0.5),
-                bottom: pw.BorderSide(color: borderColor, width: 0.5),
-                left: pw.BorderSide(color: borderColor, width: 0.5),
-                right: pw.BorderSide(color: borderColor, width: 0.5),
-              ),
-              defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
-              columnWidths: const <int, pw.TableColumnWidth>{
-                0: pw.FlexColumnWidth(1),
-                1: pw.FlexColumnWidth(1),
-                2: pw.FlexColumnWidth(1),
-              },
-              children: <pw.TableRow>[
-                pw.TableRow(
-                  children: <pw.Widget>[
-                    _pdfMetaDetailCell('Rev. No.', labelStyle),
-                    _pdfMetaDetailCell('Effective Date', labelStyle),
-                    _pdfMetaDetailCell('Page No.', labelStyle),
-                  ],
-                ),
-                pw.TableRow(
-                  children: <pw.Widget>[
-                    _pdfMetaDetailCell(_templateMeta.revisionNo, valueStyle),
-                    _pdfMetaDetailCell(_templateMeta.effectiveDate, valueStyle),
-                    _pdfMetaDetailCell('$page of $totalPages', valueStyle),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  pw.Widget _buildPdfInfoBlock({
-    required String officeUnit,
-    required String subjectLine,
-    required String scheduleSummary,
-    required String courseCode,
-    required String roomLabel,
-  }) {
-    final PdfColor borderColor = PdfColors.black;
-    final pw.TextStyle labelStyle = pw.TextStyle(
-      fontSize: 10,
-      fontWeight: pw.FontWeight.bold,
-    );
-    const pw.TextStyle valueStyle = pw.TextStyle(fontSize: 10);
-    return pw.Container(
-      width: double.infinity,
-      decoration: pw.BoxDecoration(
-        border: pw.Border.all(color: borderColor, width: 0.8),
-      ),
-      child: pw.Column(
-        crossAxisAlignment: pw.CrossAxisAlignment.stretch,
-        children: <pw.Widget>[
-          _pdfInfoFullWidthCell(
-            label: 'Office / Unit',
-            value: officeUnit,
-            labelStyle: labelStyle,
-            valueStyle: valueStyle,
-            borderColor: borderColor,
-          ),
-          _pdfInfoDualRow(
-            labelLeft: 'Subject',
-            valueLeft: subjectLine,
-            labelRight: 'Class Schedule',
-            valueRight: scheduleSummary,
-            labelStyle: labelStyle,
-            valueStyle: valueStyle,
-            borderColor: borderColor,
-          ),
-          _pdfInfoDualRow(
-            labelLeft: 'Course Code',
-            valueLeft: courseCode,
-            labelRight: 'Bldg. and Room No.',
-            valueRight: roomLabel,
-            labelStyle: labelStyle,
-            valueStyle: valueStyle,
-            borderColor: borderColor,
-            isLastRow: true,
-          ),
-        ],
-      ),
-    );
-  }
-
-  pw.Widget _buildPdfFooter() {
-    return pw.Row(
-      crossAxisAlignment: pw.CrossAxisAlignment.start,
-      children: <pw.Widget>[
-        _pdfSignatureBlock(
-          title: 'Checked by:',
-          subtitle: 'Subject Instructor/Professor',
-        ),
-        pw.SizedBox(width: 32),
-        _pdfSignatureBlock(title: 'Submitted to:', subtitle: 'Date Submitted:'),
-      ],
-    );
-  }
-
-  pw.Widget _pdfSignatureBlock({
-    required String title,
-    required String subtitle,
-  }) {
-    return pw.Expanded(
-      child: pw.Column(
-        crossAxisAlignment: pw.CrossAxisAlignment.start,
-        children: <pw.Widget>[
-          pw.Text(
-            title,
-            style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold),
-          ),
-          pw.SizedBox(height: 18),
-          pw.Container(height: 0.8, color: PdfColors.grey700),
-          pw.SizedBox(height: 4),
-          pw.Text(subtitle, style: const pw.TextStyle(fontSize: 10)),
-        ],
-      ),
-    );
-  }
-
-  pw.Widget _buildPdfTable(
-    List<_ReportRow> rows,
-    List<DateTime> days,
-    int rowOffset,
-  ) {
-    final List<DateTime?> displayDays = List<DateTime?>.from(days);
-    while (displayDays.length < _pdfDatesPerPage) {
-      displayDays.add(null);
-    }
-    final List<_ReportRow?> paddedRows = List<_ReportRow?>.from(rows);
-    while (paddedRows.length < _pdfRowsPerPage) {
-      paddedRows.add(null);
-    }
-    final List<pw.TableRow> tableRows = <pw.TableRow>[
-      _buildPdfDateHeaderRow(displayDays),
-    ];
-    for (int index = 0; index < paddedRows.length; index++) {
-      final _ReportRow? row = paddedRows[index];
-      final int displayNumber = rowOffset + index + 1;
-      tableRows.add(
-        pw.TableRow(
-          children: <pw.Widget>[
-            _pdfTableCell('$displayNumber', align: pw.TextAlign.center),
-            _pdfTableCell(row?.studentName ?? '', align: pw.TextAlign.left),
-            _pdfTableCell(row?.courseYear ?? '', align: pw.TextAlign.left),
-            ...displayDays.map((DateTime? day) {
-              if (row == null) {
-                return _pdfTableCell('', align: pw.TextAlign.center);
-              }
-              if (day == null) {
-                return _pdfTableCell('', align: pw.TextAlign.center);
-              }
-              final AttendanceMark? mark = row.marks[_dayKey(day)];
-              final String value = mark == null ? '' : _printSymbolForPdf(mark);
-              return _pdfTableCell(value, align: pw.TextAlign.center);
-            }),
-          ],
-        ),
-      );
-    }
-    final Map<int, pw.TableColumnWidth> columnWidths =
-        <int, pw.TableColumnWidth>{
-          0: const pw.FixedColumnWidth(_pdfNumberColumnWidth),
-          1: const pw.FixedColumnWidth(_pdfNameColumnWidth),
-          2: const pw.FixedColumnWidth(_pdfCourseColumnWidth),
-        };
-    for (int i = 0; i < displayDays.length; i++) {
-      columnWidths[i + 3] = const pw.FixedColumnWidth(_pdfDateColumnWidth);
-    }
-    final PdfColor borderColor = PdfColors.grey600;
-    return pw.Column(
-      crossAxisAlignment: pw.CrossAxisAlignment.start,
-      children: <pw.Widget>[
-        _buildPdfInstructionStrip(displayDays.length, borderColor),
-        pw.Table(
-          border: pw.TableBorder(
-            top: pw.BorderSide.none,
-            bottom: pw.BorderSide(color: borderColor, width: 0.5),
-            left: pw.BorderSide(color: borderColor, width: 0.5),
-            right: pw.BorderSide(color: borderColor, width: 0.5),
-            horizontalInside: pw.BorderSide(color: borderColor, width: 0.5),
-            verticalInside: pw.BorderSide(color: borderColor, width: 0.5),
-          ),
-          defaultVerticalAlignment: pw.TableCellVerticalAlignment.middle,
-          columnWidths: columnWidths,
-          children: tableRows,
-        ),
-      ],
-    );
-  }
-
-  pw.Widget _buildPdfInstructionStrip(
-    int dateColumnCount,
-    PdfColor borderColor,
-  ) {
-    final double dateAreaWidth = dateColumnCount * _pdfDateColumnWidth;
-    return pw.Row(
-      children: <pw.Widget>[
-        _instructionHeaderCell(
-          text: 'No.',
-          width: _pdfNumberColumnWidth,
-          borderColor: borderColor,
-          alignLeft: false,
-        ),
-        _instructionHeaderCell(
-          text: 'Name of Student',
-          width: _pdfNameColumnWidth,
-          borderColor: borderColor,
-          alignLeft: true,
-        ),
-        _instructionHeaderCell(
-          text: 'Course & Year',
-          width: _pdfCourseColumnWidth,
-          borderColor: borderColor,
-          alignLeft: true,
-        ),
-        _instructionHeaderCell(
-          text: 'Indicate the date and put a check mark if student is present',
-          width: dateAreaWidth,
-          borderColor: borderColor,
-          alignLeft: false,
-        ),
-      ],
-    );
-  }
-
-  pw.Widget _instructionHeaderCell({
-    required String text,
-    required double width,
-    required PdfColor borderColor,
-    required bool alignLeft,
-  }) {
-    return pw.Container(
-      width: width,
-      padding: const pw.EdgeInsets.symmetric(vertical: 6, horizontal: 4),
-      decoration: pw.BoxDecoration(
-        color: PdfColors.grey200,
-        border: pw.Border.all(color: borderColor, width: 0.5),
-      ),
-      alignment: alignLeft ? pw.Alignment.centerLeft : pw.Alignment.center,
-      child: pw.Text(
-        text,
-        textAlign: alignLeft ? pw.TextAlign.left : pw.TextAlign.center,
-        style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold),
-      ),
-    );
-  }
-
-  pw.TableRow _buildPdfDateHeaderRow(List<DateTime?> days) {
-    return pw.TableRow(
-      children: <pw.Widget>[
-        _pdfTableHeaderCell('', align: pw.TextAlign.center),
-        _pdfTableHeaderCell('', align: pw.TextAlign.left),
-        _pdfTableHeaderCell('', align: pw.TextAlign.left),
-        ...days.map(
-          (DateTime? day) =>
-              _pdfTableHeaderCell(day == null ? '' : _formatDate(day)),
-        ),
-      ],
-    );
-  }
-
-  pw.Widget _pdfTableHeaderCell(
-    String text, {
-    pw.TextAlign align = pw.TextAlign.center,
-  }) {
-    return pw.Container(
-      padding: const pw.EdgeInsets.symmetric(vertical: 6, horizontal: 4),
-      alignment: align == pw.TextAlign.center
-          ? pw.Alignment.center
-          : pw.Alignment.centerLeft,
-      child: pw.Text(
-        text,
-        textAlign: align,
-        style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold),
-      ),
-    );
-  }
-
-  pw.Widget _pdfTableCell(
-    String text, {
-    pw.TextAlign align = pw.TextAlign.left,
-  }) {
-    return pw.Container(
-      padding: const pw.EdgeInsets.symmetric(vertical: 6, horizontal: 4),
-      alignment: align == pw.TextAlign.center
-          ? pw.Alignment.center
-          : pw.Alignment.centerLeft,
-      child: pw.Text(
-        text,
-        textAlign: align,
-        style: const pw.TextStyle(fontSize: 10),
-      ),
-    );
-  }
-
-  pw.Widget _pdfMetaDetailCell(String text, pw.TextStyle style) {
-    return pw.Container(
-      padding: const pw.EdgeInsets.symmetric(vertical: 4, horizontal: 6),
-      alignment: pw.Alignment.centerLeft,
-      child: pw.Text(text, style: style),
-    );
-  }
-
-  pw.Widget _pdfInfoFullWidthCell({
-    required String label,
-    required String value,
-    required pw.TextStyle labelStyle,
-    required pw.TextStyle valueStyle,
-    required PdfColor borderColor,
-  }) {
-    return pw.Container(
-      padding: const pw.EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-      decoration: pw.BoxDecoration(
-        border: pw.Border(
-          bottom: pw.BorderSide(color: borderColor, width: 0.8),
-        ),
-      ),
-      child: _pdfInfoContent(label, value, labelStyle, valueStyle),
-    );
-  }
-
-  pw.Widget _pdfInfoDualRow({
-    required String labelLeft,
-    required String valueLeft,
-    required String labelRight,
-    required String valueRight,
-    required pw.TextStyle labelStyle,
-    required pw.TextStyle valueStyle,
-    required PdfColor borderColor,
-    bool isLastRow = false,
-  }) {
-    return pw.Row(
-      children: <pw.Widget>[
-        _pdfInfoCell(
-          label: labelLeft,
-          value: valueLeft,
-          labelStyle: labelStyle,
-          valueStyle: valueStyle,
-          borderColor: borderColor,
-          drawRightBorder: true,
-          drawBottomBorder: !isLastRow,
-        ),
-        _pdfInfoCell(
-          label: labelRight,
-          value: valueRight,
-          labelStyle: labelStyle,
-          valueStyle: valueStyle,
-          borderColor: borderColor,
-          drawRightBorder: false,
-          drawBottomBorder: !isLastRow,
-        ),
-      ],
-    );
-  }
-
-  pw.Widget _pdfInfoCell({
-    required String label,
-    required String value,
-    required pw.TextStyle labelStyle,
-    required pw.TextStyle valueStyle,
-    required PdfColor borderColor,
-    required bool drawRightBorder,
-    required bool drawBottomBorder,
-  }) {
-    return pw.Expanded(
-      child: pw.Container(
-        padding: const pw.EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-        decoration: pw.BoxDecoration(
-          border: pw.Border(
-            right: drawRightBorder
-                ? pw.BorderSide(color: borderColor, width: 0.8)
-                : pw.BorderSide.none,
-            bottom: drawBottomBorder
-                ? pw.BorderSide(color: borderColor, width: 0.8)
-                : pw.BorderSide.none,
-          ),
-        ),
-        child: _pdfInfoContent(label, value, labelStyle, valueStyle),
-      ),
-    );
-  }
-
-  pw.Widget _pdfInfoContent(
-    String label,
-    String value,
-    pw.TextStyle labelStyle,
-    pw.TextStyle valueStyle,
-  ) {
-    final String safeValue = value.isEmpty ? '—' : value;
-    return pw.Column(
-      crossAxisAlignment: pw.CrossAxisAlignment.start,
-      children: <pw.Widget>[
-        pw.Text(label, style: labelStyle),
-        pw.SizedBox(height: 2),
-        pw.Text(safeValue, style: valueStyle),
-      ],
-    );
-  }
-
-  String _printSymbolForPdf(AttendanceMark mark) {
-    switch (mark) {
-      case AttendanceMark.present:
-        return 'P';
-      case AttendanceMark.absent:
-        return 'A';
-      case AttendanceMark.late:
-        return 'L';
-      case AttendanceMark.excused:
-        return 'E';
-    }
-  }
-
-  List<DateTime> _expandMeetingDays(
-    DateTimeRange range,
-    _ClassOption? classOption,
-  ) {
-    final Set<int> allowedWeekdays = _meetingWeekdaysFor(classOption);
-    final List<DateTime> days = <DateTime>[];
-    DateTime cursor = _dayKey(range.start);
-    final DateTime rangeEnd = _dayKey(range.end);
-    while (!cursor.isAfter(rangeEnd)) {
-      if (allowedWeekdays.contains(cursor.weekday)) {
-        days.add(cursor);
-      }
-      cursor = cursor.add(const Duration(days: 1));
-    }
-    return days;
-  }
-
-  Set<int> _meetingWeekdaysFor(_ClassOption? classOption) {
-    final Set<int>? custom = classOption?.meetingWeekdays;
-    if (custom == null || custom.isEmpty) {
-      return _defaultMeetingWeekdays;
-    }
-    return custom;
-  }
-
-  String _formatClassScheduleSummary(_ClassOption? classOption) {
-    if (classOption == null || classOption.schedules.isEmpty) {
-      return '—';
-    }
-    return classOption.schedules
-        .map((_ClassScheduleEntry entry) {
-          final String timePart = entry.timeLabel.isEmpty
-              ? ''
-              : ' ${entry.timeLabel}';
-          return '${entry.dayLabel}$timePart';
-        })
-        .where((String value) => value.trim().isNotEmpty)
-        .join('; ');
-  }
-
-  String _resolvePrimaryRoom(_ClassOption? classOption) {
-    if (classOption == null) {
-      return '—';
-    }
-    for (final _ClassScheduleEntry entry in classOption.schedules) {
-      if (entry.roomLabel.isNotEmpty) {
-        return entry.roomLabel;
-      }
-    }
-    return '—';
-  }
-
-  String _resolveOfficeUnit(_ClassOption? classOption) {
-    if (classOption == null) {
-      return '—';
-    }
-    return classOption.departmentName.isEmpty
-        ? '—'
-        : classOption.departmentName;
-  }
-
   DateTimeRange _clampRangeToBounds(
     DateTimeRange range,
     DateTime min,
@@ -1494,9 +743,6 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
     }
     return null;
   }
-
-  bool get _hasPrintableData =>
-      _previewRows.isNotEmpty && _workingDays.isNotEmpty;
 
   Future<List<_StudentRosterEntry>> _fetchRoster(
     _ClassOption selectedClass,
@@ -1690,7 +936,7 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
                     Text(
-                      'Configure the report range, select a section and subject, then review the roster before exporting.',
+                      'Select Instructor, Subject, Class/Section, and Date Range to generate the attendance report. You can print or export the generated report(only in .docx format)',
                       style: theme.textTheme.bodyLarge,
                     ),
                     const SizedBox(height: 24),
@@ -1734,7 +980,6 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
     final String rangeLabel = _selectedRange == null
         ? 'Select date range'
         : '${_formatDate(_selectedRange!.start)} → ${_formatDate(_selectedRange!.end)}';
-    final bool canPrint = _hasPrintableData && !_isPrintingReport;
     final bool canExportDocx =
         _selectedClassId != null && _selectedRange != null && !_isExportingDocx;
     return Card(
@@ -1962,19 +1207,6 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
                   ),
                 ),
                 OutlinedButton.icon(
-                  onPressed: canPrint ? _printReport : null,
-                  icon: _isPrintingReport
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.print_outlined),
-                  label: Text(
-                    _isPrintingReport ? 'Preparing PDF...' : 'Print report',
-                  ),
-                ),
-                OutlinedButton.icon(
                   onPressed: canExportDocx ? _exportDocxReport : null,
                   icon: _isExportingDocx
                       ? const SizedBox(
@@ -2153,6 +1385,31 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
           )
           .toList(),
     );
+  }
+
+  List<DateTime> _expandMeetingDays(
+    DateTimeRange range,
+    _ClassOption? classOption,
+  ) {
+    final Set<int> allowedWeekdays = _meetingWeekdaysFor(classOption);
+    final List<DateTime> days = <DateTime>[];
+    DateTime cursor = _dayKey(range.start);
+    final DateTime rangeEnd = _dayKey(range.end);
+    while (!cursor.isAfter(rangeEnd)) {
+      if (allowedWeekdays.contains(cursor.weekday)) {
+        days.add(cursor);
+      }
+      cursor = cursor.add(const Duration(days: 1));
+    }
+    return days;
+  }
+
+  Set<int> _meetingWeekdaysFor(_ClassOption? classOption) {
+    final Set<int>? custom = classOption?.meetingWeekdays;
+    if (custom == null || custom.isEmpty) {
+      return _defaultMeetingWeekdays;
+    }
+    return custom;
   }
 
   String _formatDate(DateTime date) {

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:printing/printing.dart';
 
@@ -9,9 +10,17 @@ import 'attendance_session_page.dart';
 import 'offline_mode_checklist_page.dart';
 import 'reports/generate_report_page.dart';
 import 'services/excuse_request_service.dart';
+import 'services/open_external_url.dart';
 import 'services/offline_mode_service.dart';
 import 'services/offline_mode_service_types.dart';
 import 'widgets/confirm_sign_out_dialog.dart';
+
+enum _InstructorSection {
+  dashboard,
+  attendanceSession,
+  attendanceReports,
+  weeklySchedule,
+}
 
 class InstructorPage extends StatefulWidget {
   const InstructorPage({super.key});
@@ -25,6 +34,7 @@ class InstructorPage extends StatefulWidget {
 class _InstructorPageState extends State<InstructorPage> {
   bool _simulationEnabled = true;
   late DateTime _simulatedTime;
+  _InstructorSection _section = _InstructorSection.dashboard;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>?
   _profileSubscription;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>?
@@ -47,6 +57,117 @@ class _InstructorPageState extends State<InstructorPage> {
 
   DateTime get _activeTime =>
       _simulationEnabled ? _simulatedTime : DateTime.now();
+
+  String _sectionTitle() {
+    return switch (_section) {
+      _InstructorSection.dashboard => 'Dashboard',
+      _InstructorSection.attendanceSession => 'Attendance session',
+      _InstructorSection.attendanceReports => 'Attendance reports',
+      _InstructorSection.weeklySchedule => 'Weekly schedule',
+    };
+  }
+
+  IconData _sectionIcon() {
+    return switch (_section) {
+      _InstructorSection.dashboard => Icons.dashboard_outlined,
+      _InstructorSection.attendanceSession => Icons.play_circle_outline,
+      _InstructorSection.attendanceReports => Icons.insights_outlined,
+      _InstructorSection.weeklySchedule => Icons.calendar_month_outlined,
+    };
+  }
+
+  void _selectSection(_InstructorSection section) {
+    if (!mounted) return;
+    setState(() => _section = section);
+    Navigator.of(context).maybePop();
+  }
+
+  Widget _buildDashboardTab(
+    ThemeData theme,
+    List<_InstructorStat> stats,
+    bool showLoadingState,
+  ) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[_buildStatsSection(theme, stats, showLoadingState)],
+      ),
+    );
+  }
+
+  Widget _buildAttendanceSessionTab(
+    DateTime activeTime,
+    _InstructorSchedule? nextSchedule,
+    _InstructorSchedule? activeSchedule,
+    bool showLoadingState,
+    bool hasAssignments,
+  ) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          _buildSimulationPanel(context, activeTime),
+          const SizedBox(height: 24),
+          _buildNextUpCard(
+            context,
+            nextSchedule,
+            activeTime,
+            showLoadingState,
+            _assignmentError,
+            hasAssignments,
+          ),
+          const SizedBox(height: 24),
+          _buildSessionControlCard(
+            context,
+            activeSchedule,
+            showLoadingState,
+            _assignmentError,
+            hasAssignments,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAttendanceReportsTab(bool hasAssignments) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          _buildReportShortcutCard(context, hasAssignments),
+          const SizedBox(height: 32),
+          _buildExcuseRequestsCard(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWeeklyScheduleTab(
+    DateTime liveTime,
+    _InstructorSchedule? nextSchedule,
+    bool showLoadingState,
+    bool hasAssignments,
+  ) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          _buildScheduleSection(
+            context,
+            liveTime,
+            nextSchedule,
+            showLoadingState,
+            _assignmentError,
+            hasAssignments,
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -89,14 +210,14 @@ class _InstructorPageState extends State<InstructorPage> {
     try {
       await _excuseService.approve(requestId: requestId);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Excuse request approved.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Excuse request approved.')));
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Approval failed: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Approval failed: $error')));
     } finally {
       if (mounted) setState(() => _isApprovingExcuse = false);
     }
@@ -129,14 +250,14 @@ class _InstructorPageState extends State<InstructorPage> {
     try {
       await _excuseService.disapprove(requestId: requestId);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Excuse request rejected.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Excuse request rejected.')));
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Disapprove failed: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Disapprove failed: $error')));
     } finally {
       if (mounted) setState(() => _isApprovingExcuse = false);
     }
@@ -147,13 +268,25 @@ class _InstructorPageState extends State<InstructorPage> {
     final String path = (attachment['path'] as String?) ?? '';
     if (path.isEmpty) return;
     try {
+      if (kIsWeb) {
+        final String? existingUrl = attachment['url'] as String?;
+        final String url = (existingUrl != null && existingUrl.isNotEmpty)
+            ? existingUrl
+            : await _excuseService.getPdfDownloadUrl(path: path);
+        final bool launched = await openExternalUrl(url);
+        if (!launched) {
+          throw StateError('Unable to launch PDF');
+        }
+        return;
+      }
+
       final bytes = await _excuseService.downloadPdfBytes(path: path);
       await Printing.layoutPdf(onLayout: (_) async => bytes);
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Unable to open PDF: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Unable to open PDF: $error')));
     }
   }
 
@@ -167,7 +300,8 @@ class _InstructorPageState extends State<InstructorPage> {
 
     bool isIndexError(Object error) {
       final String message = error.toString().toLowerCase();
-      return message.contains('failed-precondition') && message.contains('index');
+      return message.contains('failed-precondition') &&
+          message.contains('index');
     }
 
     List<QueryDocumentSnapshot<Map<String, dynamic>>> sortAndFilter(
@@ -216,234 +350,289 @@ class _InstructorPageState extends State<InstructorPage> {
                   .orderBy('createdAt', descending: true)
                   .limit(20)
                   .snapshots(),
-              builder: (
-                BuildContext context,
-                AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot,
-              ) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 12),
-                    child: LinearProgressIndicator(),
-                  );
-                }
-                if (snapshot.hasError) {
-                  final Object error = snapshot.error!;
-                  if (isIndexError(error)) {
-                    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                      stream: FirebaseFirestore.instance
-                          .collection('excuseRequests')
-                          .where('instructorIds', arrayContains: uid)
-                          .limit(50)
-                          .snapshots(),
-                      builder: (
-                        BuildContext context,
-                        AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>>
-                            fallbackSnapshot,
-                      ) {
-                        if (fallbackSnapshot.connectionState ==
-                            ConnectionState.waiting) {
-                          return const Padding(
-                            padding: EdgeInsets.symmetric(vertical: 12),
-                            child: LinearProgressIndicator(),
-                          );
-                        }
-                        if (fallbackSnapshot.hasError) {
-                          return Text(
-                            'Failed to load requests: ${fallbackSnapshot.error}',
-                          );
-                        }
-                        final List<
-                                QueryDocumentSnapshot<Map<String, dynamic>>>
-                            rawDocs = fallbackSnapshot.data?.docs ??
-                                <QueryDocumentSnapshot<Map<String, dynamic>>>[];
-                        final List<QueryDocumentSnapshot<Map<String, dynamic>>>
-                            docs = sortAndFilter(rawDocs);
-                        if (docs.isEmpty) {
-                          return const Text('No pending requests.');
-                        }
-                        return Column(
-                          children: docs
-                              .map((QueryDocumentSnapshot<Map<String, dynamic>>
-                                  doc) {
-                            final Map<String, dynamic> data = doc.data();
-                            final String studentName =
-                                (data['studentName'] as String?) ?? 'Student';
-                            final String section =
-                                (data['studentSection'] as String?) ?? '';
-                            final List<dynamic> dateKeys =
-                                (data['dateKeys'] as List<dynamic>?) ??
-                                    <dynamic>[];
-                            final String dateLabel = dateKeys.isEmpty
-                                ? 'No dates'
-                                : dateKeys.join(', ');
-                            final String reason =
-                                (data['reason'] as String?) ?? '';
-                            final Map<String, dynamic>? attachment =
-                                (data['attachment'] as Map?)
-                                    ?.cast<String, dynamic>();
+              builder:
+                  (
+                    BuildContext context,
+                    AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot,
+                  ) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 12),
+                        child: LinearProgressIndicator(),
+                      );
+                    }
+                    if (snapshot.hasError) {
+                      final Object error = snapshot.error!;
+                      if (isIndexError(error)) {
+                        return StreamBuilder<
+                          QuerySnapshot<Map<String, dynamic>>
+                        >(
+                          stream: FirebaseFirestore.instance
+                              .collection('excuseRequests')
+                              .where('instructorIds', arrayContains: uid)
+                              .limit(50)
+                              .snapshots(),
+                          builder:
+                              (
+                                BuildContext context,
+                                AsyncSnapshot<
+                                  QuerySnapshot<Map<String, dynamic>>
+                                >
+                                fallbackSnapshot,
+                              ) {
+                                if (fallbackSnapshot.connectionState ==
+                                    ConnectionState.waiting) {
+                                  return const Padding(
+                                    padding: EdgeInsets.symmetric(vertical: 12),
+                                    child: LinearProgressIndicator(),
+                                  );
+                                }
+                                if (fallbackSnapshot.hasError) {
+                                  return Text(
+                                    'Failed to load requests: ${fallbackSnapshot.error}',
+                                  );
+                                }
+                                final List<
+                                  QueryDocumentSnapshot<Map<String, dynamic>>
+                                >
+                                rawDocs =
+                                    fallbackSnapshot.data?.docs ??
+                                    <
+                                      QueryDocumentSnapshot<
+                                        Map<String, dynamic>
+                                      >
+                                    >[];
+                                final List<
+                                  QueryDocumentSnapshot<Map<String, dynamic>>
+                                >
+                                docs = sortAndFilter(rawDocs);
+                                if (docs.isEmpty) {
+                                  return const Text('No pending requests.');
+                                }
+                                return Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
+                                  children: docs.map((
+                                    QueryDocumentSnapshot<Map<String, dynamic>>
+                                    doc,
+                                  ) {
+                                    final Map<String, dynamic> data = doc
+                                        .data();
+                                    final String studentName =
+                                        (data['studentName'] as String?) ??
+                                        'Student';
+                                    final String section =
+                                        (data['studentSection'] as String?) ??
+                                        '';
+                                    final List<dynamic> dateKeys =
+                                        (data['dateKeys'] as List<dynamic>?) ??
+                                        <dynamic>[];
+                                    final String dateLabel = dateKeys.isEmpty
+                                        ? 'No dates'
+                                        : dateKeys.join(', ');
+                                    final String reason =
+                                        (data['reason'] as String?) ?? '';
+                                    final Map<String, dynamic>? attachment =
+                                        (data['attachment'] as Map?)
+                                            ?.cast<String, dynamic>();
 
-                            return Card(
-                              margin: const EdgeInsets.symmetric(vertical: 6),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(16),
-                              ),
-                              child: Padding(
-                                padding: const EdgeInsets.all(12),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: <Widget>[
-                                    Text(
-                                      '$studentName${section.isEmpty ? '' : ' • $section'}',
-                                      style: theme.textTheme.titleMedium
-                                          ?.copyWith(
-                                        fontWeight: FontWeight.w600,
+                                    return Card(
+                                      margin: const EdgeInsets.symmetric(
+                                        vertical: 6,
                                       ),
-                                    ),
-                                    const SizedBox(height: 6),
-                                    Text(dateLabel),
-                                    if (reason.isNotEmpty) ...<Widget>[
-                                      const SizedBox(height: 6),
-                                      Text(
-                                        reason,
-                                        maxLines: 3,
-                                        overflow: TextOverflow.ellipsis,
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(16),
                                       ),
-                                    ],
-                                    const SizedBox(height: 10),
-                                    Wrap(
-                                      spacing: 10,
-                                      runSpacing: 10,
-                                      children: <Widget>[
-                                        OutlinedButton.icon(
-                                          onPressed: attachment == null
-                                              ? null
-                                              : () =>
-                                                  _openPdfFromAttachment(
-                                                    attachment,
+                                      child: Padding(
+                                        padding: const EdgeInsets.all(12),
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: <Widget>[
+                                            Text(
+                                              '$studentName${section.isEmpty ? '' : ' • $section'}',
+                                              style: theme.textTheme.titleMedium
+                                                  ?.copyWith(
+                                                    fontWeight: FontWeight.w600,
                                                   ),
-                                          icon: const Icon(
-                                            Icons.picture_as_pdf_outlined,
-                                          ),
-                                          label: const Text('Open PDF'),
+                                            ),
+                                            const SizedBox(height: 6),
+                                            Text(
+                                              dateLabel,
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                            if (reason.isNotEmpty) ...<Widget>[
+                                              const SizedBox(height: 6),
+                                              Text(
+                                                reason,
+                                                maxLines: 3,
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ],
+                                            const SizedBox(height: 10),
+                                            Wrap(
+                                              spacing: 12,
+                                              runSpacing: 12,
+                                              children: <Widget>[
+                                                OutlinedButton.icon(
+                                                  onPressed: attachment == null
+                                                      ? null
+                                                      : () =>
+                                                            _openPdfFromAttachment(
+                                                              attachment,
+                                                            ),
+                                                  icon: const Icon(
+                                                    Icons
+                                                        .picture_as_pdf_outlined,
+                                                  ),
+                                                  label: const Text('View PDF'),
+                                                ),
+                                                OutlinedButton.icon(
+                                                  onPressed: _isApprovingExcuse
+                                                      ? null
+                                                      : () =>
+                                                            _disapproveExcuseRequest(
+                                                              doc.id,
+                                                            ),
+                                                  icon: const Icon(
+                                                    Icons.cancel_outlined,
+                                                  ),
+                                                  label: const Text(
+                                                    'Disapprove',
+                                                  ),
+                                                ),
+                                                FilledButton.icon(
+                                                  onPressed: _isApprovingExcuse
+                                                      ? null
+                                                      : () =>
+                                                            _approveExcuseRequest(
+                                                              doc.id,
+                                                            ),
+                                                  icon: const Icon(Icons.check),
+                                                  label: const Text('Approve'),
+                                                ),
+                                              ],
+                                            ),
+                                          ],
                                         ),
-                                        OutlinedButton.icon(
-                                          onPressed: _isApprovingExcuse
-                                              ? null
-                                              : () => _disapproveExcuseRequest(doc.id),
-                                          icon: const Icon(Icons.cancel_outlined),
-                                          label: const Text('Disapprove'),
-                                        ),
-                                        FilledButton.icon(
-                                          onPressed: _isApprovingExcuse
-                                              ? null
-                                              : () => _approveExcuseRequest(doc.id),
-                                          icon: const Icon(Icons.check),
-                                          label: const Text('Approve'),
-                                        ),
-                                      ],
+                                      ),
+                                    );
+                                  }).toList(),
+                                );
+                              },
+                        );
+                      }
+                      return Text('Failed to load requests: ${snapshot.error}');
+                    }
+                    final List<QueryDocumentSnapshot<Map<String, dynamic>>>
+                    docs =
+                        snapshot.data?.docs ??
+                        <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+                    if (docs.isEmpty) {
+                      return const Text('No pending requests.');
+                    }
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: docs.map((
+                        QueryDocumentSnapshot<Map<String, dynamic>> doc,
+                      ) {
+                        final Map<String, dynamic> data = doc.data();
+                        final String studentName =
+                            (data['studentName'] as String?) ?? 'Student';
+                        final String section =
+                            (data['studentSection'] as String?) ?? '';
+                        final List<dynamic> dateKeys =
+                            (data['dateKeys'] as List<dynamic>?) ?? <dynamic>[];
+                        final String dateLabel = dateKeys.isEmpty
+                            ? 'No dates'
+                            : dateKeys.join(', ');
+                        final String reason = (data['reason'] as String?) ?? '';
+                        final Map<String, dynamic>? attachment =
+                            (data['attachment'] as Map?)
+                                ?.cast<String, dynamic>();
+
+                        return Card(
+                          margin: const EdgeInsets.symmetric(vertical: 6),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: <Widget>[
+                                Text(
+                                  '$studentName${section.isEmpty ? '' : ' • $section'}',
+                                  style: theme.textTheme.titleMedium?.copyWith(
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  dateLabel,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                if (reason.isNotEmpty) ...<Widget>[
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    reason,
+                                    maxLines: 3,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ],
+                                const SizedBox(height: 8),
+                                Wrap(
+                                  spacing: 12,
+                                  runSpacing: 12,
+                                  children: <Widget>[
+                                    OutlinedButton.icon(
+                                      onPressed: _isApprovingExcuse
+                                          ? null
+                                          : () => _disapproveExcuseRequest(
+                                              doc.id,
+                                            ),
+                                      icon: const Icon(Icons.cancel_outlined),
+                                      label: const Text('Disapprove'),
+                                    ),
+                                    FilledButton.icon(
+                                      onPressed: _isApprovingExcuse
+                                          ? null
+                                          : () => _approveExcuseRequest(doc.id),
+                                      icon: _isApprovingExcuse
+                                          ? const SizedBox(
+                                              width: 18,
+                                              height: 18,
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                              ),
+                                            )
+                                          : const Icon(
+                                              Icons.check_circle_outline,
+                                            ),
+                                      label: const Text('Approve'),
+                                    ),
+                                    OutlinedButton.icon(
+                                      onPressed: attachment == null
+                                          ? null
+                                          : () => _openPdfFromAttachment(
+                                              attachment,
+                                            ),
+                                      icon: const Icon(
+                                        Icons.picture_as_pdf_outlined,
+                                      ),
+                                      label: const Text('View PDF'),
                                     ),
                                   ],
                                 ),
-                              ),
-                            );
-                          }).toList(),
-                        );
-                      },
-                    );
-                  }
-                  return Text('Failed to load requests: ${snapshot.error}');
-                }
-                final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
-                    snapshot.data?.docs ??
-                        <QueryDocumentSnapshot<Map<String, dynamic>>>[];
-                if (docs.isEmpty) {
-                  return const Text('No pending requests.');
-                }
-                return Column(
-                  children:
-                      docs.map((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-                    final Map<String, dynamic> data = doc.data();
-                    final String studentName =
-                        (data['studentName'] as String?) ?? 'Student';
-                    final String section =
-                        (data['studentSection'] as String?) ?? '';
-                    final List<dynamic> dateKeys =
-                        (data['dateKeys'] as List<dynamic>?) ?? <dynamic>[];
-                    final String dateLabel =
-                        dateKeys.isEmpty ? 'No dates' : dateKeys.join(', ');
-                    final String reason = (data['reason'] as String?) ?? '';
-                    final Map<String, dynamic>? attachment =
-                        (data['attachment'] as Map?)?.cast<String, dynamic>();
-
-                    return Card(
-                      margin: const EdgeInsets.symmetric(vertical: 6),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: <Widget>[
-                            Text(
-                              '$studentName${section.isEmpty ? '' : ' • $section'}',
-                              style: theme.textTheme.titleMedium?.copyWith(
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(dateLabel),
-                            if (reason.isNotEmpty) ...<Widget>[
-                              const SizedBox(height: 4),
-                              Text(
-                                reason,
-                                maxLines: 3,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ],
-                            const SizedBox(height: 8),
-                            Wrap(
-                              spacing: 12,
-                              runSpacing: 12,
-                              children: <Widget>[
-                                OutlinedButton.icon(
-                                  onPressed: _isApprovingExcuse
-                                      ? null
-                                      : () => _disapproveExcuseRequest(doc.id),
-                                  icon: const Icon(Icons.cancel_outlined),
-                                  label: const Text('Disapprove'),
-                                ),
-                                FilledButton.icon(
-                                  onPressed: _isApprovingExcuse
-                                      ? null
-                                      : () => _approveExcuseRequest(doc.id),
-                                  icon: _isApprovingExcuse
-                                      ? const SizedBox(
-                                          width: 18,
-                                          height: 18,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 2,
-                                          ),
-                                        )
-                                      : const Icon(Icons.check_circle_outline),
-                                  label: const Text('Approve'),
-                                ),
-                                OutlinedButton.icon(
-                                  onPressed: attachment == null
-                                      ? null
-                                      : () => _openPdfFromAttachment(attachment),
-                                  icon: const Icon(Icons.picture_as_pdf_outlined),
-                                  label: const Text('View PDF'),
-                                ),
                               ],
                             ),
-                          ],
-                        ),
-                      ),
+                          ),
+                        );
+                      }).toList(),
                     );
-                  }).toList(),
-                );
-              },
+                  },
             ),
           ],
         ),
@@ -657,8 +846,8 @@ class _InstructorPageState extends State<InstructorPage> {
     setState(() => _offlineModeChecking = true);
 
     try {
-      final OfflineModeStatus status =
-          await _offlineModeService.getStatusForSections(sectionLabels);
+      final OfflineModeStatus status = await _offlineModeService
+          .getStatusForSections(sectionLabels);
       if (!mounted || requestId != _offlineModeRequestId) return;
       setState(() {
         _offlineModeStatus = status;
@@ -684,46 +873,77 @@ class _InstructorPageState extends State<InstructorPage> {
     await _refreshOfflineModeStatus();
   }
 
-  Widget _buildOfflineModeAction() {
+  Color _offlineModeColor(ThemeData theme) {
+    if (_offlineModeChecking) return theme.colorScheme.outline;
     final bool ready = _offlineModeStatus?.isReady == true;
-    final Color fg = ready ? Colors.green : Colors.red;
-    final Color bg = const Color(0xFF3B3B3B);
+    return ready ? const Color(0xFF0B6B2C) : const Color(0xFF7A0C2E);
+  }
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-      child: TextButton(
-        onPressed: _openOfflineModeChecklist,
-        style: TextButton.styleFrom(
-          backgroundColor: bg,
-          foregroundColor: fg,
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+  String _offlineModeLabel() {
+    if (_offlineModeChecking) return 'Checking';
+    if (_offlineModeStatus == null) return 'Unknown';
+    return _offlineModeStatus!.isReady ? 'Ready' : 'Not ready';
+  }
+
+  Widget _buildOfflineBadge(ThemeData theme, {double size = 12}) {
+    final Color color = _offlineModeColor(theme);
+    if (_offlineModeChecking) {
+      return SizedBox(
+        width: size,
+        height: size,
+        child: CircularProgressIndicator(
+          strokeWidth: 2,
+          valueColor: AlwaysStoppedAnimation<Color>(color),
+        ),
+      );
+    }
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: color,
+        shape: BoxShape.circle,
+        border: Border.all(color: theme.colorScheme.surface, width: 2),
+      ),
+    );
+  }
+
+  Widget _buildOfflineModeDrawerTile(ThemeData theme) {
+    final String label = _offlineModeLabel();
+    final Color color = _offlineModeColor(theme);
+
+    return ListTile(
+      leading: const Icon(Icons.cloud_off_outlined),
+      title: const Text('Offline mode'),
+      subtitle: Text(
+        label,
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: theme.colorScheme.outline,
+        ),
+      ),
+      trailing: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: color.withValues(alpha: 0.45)),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            if (_offlineModeChecking)
-              SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  valueColor: AlwaysStoppedAnimation<Color>(fg),
-                ),
-              )
-            else
-              Icon(ready ? Icons.check : Icons.close, size: 18, color: fg),
+            _buildOfflineBadge(theme, size: 10),
             const SizedBox(width: 8),
             Text(
-              'offline mode',
-              style: TextStyle(
-                color: fg,
-                fontWeight: FontWeight.w600,
+              label,
+              style: theme.textTheme.labelMedium?.copyWith(
+                color: color,
+                fontWeight: FontWeight.w700,
               ),
             ),
           ],
         ),
       ),
+      onTap: _openOfflineModeChecklist,
     );
   }
 
@@ -827,9 +1047,7 @@ class _InstructorPageState extends State<InstructorPage> {
   Widget build(BuildContext context) {
     if (!_approvalLoaded) {
       return const Scaffold(
-        body: SafeArea(
-          child: Center(child: CircularProgressIndicator()),
-        ),
+        body: SafeArea(child: Center(child: CircularProgressIndicator())),
       );
     }
 
@@ -859,7 +1077,10 @@ class _InstructorPageState extends State<InstructorPage> {
                     Text(
                       'Your instructor account is pending approval.',
                       textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                     SizedBox(height: 8),
                     Text(
@@ -876,68 +1097,168 @@ class _InstructorPageState extends State<InstructorPage> {
     }
 
     final ThemeData theme = Theme.of(context);
-    final DateTime activeTime = _activeTime;
+    final DateTime liveTime = DateTime.now();
+    final DateTime sessionTime = _activeTime;
     final _InstructorSchedule? activeSchedule = _resolveActiveSchedule(
-      activeTime,
+      sessionTime,
     );
-    final _InstructorSchedule? nextSchedule = _resolveNextSchedule(activeTime);
-    final List<_InstructorStat> stats = _buildInstructorStats(activeTime);
+    final _InstructorSchedule? nextSchedule = _resolveNextSchedule(sessionTime);
+    final _InstructorSchedule? nextScheduleLive = _resolveNextSchedule(
+      liveTime,
+    );
+    final List<_InstructorStat> stats = _buildInstructorStats(liveTime);
     final bool showLoadingState = _isLoadingAssignments && _assignments.isEmpty;
     final bool hasAssignments = _assignments.isNotEmpty;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Instructor Workspace'),
-        actions: <Widget>[
-          _buildOfflineModeAction(),
-          TextButton.icon(
-            onPressed: _handleSignOut,
-            icon: const Icon(Icons.logout, size: 18),
-            label: const Text('Sign out'),
-          ),
-        ],
+        leading: Builder(
+          builder: (BuildContext context) {
+            return IconButton(
+              tooltip: 'Menu',
+              onPressed: () => Scaffold.of(context).openDrawer(),
+              icon: Stack(
+                clipBehavior: Clip.none,
+                children: <Widget>[
+                  const Icon(Icons.menu),
+                  Positioned(
+                    top: -2,
+                    right: -2,
+                    child: _buildOfflineBadge(theme, size: 12),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+        title: Row(
+          children: <Widget>[
+            Icon(_sectionIcon(), size: 20),
+            const SizedBox(width: 10),
+            Text(_sectionTitle()),
+          ],
+        ),
       ),
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
+      drawer: Drawer(
+        child: SafeArea(
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
-              _buildSimulationPanel(context, activeTime),
-              const SizedBox(height: 24),
-              _buildStatsSection(theme, stats, showLoadingState),
-              const SizedBox(height: 32),
-              _buildNextUpCard(
-                context,
-                nextSchedule,
-                activeTime,
-                showLoadingState,
-                _assignmentError,
-                hasAssignments,
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 18, 16, 12),
+                child: Row(
+                  children: <Widget>[
+                    CircleAvatar(
+                      backgroundColor: theme.colorScheme.primaryContainer,
+                      child: Icon(
+                        Icons.school_outlined,
+                        color: theme.colorScheme.primary,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Text(
+                            FirebaseAuth.instance.currentUser?.displayName
+                                        ?.trim()
+                                        .isNotEmpty ==
+                                    true
+                                ? FirebaseAuth
+                                      .instance
+                                      .currentUser!
+                                      .displayName!
+                                : 'Instructor',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            FirebaseAuth.instance.currentUser?.email ?? '',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.outline,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              const SizedBox(height: 24),
-              _buildSessionControlCard(
-                context,
-                activeSchedule,
-                showLoadingState,
-                _assignmentError,
-                hasAssignments,
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.dashboard_outlined),
+                title: const Text('Dashboard'),
+                selected: _section == _InstructorSection.dashboard,
+                onTap: () => _selectSection(_InstructorSection.dashboard),
               ),
-              const SizedBox(height: 24),
-              _buildReportShortcutCard(context, hasAssignments),
-              const SizedBox(height: 32),
-              _buildExcuseRequestsCard(),
-              const SizedBox(height: 32),
-              _buildScheduleSection(
-                context,
-                activeTime,
-                nextSchedule,
-                showLoadingState,
-                _assignmentError,
-                hasAssignments,
+              ListTile(
+                leading: const Icon(Icons.play_circle_outline),
+                title: const Text('Attendance session'),
+                selected: _section == _InstructorSection.attendanceSession,
+                onTap: () =>
+                    _selectSection(_InstructorSection.attendanceSession),
+              ),
+              ListTile(
+                leading: const Icon(Icons.insights_outlined),
+                title: const Text('Attendance reports'),
+                selected: _section == _InstructorSection.attendanceReports,
+                onTap: () =>
+                    _selectSection(_InstructorSection.attendanceReports),
+              ),
+              ListTile(
+                leading: const Icon(Icons.calendar_month_outlined),
+                title: const Text('Weekly schedule'),
+                selected: _section == _InstructorSection.weeklySchedule,
+                onTap: () => _selectSection(_InstructorSection.weeklySchedule),
+              ),
+              const Divider(height: 1),
+              _buildOfflineModeDrawerTile(theme),
+              const Spacer(),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.logout),
+                title: const Text('Sign out'),
+                onTap: () {
+                  Navigator.of(context).maybePop();
+                  Future<void>.microtask(_handleSignOut);
+                },
               ),
             ],
           ),
+        ),
+      ),
+      body: SafeArea(
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 220),
+          child: switch (_section) {
+            _InstructorSection.dashboard => _buildDashboardTab(
+              theme,
+              stats,
+              showLoadingState,
+            ),
+            _InstructorSection.attendanceSession => _buildAttendanceSessionTab(
+              sessionTime,
+              nextSchedule,
+              activeSchedule,
+              showLoadingState,
+              hasAssignments,
+            ),
+            _InstructorSection.attendanceReports => _buildAttendanceReportsTab(
+              hasAssignments,
+            ),
+            _InstructorSection.weeklySchedule => _buildWeeklyScheduleTab(
+              liveTime,
+              nextScheduleLive,
+              showLoadingState,
+              hasAssignments,
+            ),
+          },
         ),
       ),
     );
@@ -1255,10 +1576,7 @@ class _InstructorPageState extends State<InstructorPage> {
     );
   }
 
-  Widget _buildReportShortcutCard(
-    BuildContext context,
-    bool hasAssignments,
-  ) {
+  Widget _buildReportShortcutCard(BuildContext context, bool hasAssignments) {
     final ThemeData theme = Theme.of(context);
     final String helperText = hasAssignments
         ? 'Generate printable attendance logs for your assigned sections.'
@@ -1281,8 +1599,9 @@ class _InstructorPageState extends State<InstructorPage> {
             const SizedBox(height: 16),
             FilledButton.icon(
               onPressed: hasAssignments
-                  ? () => Navigator.of(context)
-                      .pushNamed(GenerateReportPage.routeName)
+                  ? () => Navigator.of(
+                      context,
+                    ).pushNamed(GenerateReportPage.routeName)
                   : null,
               icon: const Icon(Icons.insights_outlined),
               label: const Text('Generate report'),

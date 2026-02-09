@@ -68,6 +68,26 @@ service cloud.firestore {
       return roleMatches(currentRole(), studentRoleValues());
     }
 
+    function currentUserSection() {
+      let snapshot = userDoc(request.auth.uid);
+      return snapshot != null && snapshot.data.section is string
+        ? snapshot.data.section
+        : '';
+    }
+
+    function attendanceSessionDoc(sessionId) {
+      return sessionId is string && exists(/databases/$(database)/documents/attendanceSessions/$(sessionId))
+        ? get(/databases/$(database)/documents/attendanceSessions/$(sessionId))
+        : null;
+    }
+
+    function attendanceSessionSection(sessionId) {
+      let snapshot = attendanceSessionDoc(sessionId);
+      return snapshot != null && snapshot.data.section is string
+        ? snapshot.data.section
+        : '';
+    }
+
     function isRoleAdmin() {
       return roleMatches(currentRole(), adminRoleValues());
     }
@@ -288,8 +308,34 @@ service cloud.firestore {
     }
 
     match /attendanceSessions/{sessionId} {
-      allow create, read, update: if isSignedIn() && (isApprovedInstructor() || isAdmin());
+      // Instructors/admin create + update sessions.
+      allow create, update: if isSignedIn() && (isApprovedInstructor() || isAdmin());
+
+      // Students can read session docs for their own section.
+      allow read: if isSignedIn() && (
+        isApprovedInstructor() ||
+        isAdmin() ||
+        isRoleAdmin() ||
+        (isStudent() && currentUserSection() != '' && resource.data.section == currentUserSection())
+      );
       allow delete: if isAdmin();
+
+      // Students may only read their own attendee record, and only when the
+      // session is in their section.
+      match /attendees/{studentId} {
+        allow read: if isSignedIn() && (
+          isApprovedInstructor() ||
+          isAdmin() ||
+          isRoleAdmin() ||
+          (isStudent() && request.auth.uid == studentId && currentUserSection() != '' && attendanceSessionSection(sessionId) == currentUserSection())
+        );
+        allow write: if isSignedIn() && (isApprovedInstructor() || isAdmin());
+      }
+
+      // Keep raw captures private to instructors/admin.
+      match /captures/{captureId} {
+        allow read, write: if isSignedIn() && (isApprovedInstructor() || isAdmin());
+      }
 
       match /{subcollection=**}/{docId} {
         allow read, write: if isSignedIn() && (isApprovedInstructor() || isAdmin());
