@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:printing/printing.dart';
 
 import 'face_enrollment_page.dart';
+import 'widgets/android_only_feature_page.dart';
 import 'services/excuse_request_service.dart';
 import 'services/open_external_url.dart';
 import 'widgets/confirm_sign_out_dialog.dart';
@@ -103,6 +104,17 @@ class _StudentPageState extends State<StudentPage> {
   }
 
   Future<void> _launchEnrollment() async {
+    if (!isAndroidFaceScanningSupported()) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Face enrollment is available only in the Android app.',
+          ),
+        ),
+      );
+      return;
+    }
     await Navigator.of(context).pushNamed(FaceEnrollmentPage.routeName);
   }
 

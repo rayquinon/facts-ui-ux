@@ -10,6 +10,7 @@ import 'package:flutter/services.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 
 import 'services/face_embedding_service.dart';
+import 'services/face_quality_exception.dart';
 
 List<double> _l2NormalizeVector(List<double> v) {
   if (v.isEmpty) return <double>[];
@@ -68,11 +69,15 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   static const int _minTemplateHits = 2;
   static const double _similarityMargin = 0.08;
   static const double _confidenceSpan = 0.20;
-  static const Duration _captureCooldown = Duration(seconds: 2);
+  static const Duration _captureCooldown = Duration(seconds: 1);
+  static const Duration _confirmingCaptureCooldown = Duration(milliseconds: 300);
   static const Duration _duplicateCaptureCooldown = Duration(seconds: 10);
   static const Duration _unrecognizedCooldown = Duration(seconds: 4);
-  static const Duration _ambiguousConfirmationWindow = Duration(seconds: 4);
+  static const Duration _ambiguousConfirmationWindow = Duration(seconds: 7);
   static const int _ambiguousConfirmationsRequired = 2;
+  static const Duration _confirmationWindow = Duration(seconds: 6);
+  static const int _confirmationsRequired = 2;
+  static const Duration _maxConfirmationDuration = Duration(seconds: 12);
   static const Duration _autoEndAfterClassStart = Duration(minutes: 30);
 
   final FaceEmbeddingService _embeddingService = FaceEmbeddingService.instance;
@@ -94,7 +99,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   DateTime? _lastUnrecognizedTime;
   int _lastRotationCompensation = 0;
 
-  bool get _recognitionSupported => !kIsWeb;
+  bool get _recognitionSupported =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
   List<_RecognizedStudent> _roster = <_RecognizedStudent>[];
   final List<_AttendanceCapture> _recentCaptures = <_AttendanceCapture>[];
@@ -106,15 +112,23 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   String? _pendingAmbiguousStudentId;
   int _pendingAmbiguousConfirmations = 0;
   DateTime? _pendingAmbiguousExpiresAt;
+  DateTime? _pendingAmbiguousStartedAt;
+
+  String? _pendingStudentId;
+  String? _pendingStudentName;
+  int _pendingConfirmations = 0;
+  int _pendingMismatchCount = 0;
+  DateTime? _pendingExpiresAt;
+  DateTime? _pendingStartedAt;
 
   @override
   void initState() {
     super.initState();
-    if (!kIsWeb) {
+    if (_recognitionSupported) {
       _faceDetector = FaceDetector(
         options: FaceDetectorOptions(
           performanceMode: FaceDetectorMode.accurate,
-          enableLandmarks: false,
+          enableLandmarks: true,
           enableContours: false,
           enableTracking: false,
         ),
@@ -196,12 +210,16 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           _initializing = false;
           _captureEnabled = false;
           _statusMessage =
-              'Attendance recognition is not supported on web. Use the Android app to scan faces.';
+              'Attendance face scanning is available only in the Android app.';
         });
 
         // Still complete best-effort initialization so the session can be
         // created/ended cleanly and roster count can load.
-        await Future.wait(<Future<void>>[modelInit, rosterInit, sessionDocInit]);
+        await Future.wait(<Future<void>>[
+          modelInit,
+          rosterInit,
+          sessionDocInit,
+        ]);
         return;
       }
 
@@ -263,7 +281,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       final DocumentSnapshot<Map<String, dynamic>> snap = await doc
           .get(const GetOptions(source: Source.server))
           .timeout(const Duration(seconds: 2));
-      final Object? startedAt = snap.data() != null ? snap.data()!['startedAt'] : null;
+      final Object? startedAt = snap.data() != null
+          ? snap.data()!['startedAt']
+          : null;
       if (startedAt is Timestamp) {
         _sessionStartedAt = startedAt.toDate();
       }
@@ -329,7 +349,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
           if (sectionLabel.isEmpty) return true;
           final Object? rawSection = doc.data()['section'];
-          final String normalizedActual = _normalizeLabel(rawSection?.toString() ?? '');
+          final String normalizedActual = _normalizeLabel(
+            rawSection?.toString() ?? '',
+          );
           return normalizedActual == normalizedWanted;
         })
         .map(_RecognizedStudent.fromDocument)
@@ -349,10 +371,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   }
 
   String _normalizeLabel(String input) {
-    return input
-        .trim()
-        .toLowerCase()
-        .replaceAll(RegExp(r'\s+'), ' ');
+    return input.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
   }
 
   Future<void> _initializeDeviceCamera() async {
@@ -402,16 +421,19 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         if (faces.length > 1) {
           final List<Face> sorted = List<Face>.from(faces)
             ..sort((Face a, Face b) {
-              final double areaA = a.boundingBox.width.abs() * a.boundingBox.height.abs();
-              final double areaB = b.boundingBox.width.abs() * b.boundingBox.height.abs();
+              final double areaA =
+                  a.boundingBox.width.abs() * a.boundingBox.height.abs();
+              final double areaB =
+                  b.boundingBox.width.abs() * b.boundingBox.height.abs();
               return areaB.compareTo(areaA);
             });
 
-          final double bestArea = sorted.first.boundingBox.width.abs() *
+          final double bestArea =
+              sorted.first.boundingBox.width.abs() *
               sorted.first.boundingBox.height.abs();
           final double secondArea = sorted.length > 1
               ? (sorted[1].boundingBox.width.abs() *
-                  sorted[1].boundingBox.height.abs())
+                    sorted[1].boundingBox.height.abs())
               : 0.0;
 
           // Only proceed when one face is clearly dominant. This reduces
@@ -435,11 +457,32 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           rawWidth: image.width.toDouble(),
           rawHeight: image.height.toDouble(),
         );
+        final Offset? leftEye = _mapMlKitLandmarkToRaw(
+          primary.landmarks[FaceLandmarkType.leftEye],
+          rotationCompensation: _lastRotationCompensation,
+          rawWidth: image.width.toDouble(),
+          rawHeight: image.height.toDouble(),
+        );
+        final Offset? rightEye = _mapMlKitLandmarkToRaw(
+          primary.landmarks[FaceLandmarkType.rightEye],
+          rotationCompensation: _lastRotationCompensation,
+          rawWidth: image.width.toDouble(),
+          rawHeight: image.height.toDouble(),
+        );
+
         final List<double> embedding = await _embeddingService
-            .generateEmbedding(image, bbox);
+            .generateEmbeddingAligned(
+              image,
+              bbox,
+              leftEye: leftEye,
+              rightEye: rightEye,
+            );
         _lastCaptureTime = _now();
         await _handleEmbeddingCapture(embedding);
       }
+    } on FaceQualityException catch (error) {
+      _lastCaptureTime = _now();
+      _updateStatus(error.message);
     } catch (error) {
       debugPrint('Camera frame processing error: $error');
     } finally {
@@ -452,12 +495,17 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     if (last == null) {
       return false;
     }
-    return _now().difference(last) < _captureCooldown;
+    final bool isConfirming =
+        _pendingStudentId != null || _pendingAmbiguousStudentId != null;
+    final Duration cooldown =
+        isConfirming ? _confirmingCaptureCooldown : _captureCooldown;
+    return _now().difference(last) < cooldown;
   }
 
   Future<void> _handleEmbeddingCapture(List<double> embedding) async {
     _MatchResult result = _matchEmbedding(embedding);
     final DateTime captureTime = _now();
+    bool confirmedViaAmbiguity = false;
 
     // If the match is ambiguous, require the same top candidate to appear
     // multiple times within a short window before accepting.
@@ -467,6 +515,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         _pendingAmbiguousStudentId = null;
         _pendingAmbiguousConfirmations = 0;
         _pendingAmbiguousExpiresAt = null;
+        _pendingAmbiguousStartedAt = null;
       }
 
       final String candidateId = result.student!.userId;
@@ -475,14 +524,31 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       } else {
         _pendingAmbiguousStudentId = candidateId;
         _pendingAmbiguousConfirmations = 1;
+        _pendingAmbiguousStartedAt = captureTime;
       }
-      _pendingAmbiguousExpiresAt =
-          captureTime.add(_ambiguousConfirmationWindow);
+      _pendingAmbiguousExpiresAt = captureTime.add(
+        _ambiguousConfirmationWindow,
+      );
+
+      final DateTime? startedAt = _pendingAmbiguousStartedAt;
+      if (startedAt != null &&
+          captureTime.difference(startedAt) > _maxConfirmationDuration) {
+        _pendingAmbiguousStudentId = null;
+        _pendingAmbiguousConfirmations = 0;
+        _pendingAmbiguousExpiresAt = null;
+        _pendingAmbiguousStartedAt = null;
+        _updateStatus(
+          'Could not confirm an ambiguous match. Try again (hold still, better lighting).',
+        );
+        return;
+      }
 
       if (_pendingAmbiguousConfirmations < _ambiguousConfirmationsRequired) {
         final double best = result.similarity ?? double.nan;
         final double second = result.secondBestSimilarity ?? double.nan;
-        final double margin = (best.isNaN || second.isNaN) ? double.nan : (best - second);
+        final double margin = (best.isNaN || second.isNaN)
+            ? double.nan
+            : (best - second);
         final String name = result.student?.displayName ?? 'this student';
         final int remaining =
             _ambiguousConfirmationsRequired - _pendingAmbiguousConfirmations;
@@ -498,6 +564,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       _pendingAmbiguousStudentId = null;
       _pendingAmbiguousConfirmations = 0;
       _pendingAmbiguousExpiresAt = null;
+      _pendingAmbiguousStartedAt = null;
+      confirmedViaAmbiguity = true;
       result = _MatchResult(
         embedding: result.embedding,
         student: result.student,
@@ -510,6 +578,14 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       _pendingAmbiguousStudentId = null;
       _pendingAmbiguousConfirmations = 0;
       _pendingAmbiguousExpiresAt = null;
+      _pendingAmbiguousStartedAt = null;
+
+      _pendingStudentId = null;
+      _pendingStudentName = null;
+      _pendingConfirmations = 0;
+      _pendingMismatchCount = 0;
+      _pendingExpiresAt = null;
+      _pendingStartedAt = null;
     }
 
     if (result.student == null) {
@@ -529,8 +605,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
             : '';
         if (second != null && !second.isNaN) {
           final double margin = best - second;
-          final String reason =
-              result.rejectionReason == 'ambiguous' ? ' Ambiguous match.' : '';
+          final String reason = result.rejectionReason == 'ambiguous'
+              ? ' Ambiguous match.'
+              : '';
           _updateStatus(
             'Face detected but no match found in roster.$reason '
             '(top1 ${best.toStringAsFixed(2)}, top2 ${second.toStringAsFixed(2)}, '
@@ -549,15 +626,82 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       return;
     }
 
+    // For all accepted matches, require a short confirmation window so we
+    // don't record a student off a single noisy frame.
+    if (!confirmedViaAmbiguity && result.student != null) {
+      final DateTime? expiresAt = _pendingExpiresAt;
+      if (expiresAt != null && captureTime.isAfter(expiresAt)) {
+        _pendingStudentId = null;
+        _pendingStudentName = null;
+        _pendingConfirmations = 0;
+        _pendingMismatchCount = 0;
+        _pendingExpiresAt = null;
+        _pendingStartedAt = null;
+      }
+
+      final String candidateId = result.student!.userId;
+      final String candidateName = result.student?.displayName ?? 'this student';
+      if (_pendingStudentId == candidateId) {
+        _pendingConfirmations++;
+        _pendingMismatchCount = 0;
+      } else {
+        // Allow a little bit of noise: if the top match flips briefly, keep the
+        // original pending candidate so we can still reach 2 confirmations.
+        _pendingMismatchCount++;
+        const int mismatchTolerance = 1;
+        if (_pendingStudentId == null || _pendingMismatchCount > mismatchTolerance) {
+          _pendingStudentId = candidateId;
+          _pendingStudentName = candidateName;
+          _pendingConfirmations = 1;
+          _pendingMismatchCount = 0;
+          _pendingStartedAt = captureTime;
+        }
+      }
+      _pendingExpiresAt = captureTime.add(_confirmationWindow);
+
+      final DateTime? startedAt = _pendingStartedAt;
+      if (startedAt != null &&
+          captureTime.difference(startedAt) > _maxConfirmationDuration) {
+        _pendingStudentId = null;
+        _pendingStudentName = null;
+        _pendingConfirmations = 0;
+        _pendingMismatchCount = 0;
+        _pendingExpiresAt = null;
+        _pendingStartedAt = null;
+        final String name = _pendingStudentName ?? candidateName;
+        _updateStatus(
+          'Could not confirm $name. Try again (hold still, better lighting).',
+        );
+        return;
+      }
+
+      if (_pendingConfirmations < _confirmationsRequired) {
+        final int remaining = _confirmationsRequired - _pendingConfirmations;
+        final String name = _pendingStudentName ?? candidateName;
+        _updateStatus('Hold still. Confirming $name... ($remaining left)');
+        return;
+      }
+
+      _pendingStudentId = null;
+      _pendingStudentName = null;
+      _pendingConfirmations = 0;
+      _pendingMismatchCount = 0;
+      _pendingExpiresAt = null;
+      _pendingStartedAt = null;
+    }
+
     if (result.student != null) {
       final String studentId = result.student!.userId;
+      final String name = result.student?.displayName ?? 'this student';
 
       // Only recognize/persist a student once per session to avoid spam.
       if (_capturedStudentIds.contains(studentId)) {
+        _updateStatus('Already recorded $name for this session.');
         return;
       }
 
       if (_shouldThrottleStudentCapture(studentId, captureTime)) {
+        _updateStatus('Already recorded $name recently.');
         return;
       }
 
@@ -985,6 +1129,42 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     );
   }
 
+  Offset? _mapMlKitLandmarkToRaw(
+    FaceLandmark? landmark, {
+    required int rotationCompensation,
+    required double rawWidth,
+    required double rawHeight,
+  }) {
+    final dynamic pos = landmark?.position;
+    if (pos == null) return null;
+
+    final double x = (pos.x as num).toDouble();
+    final double y = (pos.y as num).toDouble();
+    if (rawWidth <= 0 || rawHeight <= 0) return Offset(x, y);
+
+    Offset mapped;
+    switch (rotationCompensation % 360) {
+      case 90:
+        mapped = Offset(rawWidth - y, x);
+        break;
+      case 180:
+        mapped = Offset(rawWidth - x, rawHeight - y);
+        break;
+      case 270:
+        mapped = Offset(y, rawHeight - x);
+        break;
+      case 0:
+      default:
+        mapped = Offset(x, y);
+        break;
+    }
+
+    return Offset(
+      mapped.dx.clamp(0.0, rawWidth),
+      mapped.dy.clamp(0.0, rawHeight),
+    );
+  }
+
   Uint8List _yuv420ToNv21(CameraImage image) {
     final int width = image.width;
     final int height = image.height;
@@ -1136,17 +1316,17 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     final bool endNow = _shouldEndSessionNow();
     final bool canToggleCapture = _recognitionSupported;
     final bool primaryEnabled =
-      !_initializing && !_isEndingSession && (endNow || canToggleCapture);
+        !_initializing && !_isEndingSession && (endNow || canToggleCapture);
     final IconData primaryIcon = endNow
-      ? Icons.stop_circle_outlined
-      : (canToggleCapture
-        ? (_captureEnabled ? Icons.pause_circle : Icons.play_circle)
-        : Icons.block);
+        ? Icons.stop_circle_outlined
+        : (canToggleCapture
+              ? (_captureEnabled ? Icons.pause_circle : Icons.play_circle)
+              : Icons.block);
     final String primaryLabel = endNow
-      ? 'End session now'
-      : (canToggleCapture
-        ? (_captureEnabled ? 'Pause session' : 'Continue session')
-        : 'Web not supported');
+        ? 'End session now'
+        : (canToggleCapture
+              ? (_captureEnabled ? 'Pause session' : 'Continue session')
+              : 'Web not supported');
 
     return PopScope(
       canPop: false,
@@ -1485,8 +1665,8 @@ class _RecognizedStudent {
       return <List<double>>[];
     }
     final List<double> embedding = rawSingle
-      .map((dynamic value) => (value as num).toDouble())
-      .toList(growable: false);
+        .map((dynamic value) => (value as num).toDouble())
+        .toList(growable: false);
     final List<double> normalized = _l2NormalizeVector(embedding);
     return normalized.isEmpty ? <List<double>>[] : <List<double>>[normalized];
   }

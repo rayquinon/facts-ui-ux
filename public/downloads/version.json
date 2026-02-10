@@ -1,7 +1,8 @@
 ﻿{
     "androidPageUrl":  "https://simple-distributed-database.web.app/android/",
-    "latestBuildNumber":  4019,
+    "latestBuildNumber":  4023,
     "latestVersionName":  "1.0.1",
-    "updatedAtUtc":  "2026-02-06T04:57:01.7977417Z",
-    "apkUrl":  "https://simple-distributed-database.web.app/downloads/app-latest.apk"
+    "updatedAtUtc":  "2026-02-09T09:26:48.8240522Z",
+    "arm64Url":  "https://simple-distributed-database.web.app/downloads/app-latest-arm64-1.0.1-4023.apk",
+    "apkUrl":  "https://simple-distributed-database.web.app/downloads/app-latest-1.0.1-4023.apk"
 }

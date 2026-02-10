@@ -30,7 +30,7 @@ if ($versionRaw -match '^(.+?)\+(\d+)$') {
 }
 
 Write-Host "Building Flutter Android release APKs (split-per-ABI)…"
-flutter build apk --release --split-per-abi
+flutter build apk --release --split-per-abi --build-name $versionName --build-number $buildNumber
 
 $apkDir = Join-Path $PWD "build\app\outputs\flutter-apk"
 $srcArm64 = Join-Path $apkDir "app-arm64-v8a-release.apk"
@@ -42,7 +42,7 @@ if (!(Test-Path $srcArmeabi)) { throw "Build output not found: $srcArmeabi" }
 if (!(Test-Path $srcX64)) { throw "Build output not found: $srcX64" }
 
 Write-Host "Building universal APK (fallback)…"
-flutter build apk --release
+flutter build apk --release --build-name $versionName --build-number $buildNumber
 $srcUniversal = Join-Path $apkDir "app-release.apk"
 if (!(Test-Path $srcUniversal)) {
   throw "Build output not found: $srcUniversal"
@@ -77,8 +77,9 @@ Write-Host "Writing update manifest: $manifestPath"
 $manifest = @{
   latestBuildNumber = $buildNumber
   latestVersionName = $versionName
-  apkUrl = 'https://simple-distributed-database.web.app/downloads/app-latest.apk'
-  arm64Url = 'https://simple-distributed-database.web.app/downloads/app-latest-arm64.apk'
+  # Use version-stamped URLs to avoid client/CDN caching returning an older APK.
+  apkUrl = "https://simple-distributed-database.web.app/downloads/app-latest-$versionSafe.apk"
+  arm64Url = "https://simple-distributed-database.web.app/downloads/app-latest-arm64-$versionSafe.apk"
   androidPageUrl = 'https://simple-distributed-database.web.app/android/'
   updatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
 }

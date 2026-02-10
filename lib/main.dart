@@ -21,6 +21,7 @@ import 'services/app_update_types.dart';
 import 'reports/generate_report_page.dart';
 import 'verify_email_page.dart';
 import 'widgets/confirm_sign_out_dialog.dart';
+import 'widgets/android_only_feature_page.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -30,7 +31,9 @@ Future<void> main() async {
   CrashReporter.installGlobalHandlers();
 
   if (kIsWeb) {
-    await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
   } else {
     switch (defaultTargetPlatform) {
       case TargetPlatform.android:
@@ -42,7 +45,9 @@ Future<void> main() async {
       case TargetPlatform.windows:
       case TargetPlatform.linux:
       case TargetPlatform.fuchsia:
-        await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+        await Firebase.initializeApp(
+          options: DefaultFirebaseOptions.currentPlatform,
+        );
     }
   }
 
@@ -96,8 +101,12 @@ class FactsApp extends StatelessWidget {
         StudentPage.routeName: (BuildContext context) => const StudentPage(),
         InstructorPage.routeName: (BuildContext context) =>
             const InstructorPage(),
-        FaceEnrollmentPage.routeName: (BuildContext context) =>
-            const FaceEnrollmentPage(),
+        FaceEnrollmentPage.routeName: (BuildContext context) {
+          if (!isAndroidFaceScanningSupported()) {
+            return const AndroidOnlyFeaturePage(featureName: 'Face Enrollment');
+          }
+          return const FaceEnrollmentPage();
+        },
         GenerateReportPage.routeName: (BuildContext context) =>
             const GenerateReportPage(),
         AttendanceSessionPage.routeName: (BuildContext context) {
@@ -107,6 +116,12 @@ class FactsApp extends StatelessWidget {
           if (config == null) {
             return const UnknownRouteScreen(
               unknownRouteName: AttendanceSessionPage.routeName,
+            );
+          }
+
+          if (!isAndroidFaceScanningSupported()) {
+            return const AndroidOnlyFeaturePage(
+              featureName: 'Attendance Face Scanning',
             );
           }
           return AttendanceSessionPage(config: config);
@@ -156,7 +171,8 @@ class _AuthGateState extends State<AuthGate> {
       return;
     }
 
-    final AppUpdateInfo? update = await AppUpdateService.instance.checkForUpdate();
+    final AppUpdateInfo? update = await AppUpdateService.instance
+        .checkForUpdate();
     if (!mounted || update == null || !update.updateAvailable) return;
 
     final bool? shouldUpdate = await showDialog<bool>(
@@ -165,7 +181,8 @@ class _AuthGateState extends State<AuthGate> {
         final String latestLabel = update.latestVersion.isEmpty
             ? 'build ${update.latestBuildNumber}'
             : '${update.latestVersion}+${update.latestBuildNumber}';
-        final String currentLabel = '${update.currentVersion}+${update.currentBuildNumber}';
+        final String currentLabel =
+            '${update.currentVersion}+${update.currentBuildNumber}';
         return AlertDialog(
           title: const Text('Update available'),
           content: Text(
@@ -243,7 +260,10 @@ class _AuthGateState extends State<AuthGate> {
                 final bool isAdmin = data?['isAdmin'] == true;
                 final String? role = data?['role'] as String?;
 
-                if (kIsWeb && !isAdmin && role != 'instructor' && role != 'admin') {
+                if (kIsWeb &&
+                    !isAdmin &&
+                    role != 'instructor' &&
+                    role != 'admin') {
                   return const _AuthErrorView(
                     message:
                         'Web access is available only for admin and instructor accounts.\n\nPlease use the mobile app for student access.',
@@ -295,13 +315,17 @@ class _AuthGateState extends State<AuthGate> {
 }
 
 class _BootstrapAdminClaimView extends StatefulWidget {
-  const _BootstrapAdminClaimView({required this.user, required this.onBootstrapped});
+  const _BootstrapAdminClaimView({
+    required this.user,
+    required this.onBootstrapped,
+  });
 
   final User user;
   final VoidCallback onBootstrapped;
 
   @override
-  State<_BootstrapAdminClaimView> createState() => _BootstrapAdminClaimViewState();
+  State<_BootstrapAdminClaimView> createState() =>
+      _BootstrapAdminClaimViewState();
 }
 
 class _BootstrapAdminClaimViewState extends State<_BootstrapAdminClaimView> {
@@ -313,7 +337,9 @@ class _BootstrapAdminClaimViewState extends State<_BootstrapAdminClaimView> {
     final messenger = ScaffoldMessenger.of(context);
 
     try {
-      await FirebaseFunctions.instance.httpsCallable('bootstrapAdminClaim').call();
+      await FirebaseFunctions.instance
+          .httpsCallable('bootstrapAdminClaim')
+          .call();
       await widget.user.getIdToken(true);
       widget.onBootstrapped();
       messenger.showSnackBar(
@@ -368,8 +394,10 @@ class _BootstrapAdminClaimViewState extends State<_BootstrapAdminClaimView> {
               ),
               const SizedBox(height: 12),
               TextButton(
-                onPressed: () async { 
-                  final bool shouldSignOut = await showConfirmSignOutDialog(context);
+                onPressed: () async {
+                  final bool shouldSignOut = await showConfirmSignOutDialog(
+                    context,
+                  );
                   if (!shouldSignOut) return;
 
                   await FirebaseAuth.instance.signOut();
@@ -415,7 +443,9 @@ class _AuthErrorView extends StatelessWidget {
               const SizedBox(height: 16),
               FilledButton(
                 onPressed: () async {
-                  final bool shouldSignOut = await showConfirmSignOutDialog(context);
+                  final bool shouldSignOut = await showConfirmSignOutDialog(
+                    context,
+                  );
                   if (!shouldSignOut) return;
 
                   await FirebaseAuth.instance.signOut();

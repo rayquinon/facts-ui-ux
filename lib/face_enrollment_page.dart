@@ -10,11 +10,13 @@ import 'package:flutter/services.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 
 import 'services/face_embedding_service.dart';
-import 'services/web_camera_service.dart';
+import 'services/face_quality_exception.dart';
 
-enum _OrientationPhase { front, left, right }
+enum _OrientationPhase { front, left, right, up, down }
 
-const double _kGuideAspectRatio = 0.68; // width / height (head-like)
+// width / height (head-like). Keep this moderately wide for portrait selfie
+// framing without turning into a near-circle.
+const double _kGuideAspectRatio = 0.78;
 const double _kGuideCenterToleranceFactor =
     1.05; // strictness factor (smaller = stricter)
 
@@ -31,27 +33,57 @@ const double _kMaxFaceWidthVsGuide = 1.15;
 const double _kMaxFaceHeightVsGuide = 1.10;
 
 Rect _computeGuideRect(Size size) {
-  final double minSide = math.min(size.width, size.height);
+  if (size.width <= 0 || size.height <= 0) {
+    return Rect.zero;
+  }
 
-  // Full-head strict guide sizing.
-  final double targetHeight = minSide * 0.82;
-  final double targetWidth = targetHeight * _kGuideAspectRatio;
+  // Size to the actual available preview bounds.
+  // On portrait phones, the camera preview is often letterboxed, making
+  // `minSide` much smaller than the screen. This tries to fill the preview.
+  // Target a large guide, but avoid a full-screen oval.
+  final double maxWidth = size.width * 0.88;
+  final double maxHeight = size.height * 0.82;
 
-  // Clamp to keep it usable on both small and very large screens.
-  final double minHeight = minSide * 0.55;
-  final double maxHeight = size.height * 0.85;
-  final double minWidth = size.width * 0.45;
-  final double maxWidth = size.width * 0.75;
+  final double minWidth = size.width * 0.52;
+  final double minHeight = size.height * 0.52;
 
-  final double width = targetWidth.clamp(minWidth, maxWidth);
-  final double height = (width / _kGuideAspectRatio).clamp(
-    minHeight,
-    maxHeight,
-  );
+  // Keep the aspect ratio intact while applying constraints.
+  double height = maxHeight;
+  double width = height * _kGuideAspectRatio;
+
+  if (width > maxWidth) {
+    width = maxWidth;
+    height = width / _kGuideAspectRatio;
+  }
+
+  if (height > maxHeight) {
+    height = maxHeight;
+    width = height * _kGuideAspectRatio;
+  }
+
+  if (width < minWidth) {
+    width = minWidth;
+    height = width / _kGuideAspectRatio;
+  }
+
+  if (height < minHeight) {
+    height = minHeight;
+    width = height * _kGuideAspectRatio;
+  }
+
+  // Final safety clamp in case the min constraints force overshoot.
+  if (width > maxWidth) {
+    width = maxWidth;
+    height = width / _kGuideAspectRatio;
+  }
+  if (height > maxHeight) {
+    height = maxHeight;
+    width = height * _kGuideAspectRatio;
+  }
 
   return Rect.fromCenter(
     center: size.center(Offset.zero),
-    width: height * _kGuideAspectRatio,
+    width: width,
     height: height,
   );
 }
@@ -76,19 +108,21 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     _OrientationPhase.front,
     _OrientationPhase.left,
     _OrientationPhase.right,
+    _OrientationPhase.up,
+    _OrientationPhase.down,
   ];
 
   CameraController? _cameraController;
   FaceDetector? _faceDetector;
   final FaceEmbeddingService _embeddingService = FaceEmbeddingService.instance;
-  WebCameraService? _webCameraService;
-  Timer? _webFrameTimer;
+  // Face scanning is Android-only. Web/desktop builds should not start camera
+  // pipelines here.
   bool _isProcessingFrame = false;
   bool _isSaving = false;
   bool _enrollmentStarted = false;
   bool _cameraReady = false;
   bool _cameraInitializing = false;
-  bool _faceReadyForEnrollment = kIsWeb;
+  bool _faceReadyForEnrollment = false;
   bool _enrollmentLocked = false;
   bool _enrollmentLockChecked = false;
   DateTime? _lastCaptureAt;
@@ -102,26 +136,32 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     _OrientationPhase.front: <List<double>>[],
     _OrientationPhase.left: <List<double>>[],
     _OrientationPhase.right: <List<double>>[],
+    _OrientationPhase.up: <List<double>>[],
+    _OrientationPhase.down: <List<double>>[],
   };
 
   @override
   void initState() {
     super.initState();
-    if (!kIsWeb) {
+    if (_faceScanningSupported) {
       _faceDetector = FaceDetector(
         options: FaceDetectorOptions(
           performanceMode: FaceDetectorMode.accurate,
-          enableLandmarks: false,
+          enableLandmarks: true,
           enableContours: false,
           enableTracking: false,
         ),
       );
     }
-    _statusMessage =
-        'Tap "Allow Camera" to preview before starting enrollment.';
+    _statusMessage = _faceScanningSupported
+        ? 'Tap "Allow Camera" to preview before starting enrollment.'
+        : 'Face enrollment is available only in the Android app.';
 
     _checkEnrollmentLock();
   }
+
+  bool get _faceScanningSupported =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
   Future<void> _checkEnrollmentLock() async {
     final User? user = FirebaseAuth.instance.currentUser;
@@ -162,15 +202,20 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
 
   Future<void> _initializePipeline() async {
     try {
-      await _embeddingService.initialize();
-      if (kIsWeb) {
-        await _initializeWebCamera();
-      } else {
-        await _initializeCamera();
+      if (!_faceScanningSupported) {
+        setState(() {
+          _statusMessage =
+              'Face enrollment is available only in the Android app.';
+          _cameraReady = false;
+          _faceReadyForEnrollment = false;
+        });
+        return;
       }
+      await _embeddingService.initialize();
+      await _initializeCamera();
       setState(() {
         _cameraReady = true;
-        _faceReadyForEnrollment = kIsWeb;
+        _faceReadyForEnrollment = false;
         _statusMessage =
             'Camera ready. Align your face, then tap "Start Enrollment".';
       });
@@ -179,7 +224,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
         _statusMessage = 'Setup failed: $error';
         _enrollmentStarted = false;
         _cameraReady = false;
-        _faceReadyForEnrollment = kIsWeb;
+        _faceReadyForEnrollment = false;
       });
     }
   }
@@ -205,6 +250,11 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       });
       return;
     }
+
+    final bool proceed = await _showEnrollmentOnboardingDialog();
+    if (!proceed) return;
+    if (!mounted) return;
+
     setState(() {
       _enrollmentStarted = true;
       _lastCaptureAt = null;
@@ -217,7 +267,54 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     });
   }
 
+  Future<bool> _showEnrollmentOnboardingDialog() async {
+    final bool? result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: true,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          title: const Text('Before we start'),
+          content: const Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text('For best accuracy, please:'),
+              SizedBox(height: 12),
+              Text('• Remove accessories (glasses, hats, masks).'),
+              SizedBox(height: 6),
+              Text('• Stand in a well‑lit area (avoid strong backlight).'),
+              SizedBox(height: 6),
+              Text('• Hold still and keep your face inside the oval.'),
+            ],
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Continue'),
+            ),
+          ],
+        );
+      },
+    );
+    return result ?? false;
+  }
+
   Future<void> _handleAllowCamera() async {
+    if (!_faceScanningSupported) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Face enrollment is available only in the Android app.',
+          ),
+        ),
+      );
+      return;
+    }
     if (_cameraReady || _cameraInitializing) return;
     setState(() {
       _cameraInitializing = true;
@@ -226,20 +323,6 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     await _initializePipeline();
     if (!mounted) return;
     setState(() => _cameraInitializing = false);
-  }
-
-  Future<void> _initializeWebCamera() async {
-    try {
-      final service = WebCameraService();
-      await service.initialize();
-      _webCameraService = service;
-      _webFrameTimer = Timer.periodic(
-        const Duration(milliseconds: 900),
-        (_) => _processWebFrame(),
-      );
-    } catch (error) {
-      setState(() => _statusMessage = 'Web camera unavailable: $error');
-    }
   }
 
   Future<void> _initializeCamera() async {
@@ -310,7 +393,8 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
           );
         }
       } else {
-        final Rect bbox = faces.first.boundingBox;
+        final Face face = faces.first;
+        final Rect bbox = face.boundingBox;
         final Rect? previewRect = _currentPreviewRect(
           imageSize: Size(image.width.toDouble(), image.height.toDouble()),
         );
@@ -359,13 +443,33 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
               rawWidth: image.width.toDouble(),
               rawHeight: image.height.toDouble(),
             );
+            final Offset? leftEye = _mapMlKitLandmarkToRaw(
+              face.landmarks[FaceLandmarkType.leftEye],
+              rotationCompensation: _lastRotationCompensation,
+              rawWidth: image.width.toDouble(),
+              rawHeight: image.height.toDouble(),
+            );
+            final Offset? rightEye = _mapMlKitLandmarkToRaw(
+              face.landmarks[FaceLandmarkType.rightEye],
+              rotationCompensation: _lastRotationCompensation,
+              rawWidth: image.width.toDouble(),
+              rawHeight: image.height.toDouble(),
+            );
             final List<double> embedding = await _embeddingService
-                .generateEmbedding(image, embeddingBbox);
-            _recordEmbedding(embedding);
+                .generateEmbeddingAligned(
+                  image,
+                  embeddingBbox,
+                  leftEye: leftEye,
+                  rightEye: rightEye,
+                );
+            await _recordEmbedding(embedding);
             _lastCaptureAt = now;
           }
         }
       }
+    } on FaceQualityException catch (error) {
+      if (!mounted) return;
+      setState(() => _statusMessage = error.message);
     } catch (error) {
       debugPrint('Face processing error: $error');
     } finally {
@@ -454,44 +558,12 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       previewRect.top + (mapped.bottom * sy),
     );
 
-    final Rect guideRect = _computeGuideRect(
-      previewRect.size,
-    ).shift(previewRect.topLeft);
+    final Size containerSize = _lastPreviewContainerSize ?? previewRect.size;
+    // Use the full container for the guide sizing so the oval stays large on
+    // tall portrait phones where the CameraPreview is letterboxed.
+    final Rect guideRect = _computeGuideRect(containerSize);
 
     return _evaluateGuideMatchRects(bboxScreen, guideRect);
-  }
-
-  Future<void> _processWebFrame() async {
-    if (!kIsWeb || !_enrollmentStarted) return;
-    if (_isProcessingFrame || !_embeddingService.isReady) return;
-
-    final DateTime now = DateTime.now();
-    final DateTime? last = _lastCaptureAt;
-    if (last != null && now.difference(last) < _kMinCaptureInterval) {
-      return;
-    }
-
-    _isProcessingFrame = true;
-    try {
-      final frame = await _webCameraService?.captureFrame();
-      if (frame == null) return;
-      final Size size = frame.size;
-      final double cropSize = math.min(size.width, size.height) * 0.7;
-      final Rect boundingBox = Rect.fromLTWH(
-        (size.width - cropSize) / 2,
-        (size.height - cropSize) / 2,
-        cropSize,
-        cropSize,
-      );
-      final List<double> embedding = await _embeddingService
-          .generateEmbeddingFromImage(frame.image, boundingBox);
-      _recordEmbedding(embedding);
-      _lastCaptureAt = now;
-    } catch (error) {
-      debugPrint('Web frame processing error: $error');
-    } finally {
-      _isProcessingFrame = false;
-    }
   }
 
   void _updateNoFaceStatus() {
@@ -583,40 +655,110 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     return _GuideMatch.ok;
   }
 
-  void _recordEmbedding(List<double> embedding) {
+  Future<void> _recordEmbedding(List<double> embedding) async {
     final _OrientationPhase phase = _currentPhase;
     final List<List<double>> bucket = _phaseEmbeddings[phase]!;
     if (bucket.length >= _capturesPerPhase || !mounted) {
       return;
     }
     bucket.add(embedding);
-    setState(() {
-      final int captured = bucket.length;
-      if (captured >= _capturesPerPhase) {
-        if (_currentPhaseIndex < _phaseOrder.length - 1) {
-          _currentPhaseIndex++;
-          _lastCaptureAt = null;
-          _statusMessage =
-              'Great! ${_phaseLabel(phase)} captures complete. ${_phaseInstruction(_currentPhase)}';
-        } else {
-          _latestEmbedding = _averageAllEmbeddings();
-          _statusMessage = 'Captures complete. Saving your profile...';
-          _stopStreams();
 
-          if (!_autoSaveTriggered) {
-            _autoSaveTriggered = true;
-            Future<void>.microtask(() async {
-              if (!mounted) return;
-              await _handleSaveEmbedding();
-            });
-          }
-        }
-      } else {
+    final int captured = bucket.length;
+    if (captured < _capturesPerPhase) {
+      if (!mounted) return;
+      setState(() {
         final int remaining = _capturesPerPhase - captured;
         _statusMessage =
             '${_phaseLabel(phase)} capture $captured/$_capturesPerPhase. Hold steady for $remaining more.';
+      });
+      return;
+    }
+
+    // Phase complete.
+    if (_currentPhaseIndex < _phaseOrder.length - 1) {
+      final _OrientationPhase nextPhase = _phaseOrder[_currentPhaseIndex + 1];
+      if (nextPhase != _OrientationPhase.front) {
+        await _showPosePhaseOnboardingDialog(nextPhase);
+        if (!mounted) return;
+      }
+
+      setState(() {
+        _currentPhaseIndex++;
+        _lastCaptureAt = null;
+        _statusMessage =
+            'Great! ${_phaseLabel(phase)} captures complete. ${_phaseInstruction(_currentPhase)}';
+      });
+      return;
+    }
+
+    // Final phase complete.
+    if (!mounted) return;
+    setState(() {
+      _latestEmbedding = _averageAllEmbeddings();
+      _statusMessage = 'Captures complete. Saving your profile...';
+      _stopStreams();
+
+      if (!_autoSaveTriggered) {
+        _autoSaveTriggered = true;
+        Future<void>.microtask(() async {
+          if (!mounted) return;
+          await _handleSaveEmbedding();
+        });
       }
     });
+  }
+
+  Future<void> _showPosePhaseOnboardingDialog(_OrientationPhase phase) async {
+    final String title = switch (phase) {
+      _OrientationPhase.left => 'Next: Turn Left',
+      _OrientationPhase.right => 'Next: Turn Right',
+      _OrientationPhase.up => 'Next: Tilt Up',
+      _OrientationPhase.down => 'Next: Tilt Down',
+      _OrientationPhase.front => 'Next: Face Forward',
+    };
+
+    final String instruction = switch (phase) {
+      _OrientationPhase.left =>
+          'Turn your head slightly to the LEFT while keeping your face inside the oval.',
+      _OrientationPhase.right =>
+          'Turn your head slightly to the RIGHT while keeping your face inside the oval.',
+      _OrientationPhase.up =>
+          'Tilt your chin slightly UP (look a bit higher) while keeping your face inside the oval.',
+      _OrientationPhase.down =>
+          'Tilt your chin slightly DOWN (look a bit lower) while keeping your face inside the oval.',
+      _OrientationPhase.front => 'Face forward and stay centered in the oval.',
+    };
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          title: Text(title),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(instruction),
+              const SizedBox(height: 12),
+              const Text('Tips for accuracy:'),
+              const SizedBox(height: 8),
+              const Text('• Keep eyes on the camera'),
+              const SizedBox(height: 4),
+              const Text('• Hold still for 3 quick captures'),
+              const SizedBox(height: 4),
+              const Text('• Avoid strong backlight'),
+            ],
+          ),
+          actions: <Widget>[
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Continue'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   List<double> _averageAllEmbeddings() {
@@ -653,6 +795,10 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
         return 'Turn slightly left';
       case _OrientationPhase.right:
         return 'Turn slightly right';
+      case _OrientationPhase.up:
+        return 'Tilt slightly up';
+      case _OrientationPhase.down:
+        return 'Tilt slightly down';
     }
   }
 
@@ -664,7 +810,6 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
 
   void _stopStreams() {
     _cameraController?.stopImageStream();
-    _webFrameTimer?.cancel();
   }
 
   InputImage _buildInputImage(CameraImage image) {
@@ -832,6 +977,42 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     );
   }
 
+  Offset? _mapMlKitLandmarkToRaw(
+    FaceLandmark? landmark, {
+    required int rotationCompensation,
+    required double rawWidth,
+    required double rawHeight,
+  }) {
+    final dynamic pos = landmark?.position;
+    if (pos == null) return null;
+
+    final double x = (pos.x as num).toDouble();
+    final double y = (pos.y as num).toDouble();
+    if (rawWidth <= 0 || rawHeight <= 0) return Offset(x, y);
+
+    Offset mapped;
+    switch (rotationCompensation % 360) {
+      case 90:
+        mapped = Offset(rawWidth - y, x);
+        break;
+      case 180:
+        mapped = Offset(rawWidth - x, rawHeight - y);
+        break;
+      case 270:
+        mapped = Offset(y, rawHeight - x);
+        break;
+      case 0:
+      default:
+        mapped = Offset(x, y);
+        break;
+    }
+
+    return Offset(
+      mapped.dx.clamp(0.0, rawWidth),
+      mapped.dy.clamp(0.0, rawHeight),
+    );
+  }
+
   Future<void> _handleSaveEmbedding() async {
     final List<double>? embedding = _latestEmbedding;
     final User? user = FirebaseAuth.instance.currentUser;
@@ -849,7 +1030,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       return;
     }
 
-    if (kIsWeb) {
+    if (!_faceScanningSupported) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -936,29 +1117,34 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   void dispose() {
     _cameraController?.stopImageStream();
     _cameraController?.dispose();
-    _webFrameTimer?.cancel();
-    _webCameraService?.dispose();
     _faceDetector?.close();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final CameraController? controller = _cameraController;
-    final bool isWeb = kIsWeb;
-    Widget preview;
-    if (isWeb) {
-      preview =
-          _webCameraService?.buildPreview() ??
-          Center(child: Text(_statusMessage ?? 'Preparing browser camera...'));
-    } else if (controller == null) {
-      preview = Center(child: Text(_statusMessage ?? 'Preparing camera...'));
-    } else {
-      preview = CameraPreview(controller);
+    if (!_faceScanningSupported) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Enroll your face')),
+        body: SafeArea(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Text(
+                'Face enrollment is available only in the Android app.',
+                textAlign: TextAlign.center,
+              ),
+            ),
+          ),
+        ),
+      );
     }
-    final bool hasLivePreview = isWeb
-        ? _webCameraService != null
-        : controller != null;
+
+    final CameraController? controller = _cameraController;
+    final Widget preview = controller == null
+        ? Center(child: Text(_statusMessage ?? 'Preparing camera...'))
+        : CameraPreview(controller);
+    final bool hasLivePreview = controller != null;
     return Scaffold(
       appBar: AppBar(title: const Text('Enroll your face')),
       body: Column(
@@ -967,7 +1153,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
             child: LayoutBuilder(
               builder: (BuildContext context, BoxConstraints constraints) {
                 _lastPreviewContainerSize = constraints.biggest;
-                final Rect? previewRect = (!isWeb && controller != null)
+                final Rect? previewRect = (controller != null)
                     ? _currentPreviewRect(
                         imageSize: controller.value.previewSize == null
                             ? const Size(0, 0)
@@ -1164,10 +1350,9 @@ class _FaceGuideMaskPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final Rect bounds = Offset.zero & size;
-    final Rect baseRect = previewRect ?? bounds;
-    final Rect guideRect = _computeGuideRect(
-      baseRect.size,
-    ).shift(baseRect.topLeft);
+    // Always size the guide to the full available area so it doesn't shrink
+    // when the CameraPreview is letterboxed.
+    final Rect guideRect = _computeGuideRect(size);
 
     final Path maskPath = Path()
       ..fillType = PathFillType.evenOdd

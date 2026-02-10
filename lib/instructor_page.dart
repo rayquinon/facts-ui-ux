@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:printing/printing.dart';
 
 import 'attendance_session_page.dart';
+import 'widgets/android_only_feature_page.dart';
 import 'offline_mode_checklist_page.dart';
 import 'reports/generate_report_page.dart';
 import 'services/excuse_request_service.dart';
@@ -969,6 +970,15 @@ class _InstructorPageState extends State<InstructorPage> {
   }
 
   Future<void> _startRecognitionSession(_InstructorSchedule schedule) async {
+    if (!isAndroidFaceScanningSupported()) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Face scanning is available only in the Android app.'),
+        ),
+      );
+      return;
+    }
     if (_isLaunchingSession) return;
     setState(() => _isLaunchingSession = true);
     final DateTime launchNow = DateTime.now();

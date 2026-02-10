@@ -49,7 +49,12 @@ class AppUpdateService {
     client.connectionTimeout = timeout;
 
     try {
-      final Uri uri = Uri.parse(_manifestUrl);
+      final Uri uri = Uri.parse(_manifestUrl).replace(
+        queryParameters: <String, String>{
+          // Avoid stale cached manifests (some networks/proxies ignore headers).
+          't': DateTime.now().millisecondsSinceEpoch.toString(),
+        },
+      );
       final HttpClientRequest request = await client.getUrl(uri).timeout(timeout);
       request.headers.set(HttpHeaders.acceptHeader, 'application/json');
 
