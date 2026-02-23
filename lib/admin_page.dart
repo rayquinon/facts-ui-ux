@@ -11,6 +11,7 @@ import 'package:printing/printing.dart';
 
 import 'reports/generate_report_page.dart';
 import 'reports/attendance_report_template_meta.dart';
+import 'reports/instructor_sessions_report_page.dart';
 import 'services/excuse_request_service.dart';
 import 'services/open_external_url.dart';
 import 'services/user_role_service.dart';
@@ -193,6 +194,16 @@ class _AdminPageState extends State<AdminPage> {
                       Navigator.of(
                         context,
                       ).pushNamed(GenerateReportPage.routeName);
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.fact_check_outlined),
+                    title: const Text('Instructor Sessions Report'),
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      Navigator.of(context).pushNamed(
+                        InstructorSessionsReportPage.routeName,
+                      );
                     },
                   ),
                   const Divider(height: 1),
@@ -698,6 +709,7 @@ class _AdminPageState extends State<AdminPage> {
                 AsyncSnapshot<_AdminOverviewStats> snapshot,
               ) {
                 Widget statsContent;
+                _AdminOverviewStats? resolved;
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   statsContent = Wrap(
                     spacing: 16,
@@ -731,8 +743,8 @@ class _AdminPageState extends State<AdminPage> {
                     ),
                   );
                 } else {
-                  final _AdminOverviewStats data =
-                      snapshot.data ?? const _AdminOverviewStats();
+                  resolved = snapshot.data ?? const _AdminOverviewStats();
+                  final _AdminOverviewStats data = resolved;
                   final List<_AdminStat> stats = <_AdminStat>[
                     _AdminStat(
                       label: 'Instructors',
@@ -764,7 +776,19 @@ class _AdminPageState extends State<AdminPage> {
 
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[const SizedBox(height: 8), statsContent],
+                  children: <Widget>[
+                    const SizedBox(height: 8),
+                    statsContent,
+                    if (resolved != null) ...<Widget>[
+                      const SizedBox(height: 16),
+                      _EnrollmentCombinedChartCard(
+                        studentsTotal: resolved.students,
+                        instructorsTotal: resolved.instructors,
+                        studentsBySection: resolved.studentsBySection,
+                        instructorsByDepartment: resolved.instructorsByDepartment,
+                      ),
+                    ],
+                  ],
                 );
               },
         );
@@ -803,24 +827,84 @@ class _AdminPageState extends State<AdminPage> {
     final Query<Map<String, dynamic>> usersCollection = firestore.collection(
       'users',
     );
-    final Future<int> instructorsFuture = _countDocuments(
-      usersCollection.where('role', isEqualTo: 'instructor'),
-    );
-    final Future<int> studentsFuture = _countDocuments(
-      usersCollection.where('role', isEqualTo: 'student'),
-    );
+
+    String resolveField(
+      Map<String, dynamic> data,
+      List<String> candidates,
+    ) {
+      for (final String key in candidates) {
+        final Object? value = data[key];
+        if (value is String && value.trim().isNotEmpty) {
+          return value.trim();
+        }
+      }
+      return '';
+    }
+
+    String normalizeBucket(String raw, {required String emptyLabel}) {
+      final String v = raw.trim();
+      return v.isEmpty ? emptyLabel : v;
+    }
+
+    final Future<QuerySnapshot<Map<String, dynamic>>> instructorsSnapFuture =
+        usersCollection.where('role', isEqualTo: 'instructor').get();
+    final Future<QuerySnapshot<Map<String, dynamic>>> studentsSnapFuture =
+        usersCollection.where('role', isEqualTo: 'student').get();
     final Future<int> alertsFuture = _countDocuments(
       firestore.collection('alerts'),
     );
-    final List<int> counts = await Future.wait(<Future<int>>[
-      instructorsFuture,
-      studentsFuture,
+
+    final List<Object> results = await Future.wait<Object>(<Future<Object>>[
+      instructorsSnapFuture,
+      studentsSnapFuture,
       alertsFuture,
     ]);
+
+    final QuerySnapshot<Map<String, dynamic>> instructorsSnap =
+        results[0] as QuerySnapshot<Map<String, dynamic>>;
+    final QuerySnapshot<Map<String, dynamic>> studentsSnap =
+        results[1] as QuerySnapshot<Map<String, dynamic>>;
+    final int alertsCount = results[2] as int;
+
+    final Map<String, int> studentsBySection = <String, int>{};
+    for (final QueryDocumentSnapshot<Map<String, dynamic>> doc
+        in studentsSnap.docs) {
+      final Map<String, dynamic> data = doc.data();
+      final String section = normalizeBucket(
+        resolveField(data, <String>['section', 'Section']),
+        emptyLabel: 'Not assigned',
+      );
+      studentsBySection[section] = (studentsBySection[section] ?? 0) + 1;
+    }
+
+    final Map<String, int> instructorsByDepartment = <String, int>{};
+    for (final QueryDocumentSnapshot<Map<String, dynamic>> doc
+        in instructorsSnap.docs) {
+      final Map<String, dynamic> data = doc.data();
+      final String dept = normalizeBucket(
+        resolveField(data, <String>['Department', 'department', 'departmentName']),
+        emptyLabel: 'Not assigned',
+      );
+      instructorsByDepartment[dept] =
+          (instructorsByDepartment[dept] ?? 0) + 1;
+    }
+
+    Map<String, int> sortByCountDescThenKey(Map<String, int> input) {
+      final List<MapEntry<String, int>> entries = input.entries.toList()
+        ..sort((MapEntry<String, int> a, MapEntry<String, int> b) {
+          final int byCount = b.value.compareTo(a.value);
+          if (byCount != 0) return byCount;
+          return a.key.toLowerCase().compareTo(b.key.toLowerCase());
+        });
+      return Map<String, int>.fromEntries(entries);
+    }
+
     return _AdminOverviewStats(
-      instructors: counts[0],
-      students: counts[1],
-      alerts: counts[2],
+      instructors: instructorsSnap.size,
+      students: studentsSnap.size,
+      alerts: alertsCount,
+      studentsBySection: sortByCountDescThenKey(studentsBySection),
+      instructorsByDepartment: sortByCountDescThenKey(instructorsByDepartment),
     );
   }
 
@@ -974,11 +1058,16 @@ class _AdminOverviewStats {
     this.instructors = 0,
     this.students = 0,
     this.alerts = 0,
+    this.studentsBySection = const <String, int>{},
+    this.instructorsByDepartment = const <String, int>{},
   });
 
   final int instructors;
   final int students;
   final int alerts;
+
+  final Map<String, int> studentsBySection;
+  final Map<String, int> instructorsByDepartment;
 }
 
 class _AdminStat {
@@ -1022,6 +1111,209 @@ class _AdminStatPlaceholder extends StatelessWidget {
                 ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ChartBarEntry {
+  const _ChartBarEntry({
+    required this.label,
+    required this.value,
+    required this.series,
+    required this.barColor,
+  });
+
+  final String label;
+  final int value;
+  final String series;
+  final Color barColor;
+}
+
+class _EnrollmentCombinedChartCard extends StatelessWidget {
+  const _EnrollmentCombinedChartCard({
+    required this.studentsTotal,
+    required this.instructorsTotal,
+    required this.studentsBySection,
+    required this.instructorsByDepartment,
+  });
+
+  final int studentsTotal;
+  final int instructorsTotal;
+  final Map<String, int> studentsBySection;
+  final Map<String, int> instructorsByDepartment;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final Color studentsColor = theme.colorScheme.primary;
+    final Color instructorsColor = theme.colorScheme.secondary;
+
+    final List<_ChartBarEntry> bars = <_ChartBarEntry>[
+      ...studentsBySection.entries.map(
+        (MapEntry<String, int> e) => _ChartBarEntry(
+          label: e.key,
+          value: e.value,
+          series: 'Students (Section)',
+          barColor: studentsColor,
+        ),
+      ),
+      ...instructorsByDepartment.entries.map(
+        (MapEntry<String, int> e) => _ChartBarEntry(
+          label: e.key,
+          value: e.value,
+          series: 'Instructors (Department)',
+          barColor: instructorsColor,
+        ),
+      ),
+    ];
+
+    final int maxValue = bars.isEmpty
+        ? 0
+        : bars
+            .map(((_ChartBarEntry e) => e.value))
+            .reduce((int a, int b) => a > b ? a : b);
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: Text(
+                    'Users Registered',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                Text(
+                  'Students: $studentsTotal • Instructors: $instructorsTotal',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 12,
+              runSpacing: 8,
+              children: <Widget>[
+                _legendChip('Students (by section)', studentsColor),
+                _legendChip('Instructors (by department)', instructorsColor),
+              ],
+            ),
+            const SizedBox(height: 12),
+            if (bars.isEmpty)
+              Text(
+                'No student/instructor data found.',
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              )
+            else
+              _MultiSeriesBarChart(
+                bars: bars,
+                maxValue: maxValue,
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static Widget _legendChip(String label, Color color) {
+    return Chip(
+      avatar: CircleAvatar(backgroundColor: color, radius: 6),
+      label: Text(label),
+      visualDensity: VisualDensity.compact,
+    );
+  }
+}
+
+class _MultiSeriesBarChart extends StatelessWidget {
+  const _MultiSeriesBarChart({
+    required this.bars,
+    required this.maxValue,
+  });
+
+  final List<_ChartBarEntry> bars;
+  final int maxValue;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    const double barWidth = 70;
+    const double chartHeight = 220;
+
+    return SizedBox(
+      height: chartHeight,
+      child: Scrollbar(
+        thumbVisibility: true,
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: bars.map((_ChartBarEntry e) {
+              final double ratio = maxValue <= 0 ? 0 : (e.value / maxValue);
+              final double barHeight = (ratio * 120).clamp(4.0, 120.0);
+              final String label = e.label.trim().isEmpty ? '—' : e.label.trim();
+
+              return Padding(
+                padding: const EdgeInsets.only(right: 12),
+                child: SizedBox(
+                  width: barWidth,
+                  child: Tooltip(
+                    message: '${e.series}\n$label: ${e.value}',
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: <Widget>[
+                        Text(
+                          e.value.toString(),
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 6),
+                        Container(
+                          height: barHeight,
+                          decoration: BoxDecoration(
+                            color: e.barColor,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          label,
+                          style: theme.textTheme.labelSmall,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          e.series.startsWith('Students') ? 'Section' : 'Dept',
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            }).toList(),
           ),
         ),
       ),
@@ -3021,6 +3313,47 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
         ((data['faceEmbed'] is List) && (data['faceEmbed'] as List).isNotEmpty);
   }
 
+  bool _isAdminAccount(String uid, Map<String, dynamic> data) {
+    final String role = ((data['role'] as String?) ?? '').trim().toLowerCase();
+    if (role == 'admin') return true;
+    if (data['isAdmin'] == true || data['admin'] == true) return true;
+
+    // Also hide the currently signed-in admin account from this module.
+    final String? currentUid = FirebaseAuth.instance.currentUser?.uid;
+    if (currentUid != null && currentUid == uid) return true;
+
+    return false;
+  }
+
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _filteredUserDocs() {
+    if (_loadedUserDocs.isEmpty) return const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+
+    final String q = _searchQuery;
+
+    return _loadedUserDocs
+        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+          final Map<String, dynamic> data = _patchedUserData(doc);
+          return !_isAdminAccount(doc.id, data);
+        })
+        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+          final Map<String, dynamic> data = _patchedUserData(doc);
+          final String role = ((data['role'] as String?) ?? '').toLowerCase();
+          if (role == 'student') {
+            return _showStudents;
+          }
+          if (role == 'instructor') {
+            return _showInstructors;
+          }
+          return true;
+        })
+        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+          if (q.isEmpty) return true;
+          final Map<String, dynamic> data = _patchedUserData(doc);
+          return _buildSearchHaystack(data, doc.id).contains(q);
+        })
+        .toList(growable: false);
+  }
+
   void _applyClearedEnrollmentPatch(String uid) {
     _userDocPatches[uid] = <String, dynamic>{
       'faceEmbed': const <dynamic>[],
@@ -4006,6 +4339,14 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                 LayoutBuilder(
                   builder: (BuildContext context, BoxConstraints constraints) {
                     final bool isNarrow = constraints.maxWidth < 520;
+                    final List<QueryDocumentSnapshot<Map<String, dynamic>>>
+                    visibleDocs = _filteredUserDocs();
+                    final bool allVisibleSelected =
+                        visibleDocs.isNotEmpty &&
+                        visibleDocs.every(
+                          (QueryDocumentSnapshot<Map<String, dynamic>> d) =>
+                              _selectedUserIds.contains(d.id),
+                        );
 
                     final Widget refreshButton = isNarrow
                         ? IconButton(
@@ -4041,6 +4382,56 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                             label: Text(multiLabel),
                           );
 
+                    final bool canSelectAll =
+                        _multiSelectEnabled &&
+                        !_bulkActionRunning &&
+                        visibleDocs.isNotEmpty;
+                    final String selectAllLabel = allVisibleSelected
+                        ? 'Clear selection'
+                        : 'Select all';
+                    final IconData selectAllIcon = allVisibleSelected
+                        ? Icons.clear_all
+                        : Icons.select_all;
+                    final Widget selectAllButton = isNarrow
+                        ? IconButton(
+                            tooltip: selectAllLabel,
+                            onPressed: canSelectAll
+                                ? () {
+                                    setState(() {
+                                      if (allVisibleSelected) {
+                                        _selectedUserIds.clear();
+                                      } else {
+                                        _selectedUserIds.addAll(
+                                          visibleDocs
+                                              .map((e) => e.id)
+                                              .toList(growable: false),
+                                        );
+                                      }
+                                    });
+                                  }
+                                : null,
+                            icon: Icon(selectAllIcon),
+                          )
+                        : TextButton.icon(
+                            onPressed: canSelectAll
+                                ? () {
+                                    setState(() {
+                                      if (allVisibleSelected) {
+                                        _selectedUserIds.clear();
+                                      } else {
+                                        _selectedUserIds.addAll(
+                                          visibleDocs
+                                              .map((e) => e.id)
+                                              .toList(growable: false),
+                                        );
+                                      }
+                                    });
+                                  }
+                                : null,
+                            icon: Icon(selectAllIcon, size: 18),
+                            label: Text(selectAllLabel),
+                          );
+
                     Widget? optionsWidget;
                     if (_multiSelectEnabled) {
                       final bool disabled =
@@ -4058,6 +4449,7 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                 label: const Text('Options'),
                               );
                       } else {
+                        final ThemeData theme = Theme.of(context);
                         optionsWidget = PopupMenuButton<_BulkUserAction>(
                           onSelected: (_BulkUserAction action) async {
                             switch (action) {
@@ -4092,13 +4484,30 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                               ),
                             ];
                           },
-                          icon: isNarrow ? const Icon(Icons.tune) : null,
+                          icon: isNarrow
+                              ? Icon(
+                                  Icons.tune,
+                                  color: theme.colorScheme.primary,
+                                )
+                              : null,
                           child: isNarrow
                               ? null
-                              : TextButton.icon(
-                                  onPressed: null,
-                                  icon: const Icon(Icons.tune, size: 18),
-                                  label: const Text('Options'),
+                              : IgnorePointer(
+                                  ignoring: true,
+                                  child: TextButton.icon(
+                                    onPressed: () {},
+                                    icon: Icon(
+                                      Icons.tune,
+                                      size: 18,
+                                      color: theme.colorScheme.primary,
+                                    ),
+                                    label: Text(
+                                      'Options',
+                                      style: TextStyle(
+                                        color: theme.colorScheme.primary,
+                                      ),
+                                    ),
+                                  ),
                                 ),
                         );
                       }
@@ -4109,6 +4518,7 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                         Chip(
                           label: Text('Selected: ${_selectedUserIds.length}'),
                         ),
+                      if (_multiSelectEnabled) selectAllButton,
                       refreshButton,
                       multiSelectButton,
                       if (optionsWidget != null) optionsWidget,
@@ -4196,32 +4606,7 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                     }
 
                     final List<QueryDocumentSnapshot<Map<String, dynamic>>>
-                    filteredDocs = _loadedUserDocs
-                        .where((
-                          QueryDocumentSnapshot<Map<String, dynamic>> doc,
-                        ) {
-                          final Map<String, dynamic> data = doc.data();
-                          final String role = ((data['role'] as String?) ?? '')
-                              .toLowerCase();
-                          if (role == 'student') {
-                            return _showStudents;
-                          }
-                          if (role == 'instructor') {
-                            return _showInstructors;
-                          }
-                          return true;
-                        })
-                        .where((
-                          QueryDocumentSnapshot<Map<String, dynamic>> doc,
-                        ) {
-                          final String q = _searchQuery;
-                          if (q.isEmpty) {
-                            return true;
-                          }
-                          final Map<String, dynamic> data = doc.data();
-                          return _buildSearchHaystack(data, doc.id).contains(q);
-                        })
-                        .toList(growable: false);
+                    filteredDocs = _filteredUserDocs();
 
                     if (!_showStudents && !_showInstructors) {
                       return const Text(
@@ -4298,6 +4683,38 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                               doc.id,
                             );
 
+                            final ThemeData theme = Theme.of(context);
+                            final Widget menuIcon = hasEnrollment
+                                ? Stack(
+                                    clipBehavior: Clip.none,
+                                    children: <Widget>[
+                                      const Icon(Icons.more_vert),
+                                      Positioned(
+                                        right: -2,
+                                        top: -2,
+                                        child: Container(
+                                          width: 14,
+                                          height: 14,
+                                          decoration: BoxDecoration(
+                                            color: theme.colorScheme.tertiary,
+                                            shape: BoxShape.circle,
+                                            border: Border.all(
+                                              color: theme.colorScheme.surface,
+                                              width: 1.5,
+                                            ),
+                                          ),
+                                          child: Icon(
+                                            Icons.face,
+                                            size: 10,
+                                            color:
+                                                theme.colorScheme.onTertiary,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  )
+                                : const Icon(Icons.more_vert);
+
                             return ListTile(
                               contentPadding: EdgeInsets.zero,
                               onTap: _multiSelectEnabled
@@ -4328,6 +4745,7 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                             Icons.radio_button_unchecked,
                                           ))
                                   : PopupMenuButton<String>(
+                                      icon: menuIcon,
                                       onSelected: (String action) {
                                         switch (action) {
                                           case 'edit':

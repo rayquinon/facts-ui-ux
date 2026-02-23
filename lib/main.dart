@@ -19,6 +19,7 @@ import 'services/user_role_service.dart';
 import 'services/app_update_service.dart';
 import 'services/app_update_types.dart';
 import 'reports/generate_report_page.dart';
+import 'reports/instructor_sessions_report_page.dart';
 import 'verify_email_page.dart';
 import 'widgets/confirm_sign_out_dialog.dart';
 import 'widgets/android_only_feature_page.dart';
@@ -109,6 +110,8 @@ class FactsApp extends StatelessWidget {
         },
         GenerateReportPage.routeName: (BuildContext context) =>
             const GenerateReportPage(),
+        InstructorSessionsReportPage.routeName: (BuildContext context) =>
+            const InstructorSessionsReportPage(),
         AttendanceSessionPage.routeName: (BuildContext context) {
           final ModalRoute<dynamic>? route = ModalRoute.of(context);
           final AttendanceSessionConfig? config =
