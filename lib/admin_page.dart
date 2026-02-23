@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
@@ -14,7 +15,15 @@ import 'services/excuse_request_service.dart';
 import 'services/open_external_url.dart';
 import 'services/user_role_service.dart';
 
-enum _AdminSection { overview, users, departments, subjects, classes, excuses }
+enum _AdminSection {
+  overview,
+  users,
+  departments,
+  subjects,
+  classes,
+  attendanceSessions,
+  excuses,
+}
 
 class AdminPage extends StatefulWidget {
   const AdminPage({super.key});
@@ -56,6 +65,11 @@ class _AdminPageState extends State<AdminPage> {
       _AdminSection.classes,
       'Class Maintenance',
       Icons.class_outlined,
+    ),
+    _SectionNavItem(
+      _AdminSection.attendanceSessions,
+      'Attendance Sessions',
+      Icons.event_note_outlined,
     ),
     _SectionNavItem(
       _AdminSection.excuses,
@@ -773,6 +787,11 @@ class _AdminPageState extends State<AdminPage> {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: const <Widget>[_ClassMaintenancePanel()],
+        );
+      case _AdminSection.attendanceSessions:
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: const <Widget>[_AttendanceSessionsPanel()],
         );
       case _AdminSection.excuses:
         return _buildExcuseRequestsPanel();
@@ -2983,6 +3002,78 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _loadedUserDocs =
       <QueryDocumentSnapshot<Map<String, dynamic>>>[];
 
+  final Map<String, Map<String, dynamic>> _userDocPatches =
+      <String, Map<String, dynamic>>{};
+
+  Map<String, dynamic> _patchedUserData(
+    QueryDocumentSnapshot<Map<String, dynamic>> doc,
+  ) {
+    final Map<String, dynamic>? patch = _userDocPatches[doc.id];
+    if (patch == null || patch.isEmpty) {
+      return doc.data();
+    }
+    return <String, dynamic>{...doc.data(), ...patch};
+  }
+
+  bool _hasFaceEnrollment(Map<String, dynamic> data) {
+    return ((data['faceEmbeds'] is List) &&
+            (data['faceEmbeds'] as List).isNotEmpty) ||
+        ((data['faceEmbed'] is List) && (data['faceEmbed'] as List).isNotEmpty);
+  }
+
+  void _applyClearedEnrollmentPatch(String uid) {
+    _userDocPatches[uid] = <String, dynamic>{
+      'faceEmbed': const <dynamic>[],
+      'faceEmbeds': const <dynamic>[],
+      'faceEmbedCount': 0,
+      'faceEmbedProvider': null,
+      'faceEmbedUpdatedAt': null,
+    };
+  }
+
+  Future<void> _refreshUsersById(Iterable<String> uids) async {
+    final List<String> ids = uids.toSet().toList(growable: false);
+    if (ids.isEmpty) return;
+
+    // Firestore `whereIn` is limited to 10 values.
+    const int chunkSize = 10;
+    final Map<String, QueryDocumentSnapshot<Map<String, dynamic>>> freshById =
+        <String, QueryDocumentSnapshot<Map<String, dynamic>>>{};
+
+    for (int i = 0; i < ids.length; i += chunkSize) {
+      final List<String> chunk = ids.sublist(
+        i,
+        (i + chunkSize).clamp(0, ids.length),
+      );
+      try {
+        final QuerySnapshot<Map<String, dynamic>> snap = await _firestore
+            .collection('users')
+            .where(FieldPath.documentId, whereIn: chunk)
+            .get();
+        for (final QueryDocumentSnapshot<Map<String, dynamic>> d in snap.docs) {
+          freshById[d.id] = d;
+        }
+      } catch (_) {
+        // Ignore refresh errors; optimistic patch remains.
+      }
+    }
+
+    if (!mounted || freshById.isEmpty) return;
+    setState(() {
+      _loadedUserDocs = _loadedUserDocs
+          .map(
+            (QueryDocumentSnapshot<Map<String, dynamic>> d) =>
+                freshById[d.id] ?? d,
+          )
+          .toList(growable: false);
+
+      // Once we have fresh docs, drop any optimistic patches for them.
+      for (final String id in freshById.keys) {
+        _userDocPatches.remove(id);
+      }
+    });
+  }
+
   @override
   void dispose() {
     _allUsersScrollController.dispose();
@@ -3083,13 +3174,8 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     final List<QueryDocumentSnapshot<Map<String, dynamic>>> docsWithEnrollment =
         docs
             .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-              final Map<String, dynamic> data = doc.data();
-              final bool hasEnrollment =
-                  ((data['faceEmbeds'] is List) &&
-                      (data['faceEmbeds'] as List).isNotEmpty) ||
-                  ((data['faceEmbed'] is List) &&
-                      (data['faceEmbed'] as List).isNotEmpty);
-              return hasEnrollment;
+              final Map<String, dynamic> data = _patchedUserData(doc);
+              return _hasFaceEnrollment(data);
             })
             .toList(growable: false);
 
@@ -3116,6 +3202,7 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     _startBulkProgress('Fixing face enrollment', totalTargeted);
     int success = 0;
     int failed = 0;
+    final Set<String> touched = <String>{};
     for (final QueryDocumentSnapshot<Map<String, dynamic>> doc
         in docsWithEnrollment) {
       final String name = _resolveDisplayName(doc.data(), doc.id);
@@ -3123,6 +3210,7 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
         await _functions.httpsCallable('adminMigrateFaceEmbeds').call(
           <String, dynamic>{'uid': doc.id},
         );
+        touched.add(doc.id);
         success++;
         _tickBulkProgress(succeeded: true, currentLabel: name);
       } catch (_) {
@@ -3132,13 +3220,20 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     }
 
     if (!mounted) return;
-    setState(() => _bulkActionRunning = false);
+    setState(() {
+      _bulkActionRunning = false;
+      _multiSelectEnabled = false;
+      _selectedUserIds.clear();
+    });
     _finishBulkProgress();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('Fix completed. Success: $success, Failed: $failed.'),
       ),
     );
+
+    // Background refresh only for the affected users.
+    unawaited(_refreshUsersById(touched));
   }
 
   Future<void> _runBulkClearFaceEnrollment() async {
@@ -3150,13 +3245,8 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     final List<QueryDocumentSnapshot<Map<String, dynamic>>> docsWithEnrollment =
         docs
             .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-              final Map<String, dynamic> data = doc.data();
-              final bool hasEnrollment =
-                  ((data['faceEmbeds'] is List) &&
-                      (data['faceEmbeds'] as List).isNotEmpty) ||
-                  ((data['faceEmbed'] is List) &&
-                      (data['faceEmbed'] as List).isNotEmpty);
-              return hasEnrollment;
+              final Map<String, dynamic> data = _patchedUserData(doc);
+              return _hasFaceEnrollment(data);
             })
             .toList(growable: false);
 
@@ -3183,6 +3273,7 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     _startBulkProgress('Clearing face enrollment', totalTargeted);
     int success = 0;
     int failed = 0;
+    final Set<String> cleared = <String>{};
     for (final QueryDocumentSnapshot<Map<String, dynamic>> doc
         in docsWithEnrollment) {
       final String name = _resolveDisplayName(doc.data(), doc.id);
@@ -3190,6 +3281,7 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
         await _functions.httpsCallable('adminClearFaceEnrollment').call(
           <String, dynamic>{'uid': doc.id},
         );
+        cleared.add(doc.id);
         success++;
         _tickBulkProgress(succeeded: true, currentLabel: name);
       } catch (_) {
@@ -3199,13 +3291,25 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     }
 
     if (!mounted) return;
-    setState(() => _bulkActionRunning = false);
+    setState(() {
+      _bulkActionRunning = false;
+      _multiSelectEnabled = false;
+      _selectedUserIds.clear();
+    });
     _finishBulkProgress();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('Clear completed. Success: $success, Failed: $failed.'),
       ),
     );
+
+    // Optimistic UI update (no list flicker), then background refresh.
+    setState(() {
+      for (final String uid in cleared) {
+        _applyClearedEnrollmentPatch(uid);
+      }
+    });
+    unawaited(_refreshUsersById(cleared));
   }
 
   Future<void> _runBulkDeleteUsers() async {
@@ -3478,6 +3582,9 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
           ),
         ),
       );
+
+      // Background refresh only for this user (keeps pagination intact).
+      unawaited(_refreshUsersById(<String>[uid]));
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -3516,6 +3623,12 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Face enrollment cleared.')));
+
+      // Optimistic UI update (no list flicker), then background refresh.
+      setState(() {
+        _applyClearedEnrollmentPatch(uid);
+      });
+      unawaited(_refreshUsersById(<String>[uid]));
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -4171,17 +4284,15 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
 
                             final QueryDocumentSnapshot<Map<String, dynamic>>
                             doc = filteredDocs[index];
-                            final Map<String, dynamic> data = doc.data();
+                            final Map<String, dynamic> data = _patchedUserData(
+                              doc,
+                            );
                             final String name = _resolveDisplayName(
                               data,
                               doc.id,
                             );
                             final String role = (data['role'] as String?) ?? '';
-                            final bool hasEnrollment =
-                                ((data['faceEmbeds'] is List) &&
-                                    (data['faceEmbeds'] as List).isNotEmpty) ||
-                                ((data['faceEmbed'] is List) &&
-                                    (data['faceEmbed'] as List).isNotEmpty);
+                            final bool hasEnrollment = _hasFaceEnrollment(data);
                             final bool approved = data['approved'] == true;
                             final bool selected = _selectedUserIds.contains(
                               doc.id,
@@ -4285,6 +4396,1472 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _AttendanceSessionsPanel extends StatefulWidget {
+  const _AttendanceSessionsPanel();
+
+  @override
+  State<_AttendanceSessionsPanel> createState() =>
+      _AttendanceSessionsPanelState();
+}
+
+class _AttendanceSessionsPanelState extends State<_AttendanceSessionsPanel> {
+  static const int _pageSize = 50;
+  static const int _bulkChunkSize = 30;
+  static const int _bulkScanPageSize = 200;
+
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final ScrollController _scrollController = ScrollController();
+  final TextEditingController _searchController = TextEditingController();
+
+  bool _loading = false;
+  bool _loadingMore = false;
+  bool _hasMore = true;
+  QueryDocumentSnapshot<Map<String, dynamic>>? _lastDoc;
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _docs =
+      <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+
+  bool _multiSelect = false;
+  final Set<String> _selectedIds = <String>{};
+  bool _bulkDeleting = false;
+
+  String _search = '';
+  String _statusFilter = 'all';
+  String _dateFilter = 'last7';
+  DateTimeRange? _customRange;
+
+  DateTime _dayKey(DateTime dt) => DateTime(dt.year, dt.month, dt.day);
+
+  (DateTime start, DateTime endExclusive)? _selectedStartedAtWindow() {
+    final DateTime now = DateTime.now();
+    final DateTime today = _dayKey(now);
+
+    switch (_dateFilter) {
+      case 'all':
+        return null;
+      case 'today':
+        return (today, today.add(const Duration(days: 1)));
+      case 'last7':
+        return (
+          today.subtract(const Duration(days: 6)),
+          today.add(const Duration(days: 1)),
+        );
+      case 'last30':
+        return (
+          today.subtract(const Duration(days: 29)),
+          today.add(const Duration(days: 1)),
+        );
+      case 'custom':
+        final DateTimeRange? range = _customRange;
+        if (range == null) return null;
+        final DateTime start = _dayKey(range.start);
+        final DateTime endDay = _dayKey(range.end);
+        return (start, endDay.add(const Duration(days: 1)));
+    }
+    return null;
+  }
+
+  String _dateFilterLabel() {
+    switch (_dateFilter) {
+      case 'all':
+        return 'All time';
+      case 'today':
+        return 'Today';
+      case 'last7':
+        return 'Last 7 days';
+      case 'last30':
+        return 'Last 30 days';
+      case 'custom':
+        final DateTimeRange? range = _customRange;
+        if (range == null) return 'Custom';
+        String two(int n) => n.toString().padLeft(2, '0');
+        String fmt(DateTime d) => '${d.year}-${two(d.month)}-${two(d.day)}';
+        return '${fmt(range.start)} → ${fmt(range.end)}';
+    }
+    return 'Last 7 days';
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  Query<Map<String, dynamic>> _buildQuery() {
+    Query<Map<String, dynamic>> q = _firestore
+        .collection('attendanceSessions')
+        .orderBy('startedAt', descending: true);
+
+    final (DateTime start, DateTime endExclusive)? window =
+        _selectedStartedAtWindow();
+    if (window != null) {
+      q = q
+          .where(
+            'startedAt',
+            isGreaterThanOrEqualTo: Timestamp.fromDate(window.$1),
+          )
+          .where(
+            'startedAt',
+            isLessThan: Timestamp.fromDate(window.$2),
+          );
+    }
+    if (_lastDoc != null) {
+      q = q.startAfterDocument(_lastDoc!);
+    }
+    return q.limit(_pageSize);
+  }
+
+  Future<void> _pickCustomRange() async {
+    final DateTime now = DateTime.now();
+    final DateTime first = DateTime(now.year - 2, 1, 1);
+    final DateTime last = DateTime(now.year + 1, 12, 31);
+    final DateTimeRange initial = _customRange ??
+        DateTimeRange(
+          start: _dayKey(now.subtract(const Duration(days: 6))),
+          end: _dayKey(now),
+        );
+    final DateTimeRange? picked = await showDateRangePicker(
+      context: context,
+      firstDate: first,
+      lastDate: last,
+      initialDateRange: initial,
+    );
+    if (picked == null || !mounted) return;
+    setState(() {
+      _customRange = picked;
+      _dateFilter = 'custom';
+    });
+    await _refresh();
+  }
+
+  Future<void> _refresh() async {
+    if (_loading) return;
+    setState(() {
+      _loading = true;
+      _loadingMore = false;
+      _hasMore = true;
+      _lastDoc = null;
+      _docs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+      _selectedIds.clear();
+    });
+
+    try {
+      final QuerySnapshot<Map<String, dynamic>> snap = await _buildQuery().get(
+        const GetOptions(source: Source.server),
+      );
+      final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = snap.docs;
+      if (!mounted) return;
+      setState(() {
+        _docs = docs;
+        _lastDoc = docs.isEmpty ? null : docs.last;
+        _hasMore = docs.length == _pageSize;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to load sessions: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  void _toggleMultiSelect(bool enabled) {
+    setState(() {
+      _multiSelect = enabled;
+      if (!enabled) {
+        _selectedIds.clear();
+      }
+    });
+  }
+
+  void _toggleSelected(String id) {
+    setState(() {
+      if (_selectedIds.contains(id)) {
+        _selectedIds.remove(id);
+      } else {
+        _selectedIds.add(id);
+      }
+    });
+  }
+
+  bool _matchesClientFilters(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+    final Map<String, dynamic> data = doc.data();
+    if (_statusFilter != 'all') {
+      final String st = (data['status']?.toString().toLowerCase() ?? '');
+      if (st != _statusFilter) return false;
+    }
+    final String q = _search;
+    if (q.isNotEmpty && !_buildHaystack(data, doc.id).contains(q)) {
+      return false;
+    }
+    return true;
+  }
+
+  Future<({int deletedCount, int failedCount})> _deleteIdsInChunks(
+    List<String> ids, {
+    void Function(int processed, int deleted, int failed)? onProgress,
+  }) async {
+    int processed = 0;
+    int deleted = 0;
+    int failed = 0;
+
+    for (int i = 0; i < ids.length; i += _bulkChunkSize) {
+      final List<String> chunk = ids.sublist(
+        i,
+        (i + _bulkChunkSize).clamp(0, ids.length),
+      );
+
+      try {
+        final HttpsCallableResult<dynamic> res = await FirebaseFunctions
+            .instance
+            .httpsCallable('adminBulkDeleteAttendanceSessions')
+            .call(<String, dynamic>{'sessionIds': chunk});
+        final dynamic data = res.data;
+        final int deletedCount =
+            (data is Map && data['deletedCount'] is num)
+                ? (data['deletedCount'] as num).toInt()
+                : 0;
+        final int failedCount = (data is Map && data['failedCount'] is num)
+            ? (data['failedCount'] as num).toInt()
+            : 0;
+        deleted += deletedCount;
+        failed += failedCount;
+      } catch (_) {
+        // If the callable failed, count whole chunk as failed.
+        failed += chunk.length;
+      }
+
+      processed += chunk.length;
+      onProgress?.call(processed, deleted, failed);
+    }
+
+    return (deletedCount: deleted, failedCount: failed);
+  }
+
+  Future<void> _confirmAndDeleteSelected(List<String> ids) async {
+    if (_bulkDeleting || ids.isEmpty) return;
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('Delete selected sessions?'),
+        content: Text(
+          'This will permanently delete ${ids.length} selected session(s), including recorded students/scans. This cannot be undone.',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _bulkDeleting = true);
+    try {
+      int processed = 0;
+      int deleted = 0;
+      int failed = 0;
+
+        final ({int deletedCount, int failedCount}) result =
+          (await showDialog<({int deletedCount, int failedCount})>(
+        context: context,
+        barrierDismissible: false,
+        builder: (BuildContext dialogContext) {
+          bool started = false;
+          return StatefulBuilder(
+            builder:
+                (BuildContext context, void Function(void Function()) set) {
+              if (!started) {
+                started = true;
+                unawaited(() async {
+                  final ({int deletedCount, int failedCount}) res =
+                      await _deleteIdsInChunks(
+                    ids,
+                    onProgress: (int p, int d, int f) {
+                      if (!dialogContext.mounted) return;
+                      set(() {
+                        processed = p;
+                        deleted = d;
+                        failed = f;
+                      });
+                    },
+                  );
+                  if (!dialogContext.mounted) return;
+                  Navigator.of(dialogContext).pop(res);
+                }());
+              }
+
+              return AlertDialog(
+                title: const Text('Deleting…'),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    const LinearProgressIndicator(),
+                    const SizedBox(height: 12),
+                    Text('Processed: $processed / ${ids.length}'),
+                    Text('Deleted: $deleted'),
+                    if (failed > 0) Text('Failed: $failed'),
+                  ],
+                ),
+              );
+            },
+          );
+        },
+      )) ??
+          (deletedCount: 0, failedCount: ids.length);
+
+      if (!mounted) return;
+      setState(() {
+        _docs = _docs
+            .where(
+              (QueryDocumentSnapshot<Map<String, dynamic>> d) =>
+                  !ids.contains(d.id),
+            )
+            .toList(growable: false);
+        _selectedIds.removeAll(ids);
+        _multiSelect = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Delete done. Deleted: ${result.deletedCount}, Failed: ${result.failedCount}.',
+          ),
+        ),
+      );
+      unawaited(_refresh());
+    } finally {
+      if (mounted) setState(() => _bulkDeleting = false);
+    }
+  }
+
+  Query<Map<String, dynamic>> _buildBulkScanQuery({
+    QueryDocumentSnapshot<Map<String, dynamic>>? startAfter,
+  }) {
+    Query<Map<String, dynamic>> q = _firestore
+        .collection('attendanceSessions')
+        .orderBy('startedAt', descending: true);
+
+    final (DateTime start, DateTime endExclusive)? window =
+        _selectedStartedAtWindow();
+    if (window != null) {
+      q = q
+          .where(
+            'startedAt',
+            isGreaterThanOrEqualTo: Timestamp.fromDate(window.$1),
+          )
+          .where(
+            'startedAt',
+            isLessThan: Timestamp.fromDate(window.$2),
+          );
+    }
+
+    if (startAfter != null) {
+      q = q.startAfterDocument(startAfter);
+    }
+    return q.limit(_bulkScanPageSize);
+  }
+
+  Future<void> _confirmAndDeleteAllMatching() async {
+    if (_bulkDeleting) return;
+    final String scope =
+        (_dateFilter == 'all' && _statusFilter == 'all' && _search.isEmpty)
+            ? 'ALL sessions'
+            : 'all sessions matching your current filters';
+
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('Delete many sessions?'),
+        content: Text(
+          'This will permanently delete $scope, including recorded students/scans. This cannot be undone.\n\nThis may take a while.',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _bulkDeleting = true);
+
+    try {
+      int scanned = 0;
+      int matched = 0;
+      int deleted = 0;
+      int failed = 0;
+
+        final ({int scanned, int matched, int deleted, int failed}) result =
+          (await showDialog<({int scanned, int matched, int deleted, int failed})>(
+        context: context,
+        barrierDismissible: false,
+        builder: (BuildContext dialogContext) {
+          bool started = false;
+          return StatefulBuilder(
+            builder:
+                (BuildContext context, void Function(void Function()) set) {
+              if (!started) {
+                started = true;
+                unawaited(() async {
+                  final List<String> buffer = <String>[];
+                  QueryDocumentSnapshot<Map<String, dynamic>>? last;
+
+                  while (true) {
+                    final QuerySnapshot<Map<String, dynamic>> snap =
+                        await _buildBulkScanQuery(startAfter: last).get(
+                      const GetOptions(source: Source.server),
+                    );
+                    if (snap.docs.isEmpty) break;
+
+                    for (final QueryDocumentSnapshot<Map<String, dynamic>> doc
+                        in snap.docs) {
+                      scanned++;
+                      if (_matchesClientFilters(doc)) {
+                        buffer.add(doc.id);
+                        matched++;
+                        if (buffer.length >= _bulkChunkSize) {
+                          final ({int deletedCount, int failedCount}) res =
+                              await _deleteIdsInChunks(
+                            List<String>.from(buffer),
+                          );
+                          deleted += res.deletedCount;
+                          failed += res.failedCount;
+                          buffer.clear();
+                          if (!dialogContext.mounted) return;
+                          set(() {});
+                        }
+                      }
+                      if (!dialogContext.mounted) return;
+                      if (scanned % 50 == 0) set(() {});
+                    }
+
+                    last = snap.docs.last;
+                    if (!dialogContext.mounted) return;
+                    set(() {});
+                    if (snap.size < _bulkScanPageSize) break;
+                  }
+
+                  if (buffer.isNotEmpty) {
+                    final ({int deletedCount, int failedCount}) res =
+                        await _deleteIdsInChunks(List<String>.from(buffer));
+                    deleted += res.deletedCount;
+                    failed += res.failedCount;
+                    buffer.clear();
+                  }
+
+                  if (!dialogContext.mounted) return;
+                  Navigator.of(dialogContext).pop(
+                    (
+                      scanned: scanned,
+                      matched: matched,
+                      deleted: deleted,
+                      failed: failed,
+                    ),
+                  );
+                }());
+              }
+
+              return AlertDialog(
+                title: const Text('Deleting…'),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    const LinearProgressIndicator(),
+                    const SizedBox(height: 12),
+                    Text('Scanned: $scanned'),
+                    Text('Matched: $matched'),
+                    Text('Deleted: $deleted'),
+                    if (failed > 0) Text('Failed: $failed'),
+                  ],
+                ),
+              );
+            },
+          );
+        },
+      )) ??
+          (scanned: 0, matched: 0, deleted: 0, failed: 0);
+
+      if (!mounted) return;
+      setState(() {
+        _multiSelect = false;
+        _selectedIds.clear();
+      });
+      unawaited(_refresh());
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Delete done. Deleted: ${result.deleted}, Failed: ${result.failed}.',
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _bulkDeleting = false);
+    }
+  }
+
+  Future<void> _loadMore() async {
+    if (_loadingMore || _loading || !_hasMore) return;
+    setState(() => _loadingMore = true);
+    try {
+      final QuerySnapshot<Map<String, dynamic>> snap = await _buildQuery().get(
+        const GetOptions(source: Source.server),
+      );
+      final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = snap.docs;
+      if (!mounted) return;
+      setState(() {
+        _docs = <QueryDocumentSnapshot<Map<String, dynamic>>>[
+          ..._docs,
+          ...docs,
+        ];
+        _lastDoc = docs.isEmpty ? _lastDoc : docs.last;
+        _hasMore = docs.length == _pageSize;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to load more sessions: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _loadingMore = false);
+    }
+  }
+
+  String _formatTimestamp(Object? value) {
+    if (value is Timestamp) {
+      final DateTime dt = value.toDate();
+      String two(int n) => n.toString().padLeft(2, '0');
+      return '${dt.year}-${two(dt.month)}-${two(dt.day)} ${two(dt.hour)}:${two(dt.minute)}';
+    }
+    return '';
+  }
+
+  String _buildHaystack(Map<String, dynamic> data, String id) {
+    final List<String> parts = <String>[id];
+    void add(dynamic v, {required int depth}) {
+      if (v == null) return;
+      if (v is String) {
+        final String t = v.trim();
+        if (t.isNotEmpty) parts.add(t);
+        return;
+      }
+      if (v is num || v is bool) {
+        parts.add(v.toString());
+        return;
+      }
+      if (v is Timestamp) {
+        parts.add(v.toDate().toIso8601String());
+        return;
+      }
+      if (depth <= 0) return;
+      if (v is Map) {
+        for (final dynamic vv in v.values) {
+          add(vv, depth: depth - 1);
+        }
+        return;
+      }
+      if (v is Iterable) {
+        for (final dynamic vv in v) {
+          add(vv, depth: depth - 1);
+        }
+        return;
+      }
+    }
+
+    for (final dynamic v in data.values) {
+      add(v, depth: 2);
+    }
+    return parts.join(' ').toLowerCase();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> filtered = _docs
+        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+          final Map<String, dynamic> data = doc.data();
+          if (_statusFilter == 'all') return true;
+          return (data['status']?.toString().toLowerCase() ?? '') ==
+              _statusFilter;
+        })
+        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+          final String q = _search;
+          if (q.isEmpty) return true;
+          return _buildHaystack(doc.data(), doc.id).contains(q);
+        })
+        .toList(growable: false);
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: Text(
+                    'Attendance Sessions',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Refresh',
+                  onPressed: _loading ? null : _refresh,
+                  icon: const Icon(Icons.refresh),
+                ),
+                const SizedBox(width: 4),
+                if (!_multiSelect)
+                  OutlinedButton.icon(
+                    onPressed: _bulkDeleting
+                        ? null
+                        : () => _toggleMultiSelect(true),
+                    icon: const Icon(Icons.checklist, size: 18),
+                    label: const Text('Select'),
+                  )
+                else ...<Widget>[
+                  OutlinedButton(
+                    onPressed: _bulkDeleting
+                        ? null
+                        : () {
+                            setState(() {
+                              for (final doc in filtered) {
+                                _selectedIds.add(doc.id);
+                              }
+                            });
+                          },
+                    child: const Text('Select all shown'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton.icon(
+                    onPressed: (_bulkDeleting || _selectedIds.isEmpty)
+                        ? null
+                        : () => _confirmAndDeleteSelected(
+                              _selectedIds.toList(growable: false),
+                            ),
+                    icon: const Icon(Icons.delete_outline, size: 18),
+                    label: Text('Delete selected (${_selectedIds.length})'),
+                  ),
+                  const SizedBox(width: 8),
+                  TextButton(
+                    onPressed: _bulkDeleting
+                        ? null
+                        : () => _toggleMultiSelect(false),
+                    child: const Text('Cancel'),
+                  ),
+                ],
+                PopupMenuButton<String>(
+                  tooltip: 'More actions',
+                  onSelected: (String action) {
+                    switch (action) {
+                      case 'deleteAll':
+                        _confirmAndDeleteAllMatching();
+                        break;
+                      case 'clearSelection':
+                        setState(() => _selectedIds.clear());
+                        break;
+                    }
+                  },
+                  itemBuilder: (BuildContext context) {
+                    final bool deleteAllEnabled =
+                        !_bulkDeleting && !_loading && !_loadingMore;
+                    final String deleteAllLabel =
+                        (_dateFilter == 'all' &&
+                                _statusFilter == 'all' &&
+                                _search.isEmpty)
+                            ? 'Delete ALL sessions'
+                            : 'Delete all matching filters';
+                    return <PopupMenuEntry<String>>[
+                      PopupMenuItem<String>(
+                        value: 'deleteAll',
+                        enabled: deleteAllEnabled,
+                        child: ListTile(
+                          dense: true,
+                          leading: const Icon(Icons.delete_forever_outlined),
+                          title: Text(deleteAllLabel),
+                          subtitle: const Text('Includes students and scans'),
+                        ),
+                      ),
+                      if (_multiSelect)
+                        const PopupMenuDivider(),
+                      if (_multiSelect)
+                        PopupMenuItem<String>(
+                          value: 'clearSelection',
+                          enabled: !_bulkDeleting && _selectedIds.isNotEmpty,
+                          child: const ListTile(
+                            dense: true,
+                            leading: Icon(Icons.clear_all),
+                            title: Text('Clear selection'),
+                          ),
+                        ),
+                    ];
+                  },
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: <Widget>[
+                SizedBox(
+                  width: 360,
+                  child: TextField(
+                    controller: _searchController,
+                    onChanged: (String value) {
+                      setState(() => _search = value.trim().toLowerCase());
+                    },
+                    decoration: InputDecoration(
+                      prefixIcon: const Icon(Icons.search),
+                      hintText:
+                          'Search sessions (class, subject, instructor…) ',
+                      suffixIcon: _search.isEmpty
+                          ? null
+                          : IconButton(
+                              tooltip: 'Clear',
+                              onPressed: () {
+                                _searchController.clear();
+                                setState(() => _search = '');
+                              },
+                              icon: const Icon(Icons.clear),
+                            ),
+                    ),
+                  ),
+                ),
+                DropdownButton<String>(
+                  value: _statusFilter,
+                  onChanged: (String? value) {
+                    if (value == null) return;
+                    setState(() => _statusFilter = value);
+                  },
+                  items: const <DropdownMenuItem<String>>[
+                    DropdownMenuItem(value: 'all', child: Text('All statuses')),
+                    DropdownMenuItem(value: 'active', child: Text('Active')),
+                    DropdownMenuItem(value: 'paused', child: Text('Paused')),
+                    DropdownMenuItem(value: 'ended', child: Text('Ended')),
+                  ],
+                ),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: <Widget>[
+                    ChoiceChip(
+                      label: const Text('All'),
+                      selected: _dateFilter == 'all',
+                      onSelected: (bool selected) async {
+                        if (!selected) return;
+                        setState(() => _dateFilter = 'all');
+                        await _refresh();
+                      },
+                    ),
+                    ChoiceChip(
+                      label: const Text('Today'),
+                      selected: _dateFilter == 'today',
+                      onSelected: (bool selected) async {
+                        if (!selected) return;
+                        setState(() => _dateFilter = 'today');
+                        await _refresh();
+                      },
+                    ),
+                    ChoiceChip(
+                      label: const Text('Last 7'),
+                      selected: _dateFilter == 'last7',
+                      onSelected: (bool selected) async {
+                        if (!selected) return;
+                        setState(() => _dateFilter = 'last7');
+                        await _refresh();
+                      },
+                    ),
+                    ChoiceChip(
+                      label: const Text('Last 30'),
+                      selected: _dateFilter == 'last30',
+                      onSelected: (bool selected) async {
+                        if (!selected) return;
+                        setState(() => _dateFilter = 'last30');
+                        await _refresh();
+                      },
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: _pickCustomRange,
+                      icon: const Icon(Icons.date_range, size: 18),
+                      label: Text(_dateFilterLabel()),
+                    ),
+                  ],
+                ),
+                Text(
+                  _loading
+                      ? 'Loading…'
+                      : 'Showing ${filtered.length} of ${_docs.length}',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            if (_loading)
+              const LinearProgressIndicator()
+            else if (filtered.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: Text('No sessions found.'),
+              )
+            else
+              SizedBox(
+                height: (MediaQuery.sizeOf(context).height * 0.55)
+                    .clamp(320.0, 680.0)
+                    .toDouble(),
+                child: Scrollbar(
+                  controller: _scrollController,
+                  thumbVisibility: true,
+                  child: ListView.separated(
+                    controller: _scrollController,
+                    itemCount: filtered.length + 1,
+                    separatorBuilder: (_, __) => const Divider(height: 1),
+                    itemBuilder: (BuildContext context, int index) {
+                      if (index >= filtered.length) {
+                        if (_loadingMore) {
+                          return const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 12),
+                            child: Center(
+                              child: SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              ),
+                            ),
+                          );
+                        }
+                        if (!_hasMore) {
+                          return const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 12),
+                            child: Center(child: Text('End of list.')),
+                          );
+                        }
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          child: Center(
+                            child: OutlinedButton.icon(
+                              onPressed: _loadMore,
+                              icon: const Icon(Icons.expand_more),
+                              label: const Text('Load more'),
+                            ),
+                          ),
+                        );
+                      }
+
+                      final QueryDocumentSnapshot<Map<String, dynamic>> doc =
+                          filtered[index];
+                      final Map<String, dynamic> data = doc.data();
+                      final String subjectCode =
+                          (data['subjectCode'] as String?) ?? '';
+                      final String subjectName =
+                          (data['subjectName'] as String?) ?? '';
+                      final String section = (data['section'] as String?) ?? '';
+                      final String classId = (data['classId'] as String?) ?? '';
+                      final String status =
+                          (data['status']?.toString().toLowerCase() ?? '');
+                      final String startedAt = _formatTimestamp(
+                        data['startedAt'] ?? data['createdAt'],
+                      );
+                      final String instructorEmail =
+                          (data['instructorEmail'] as String?) ?? '';
+                      final String location =
+                          (data['location'] as String?) ?? '';
+
+                      final String title = [
+                        if (subjectCode.isNotEmpty) subjectCode,
+                        subjectName,
+                      ].where((String s) => s.trim().isNotEmpty).join(' • ');
+
+                      final List<String> chips = <String>[
+                        if (status.isNotEmpty) status,
+                        if (section.isNotEmpty) 'section $section',
+                        if (location.isNotEmpty) location,
+                      ];
+
+                      return ListTile(
+                        onLongPress: () {
+                          if (!_multiSelect) {
+                            _toggleMultiSelect(true);
+                          }
+                          _toggleSelected(doc.id);
+                        },
+                        onTap: _multiSelect
+                            ? () => _toggleSelected(doc.id)
+                            : () async {
+                                final bool? deleted = await showDialog<bool>(
+                                  context: context,
+                                  builder: (_) => _AttendanceSessionDetailsDialog(
+                                    sessionId: doc.id,
+                                    sessionRef: doc.reference,
+                                  ),
+                                );
+                                if (deleted == true && mounted) {
+                                  await _refresh();
+                                }
+                              },
+                        leading: _multiSelect
+                            ? Checkbox(
+                                value: _selectedIds.contains(doc.id),
+                                onChanged: (_) => _toggleSelected(doc.id),
+                              )
+                            : null,
+                        title: Text(title.isEmpty ? '(No subject)' : title),
+                        subtitle: Text(
+                          [
+                            if (classId.isNotEmpty) 'Class: $classId',
+                            if (startedAt.isNotEmpty) 'Started: $startedAt',
+                            if (instructorEmail.isNotEmpty)
+                              'Instructor: $instructorEmail',
+                            if (chips.isNotEmpty) chips.join(' • '),
+                          ].join('\n'),
+                        ),
+                        isThreeLine: true,
+                        trailing: _multiSelect
+                            ? (_selectedIds.contains(doc.id)
+                                ? const Icon(Icons.check_circle)
+                                : const Icon(Icons.radio_button_unchecked))
+                            : const Icon(Icons.chevron_right),
+                      );
+                    },
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AttendanceSessionDetailsDialog extends StatelessWidget {
+  const _AttendanceSessionDetailsDialog({
+    required this.sessionId,
+    required this.sessionRef,
+  });
+
+  final String sessionId;
+  final DocumentReference<Map<String, dynamic>> sessionRef;
+
+  Future<void> _deleteSession(BuildContext context) async {
+    final NavigatorState navigator = Navigator.of(context);
+    final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('Delete this session?'),
+        content: const Text(
+          'This will permanently delete the session and its recorded students/scans. This cannot be undone.',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    if (!context.mounted) return;
+
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const AlertDialog(
+        content: Row(
+          children: <Widget>[
+            SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            SizedBox(width: 12),
+            Text('Deleting session…'),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      final result = await FirebaseFunctions.instance
+          .httpsCallable('adminDeleteAttendanceSession')
+          .call(<String, dynamic>{'sessionId': sessionId});
+
+      final dynamic data = result.data;
+      final bool deleted =
+          data is Map && (data['deleted'] == true || data['deleted'] == 'true');
+
+      if (context.mounted) {
+        navigator.pop();
+        navigator.pop(true);
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(
+              deleted ? 'Session deleted.' : 'Session already deleted.',
+            ),
+          ),
+        );
+      }
+    } catch (error) {
+      if (context.mounted) {
+        navigator.pop();
+
+        String message = error.toString();
+        if (error is FirebaseFunctionsException) {
+          final String details = error.details?.toString() ?? '';
+          message = [
+            '[${error.code}]',
+            if ((error.message ?? '').trim().isNotEmpty) error.message!.trim(),
+            if (details.trim().isNotEmpty) details.trim(),
+          ].join(' ');
+        }
+        messenger.showSnackBar(
+          SnackBar(content: Text('Delete failed: $message')),
+        );
+      }
+    }
+  }
+
+  String _fmtTs(Timestamp? ts, {bool showSeconds = false}) {
+    if (ts == null) return '';
+    final DateTime dt = ts.toDate();
+    String two(int n) => n.toString().padLeft(2, '0');
+    final String base =
+        '${dt.year}-${two(dt.month)}-${two(dt.day)} ${two(dt.hour)}:${two(dt.minute)}';
+    if (!showSeconds) return base;
+    return '$base:${two(dt.second)}';
+  }
+
+  Object? _jsonFriendly(Object? value, {required int depth}) {
+    if (value == null) return null;
+    if (value is String || value is num || value is bool) return value;
+    if (value is Timestamp) return value.toDate().toIso8601String();
+    if (value is GeoPoint) {
+      return <String, Object?>{'lat': value.latitude, 'lng': value.longitude};
+    }
+    if (value is DocumentReference) return value.path;
+    if (depth <= 0) return value.toString();
+    if (value is Map) {
+      final Map<String, Object?> out = <String, Object?>{};
+      value.forEach((dynamic k, dynamic v) {
+        out[k.toString()] = _jsonFriendly(v, depth: depth - 1);
+      });
+      return out;
+    }
+    if (value is Iterable) {
+      return value
+          .map((Object? v) => _jsonFriendly(v, depth: depth - 1))
+          .toList(growable: false);
+    }
+    return value.toString();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+
+    return Dialog(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 920, maxHeight: 720),
+        child: DefaultTabController(
+          length: 3,
+          child: Column(
+            children: <Widget>[
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 8, 0),
+                child: Row(
+                  children: <Widget>[
+                    Expanded(
+                      child: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                        stream: sessionRef.snapshots(),
+                        builder:
+                            (
+                              BuildContext context,
+                              AsyncSnapshot<DocumentSnapshot<Map<String, dynamic>>>
+                                  snapshot,
+                            ) {
+                          final Map<String, dynamic>? data = snapshot.data?.data();
+                          final Timestamp? startedAtTs =
+                              (data?['startedAt'] as Timestamp?) ??
+                              (data?['createdAt'] as Timestamp?);
+
+                          String fmt(Timestamp? ts) {
+                            if (ts == null) return '';
+                            final DateTime dt = ts.toDate();
+                            String two(int n) => n.toString().padLeft(2, '0');
+                            return '${dt.year}-${two(dt.month)}-${two(dt.day)} ${two(dt.hour)}:${two(dt.minute)}';
+                          }
+
+                          final String startedLabel = fmt(startedAtTs);
+                          final String title = startedLabel.isEmpty
+                              ? 'Session'
+                              : 'Session started: $startedLabel';
+
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Text(
+                                title,
+                                style: theme.textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.w700,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              Text(
+                                'ID: $sessionId',
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  color: theme.colorScheme.onSurfaceVariant,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                    ),
+                    PopupMenuButton<String>(
+                      tooltip: 'Actions',
+                      onSelected: (String v) {
+                        switch (v) {
+                          case 'delete':
+                            _deleteSession(context);
+                            break;
+                        }
+                      },
+                      itemBuilder: (BuildContext context) {
+                        return <PopupMenuEntry<String>>[
+                          const PopupMenuItem<String>(
+                            value: 'delete',
+                            child: ListTile(
+                              dense: true,
+                              leading: Icon(Icons.delete_outline),
+                              title: Text('Delete session'),
+                            ),
+                          ),
+                        ];
+                      },
+                    ),
+                    IconButton(
+                      tooltip: 'Close',
+                      onPressed: () => Navigator.of(context).pop(),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+              ),
+              const TabBar(
+                tabs: <Widget>[
+                  Tab(text: 'Overview'),
+                  Tab(text: 'Students'),
+                  Tab(text: 'Scans'),
+                ],
+              ),
+              Expanded(
+                child: TabBarView(
+                  children: <Widget>[
+                    _buildSummaryTab(theme),
+                    _buildAttendeesTab(theme),
+                    _buildCapturesTab(theme),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSummaryTab(ThemeData theme) {
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: sessionRef.snapshots(),
+      builder:
+          (
+            BuildContext context,
+            AsyncSnapshot<DocumentSnapshot<Map<String, dynamic>>> snapshot,
+          ) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            if (snapshot.hasError) {
+              return Center(child: Text('Failed to load: ${snapshot.error}'));
+            }
+            final Map<String, dynamic>? data = snapshot.data?.data();
+            if (data == null) {
+              return const Center(child: Text('Session not found.'));
+            }
+
+            final Map<String, Object?> jsonSafe =
+                (_jsonFriendly(data, depth: 5) as Map?)
+                    ?.cast<String, Object?>() ??
+                <String, Object?>{};
+            final String pretty = const JsonEncoder.withIndent(
+              '  ',
+            ).convert(jsonSafe);
+
+            String s(String key) => (data[key] as String?) ?? '';
+            final String subject = [
+              s('subjectCode'),
+              s('subjectName'),
+            ].where((String v) => v.trim().isNotEmpty).join(' • ');
+            final String status = (data['status']?.toString() ?? '').trim();
+            final String instructorEmail =
+              (data['instructorEmail'] as String?) ?? '';
+            final String startedAt = _fmtTs(data['startedAt'] as Timestamp?);
+            final String endedAt = _fmtTs(data['endedAt'] as Timestamp?);
+
+            return Padding(
+              padding: const EdgeInsets.all(16),
+              child: ListView(
+                children: <Widget>[
+                  Text(
+                    subject.isEmpty ? '(No subject)' : subject,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 12,
+                    children: <Widget>[
+                      _kvChip('Status', status.isEmpty ? 'unknown' : status),
+                      _kvChip(
+                        'Class',
+                        s('classId').isEmpty ? '-' : s('classId'),
+                      ),
+                      if (s('section').trim().isNotEmpty)
+                        _kvChip('Section', s('section')),
+                      if (s('location').trim().isNotEmpty)
+                        _kvChip('Location', s('location')),
+                      if (instructorEmail.trim().isNotEmpty)
+                        _kvChip('Instructor', instructorEmail),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  if (startedAt.isNotEmpty)
+                    Text(
+                      'Start time: $startedAt',
+                      style: theme.textTheme.bodyMedium,
+                    ),
+                  if (endedAt.isNotEmpty)
+                    Text(
+                      'End time:   $endedAt',
+                      style: theme.textTheme.bodyMedium,
+                    ),
+                  const SizedBox(height: 16),
+                  ExpansionTile(
+                    tilePadding: EdgeInsets.zero,
+                    title: Text(
+                      'Advanced (technical)',
+                      style: theme.textTheme.labelLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    subtitle: const Text('For troubleshooting only'),
+                    children: <Widget>[
+                      const SizedBox(height: 8),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.surfaceContainerHighest,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: SelectableText(
+                          pretty,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          },
+    );
+  }
+
+  static Widget _kvChip(String label, String value) {
+    return Chip(label: Text('$label: $value'));
+  }
+
+  Widget _buildAttendeesTab(ThemeData theme) {
+    final Query<Map<String, dynamic>> q = sessionRef
+        .collection('attendees')
+        .orderBy('lastCapturedAt', descending: true)
+        .limit(500);
+
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: q.snapshots(),
+      builder:
+          (
+            BuildContext context,
+            AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot,
+          ) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            if (snapshot.hasError) {
+              return Center(
+                child: Text('Failed to load attendees: ${snapshot.error}'),
+              );
+            }
+            final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
+                snapshot.data?.docs ?? const [];
+            if (docs.isEmpty) {
+              return const Center(
+                child: Text('No students have been marked yet.'),
+              );
+            }
+
+            return ListView.separated(
+              padding: const EdgeInsets.all(8),
+              itemCount: docs.length,
+              separatorBuilder: (_, __) => const Divider(height: 1),
+              itemBuilder: (BuildContext context, int index) {
+                final Map<String, dynamic> data = docs[index].data();
+                final String name =
+                    (data['displayName'] as String?) ?? docs[index].id;
+                final String status = (data['status'] as String?) ?? '';
+                final double? confidence = (data['confidence'] is num)
+                    ? (data['confidence'] as num).toDouble()
+                    : null;
+                final Timestamp? first = data['firstCapturedAt'] as Timestamp?;
+                final Timestamp? last = data['lastCapturedAt'] as Timestamp?;
+
+                String fmtTs(Timestamp? ts) {
+                  if (ts == null) return '';
+                  final DateTime dt = ts.toDate();
+                  String two(int n) => n.toString().padLeft(2, '0');
+                  return '${dt.year}-${two(dt.month)}-${two(dt.day)} ${two(dt.hour)}:${two(dt.minute)}';
+                }
+
+                final String subtitle = <String>[
+                  if (status.isNotEmpty) 'Marked as: $status',
+                  if (confidence != null)
+                    'Confidence: ${(confidence * 100).toStringAsFixed(0)}%',
+                  if (first != null) 'First: ${fmtTs(first)}',
+                  if (last != null) 'Last: ${fmtTs(last)}',
+                ].join(' • ');
+
+                return ListTile(
+                  title: Text(name),
+                  subtitle: subtitle.isEmpty ? null : Text(subtitle),
+                  dense: true,
+                );
+              },
+            );
+          },
+    );
+  }
+
+  Widget _buildCapturesTab(ThemeData theme) {
+    final Query<Map<String, dynamic>> q = sessionRef
+        .collection('captures')
+        .orderBy('capturedAt', descending: true)
+        .limit(200);
+
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: q.snapshots(),
+      builder:
+          (
+            BuildContext context,
+            AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot,
+          ) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            if (snapshot.hasError) {
+              return Center(
+                child: Text('Failed to load captures: ${snapshot.error}'),
+              );
+            }
+            final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
+                snapshot.data?.docs ?? const [];
+            if (docs.isEmpty) {
+              return const Center(child: Text('No scans recorded yet.'));
+            }
+
+            String fmtTs(Timestamp? ts) {
+              if (ts == null) return '';
+              final DateTime dt = ts.toDate();
+              String two(int n) => n.toString().padLeft(2, '0');
+              return '${dt.year}-${two(dt.month)}-${two(dt.day)} ${two(dt.hour)}:${two(dt.minute)}:${two(dt.second)}';
+            }
+
+            return ListView.separated(
+              padding: const EdgeInsets.all(8),
+              itemCount: docs.length,
+              separatorBuilder: (_, __) => const Divider(height: 1),
+              itemBuilder: (BuildContext context, int index) {
+                final Map<String, dynamic> data = docs[index].data();
+                final String name =
+                    (data['matchDisplayName'] as String?) ??
+                    (data['matchUserId'] as String?) ??
+                    'Unknown';
+                final String status =
+                    (data['attendanceStatus'] as String?) ?? '';
+                final double? confidence = (data['confidence'] is num)
+                    ? (data['confidence'] as num).toDouble()
+                    : null;
+                final Timestamp? capturedAt = data['capturedAt'] as Timestamp?;
+
+                final List<String> bits = <String>[
+                  if (status.isNotEmpty) 'Status: $status',
+                  if (confidence != null)
+                    'Conf: ${(confidence * 100).toStringAsFixed(0)}%',
+                  if (capturedAt != null) fmtTs(capturedAt),
+                ];
+
+                return ListTile(
+                  title: Text(name),
+                  subtitle: bits.isEmpty ? null : Text(bits.join(' • ')),
+                  dense: true,
+                );
+              },
+            );
+          },
     );
   }
 }

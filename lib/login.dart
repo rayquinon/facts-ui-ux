@@ -34,6 +34,8 @@ class _LoginPageState extends State<LoginPage> {
   bool _isSubmitting = false;
   String? _appVersionLabel;
 
+  static final RegExp _emailRegex = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
+
   @override
   void initState() {
     super.initState();
@@ -77,11 +79,11 @@ class _LoginPageState extends State<LoginPage> {
     try {
       final UserCredential credential = await FirebaseAuth.instance
           .signInWithEmailAndPassword(email: email, password: password);
-        final User user = credential.user!;
-        final IdTokenResult token = await user.getIdTokenResult(true);
+      final User user = credential.user!;
+      final IdTokenResult token = await user.getIdTokenResult(true);
       final bool isAdmin =
-        token.claims != null &&
-        (token.claims!['admin'] == true || token.claims!['admin'] == 'true');
+          token.claims != null &&
+          (token.claims!['admin'] == true || token.claims!['admin'] == 'true');
 
       late final String destinationRoute;
       String welcomeMessage = 'Welcome back, ${user.email ?? email}';
@@ -178,6 +180,128 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
+  Future<void> _handleForgotPassword() async {
+    if (!mounted) return;
+
+    final TextEditingController emailController = TextEditingController(
+      text: _emailController.text.trim(),
+    );
+
+    final String? email = await showDialog<String>(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          title: const Text('Reset password'),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                const Text(
+                  'Enter your email address and we\'ll send you a password reset link.',
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: emailController,
+                  keyboardType: TextInputType.emailAddress,
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) {
+                    Navigator.of(dialogContext).pop(
+                      emailController.text.trim(),
+                    );
+                  },
+                  decoration: const InputDecoration(
+                    labelText: 'Email',
+                    prefixIcon: Icon(Icons.mail_outline),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(null),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop(emailController.text.trim());
+              },
+              child: const Text('Send link'),
+            ),
+          ],
+        );
+      },
+    );
+
+    // Avoid disposing the controller during the dialog route tear-down.
+    Future<void>.microtask(emailController.dispose);
+
+    final String trimmedEmail = (email ?? '').trim();
+    if (trimmedEmail.isEmpty) return;
+    if (!_emailRegex.hasMatch(trimmedEmail)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Enter a valid email address.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    if (!mounted) return;
+    final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('Sending reset link...'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+
+    try {
+      await FirebaseAuth.instance.sendPasswordResetEmail(email: trimmedEmail);
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('Password reset link sent to $trimmedEmail.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } on FirebaseAuthException catch (error) {
+      if (!mounted) return;
+      String message;
+      switch (error.code) {
+        case 'invalid-email':
+          message = 'That email address looks invalid.';
+          break;
+        case 'user-not-found':
+          // Avoid account enumeration; show generic message.
+          message =
+              'If an account exists for that email, a reset link will be sent.';
+          break;
+        case 'too-many-requests':
+          message = 'Too many requests. Please try again later.';
+          break;
+        default:
+          message = 'Could not send reset email (${error.code}). Try again.';
+          break;
+      }
+      messenger.showSnackBar(
+        SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Could not send reset email. Please try again.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
   Future<void> _checkForUpdates() async {
     if (kIsWeb) {
       if (!mounted) return;
@@ -189,8 +313,8 @@ class _LoginPageState extends State<LoginPage> {
         ),
       );
 
-      final WebUpdateCheck result =
-          await WebUpdateService.instance.checkForUpdates();
+      final WebUpdateCheck result = await WebUpdateService.instance
+          .checkForUpdates();
       if (!mounted) return;
 
       if (!result.supported) {
@@ -242,7 +366,8 @@ class _LoginPageState extends State<LoginPage> {
       return;
     }
 
-    final AppUpdateInfo? update = await AppUpdateService.instance.checkForUpdate();
+    final AppUpdateInfo? update = await AppUpdateService.instance
+        .checkForUpdate();
     if (!mounted) return;
 
     if (update == null) {
@@ -255,7 +380,8 @@ class _LoginPageState extends State<LoginPage> {
       return;
     }
 
-    final String currentLabel = '${update.currentVersion}+${update.currentBuildNumber}';
+    final String currentLabel =
+        '${update.currentVersion}+${update.currentBuildNumber}';
     final String latestLabel = update.latestVersion.isEmpty
         ? 'build ${update.latestBuildNumber}'
         : '${update.latestVersion}+${update.latestBuildNumber}';
@@ -415,13 +541,14 @@ class _LoginPageState extends State<LoginPage> {
                     'assets/logo.png',
                     fit: BoxFit.contain,
                     filterQuality: FilterQuality.high,
-                    errorBuilder: (
-                      BuildContext context,
-                      Object error,
-                      StackTrace? stackTrace,
-                    ) {
-                      return const SizedBox.shrink();
-                    },
+                    errorBuilder:
+                        (
+                          BuildContext context,
+                          Object error,
+                          StackTrace? stackTrace,
+                        ) {
+                          return const SizedBox.shrink();
+                        },
                   ),
                 ),
               if (showLogo) SizedBox(height: isShortScreen ? 12 : 16),
@@ -556,7 +683,7 @@ class _LoginPageState extends State<LoginPage> {
                         ? Alignment.centerLeft
                         : Alignment.center,
                     child: TextButton(
-                      onPressed: () {},
+                      onPressed: _handleForgotPassword,
                       child: const Text('Forgot your password?'),
                     ),
                   ),
@@ -576,8 +703,9 @@ class _LoginPageState extends State<LoginPage> {
                   ),
                   if (kIsWeb || defaultTargetPlatform == TargetPlatform.android)
                     Align(
-                      alignment:
-                          isTablet ? Alignment.centerLeft : Alignment.center,
+                      alignment: isTablet
+                          ? Alignment.centerLeft
+                          : Alignment.center,
                       child: TextButton.icon(
                         onPressed: _checkForUpdates,
                         icon: const Icon(Icons.system_update_alt, size: 18),
@@ -594,8 +722,7 @@ class _LoginPageState extends State<LoginPage> {
                             alpha: 0.6,
                           ),
                         ),
-                        textAlign:
-                            isTablet ? TextAlign.left : TextAlign.center,
+                        textAlign: isTablet ? TextAlign.left : TextAlign.center,
                       ),
                     ),
                 ],
@@ -620,9 +747,14 @@ class _LoginPageState extends State<LoginPage> {
               child: Image.asset(
                 'assets/logo.png',
                 fit: BoxFit.contain,
-                errorBuilder: (BuildContext context, Object error, StackTrace? stackTrace) {
-                  return const SizedBox.shrink();
-                },
+                errorBuilder:
+                    (
+                      BuildContext context,
+                      Object error,
+                      StackTrace? stackTrace,
+                    ) {
+                      return const SizedBox.shrink();
+                    },
               ),
             ),
           ),

@@ -12,7 +12,7 @@ import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'services/face_embedding_service.dart';
 import 'services/face_quality_exception.dart';
 
-enum _OrientationPhase { front, left, right, up, down }
+enum _OrientationPhase { front, left, right, up, down, far, near }
 
 // width / height (head-like). Keep this moderately wide for portrait selfie
 // framing without turning into a near-circle.
@@ -110,6 +110,8 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     _OrientationPhase.right,
     _OrientationPhase.up,
     _OrientationPhase.down,
+    _OrientationPhase.far,
+    _OrientationPhase.near,
   ];
 
   CameraController? _cameraController;
@@ -138,6 +140,8 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     _OrientationPhase.right: <List<double>>[],
     _OrientationPhase.up: <List<double>>[],
     _OrientationPhase.down: <List<double>>[],
+    _OrientationPhase.far: <List<double>>[],
+    _OrientationPhase.near: <List<double>>[],
   };
 
   @override
@@ -421,7 +425,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
         } else {
           _updateFaceReadyState(readyToStart);
           if (guideMatch != _GuideMatch.ok) {
-            _updateGuideStatus(guideMatch);
+            _updateGuideStatus(guideMatch, phase: _currentPhase);
           } else {
             _updateStatusWhenNotStarted(
               'Face detected. Tap "Start Enrollment" to begin.',
@@ -430,7 +434,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
         }
         if (_enrollmentStarted) {
           if (!withinGuideForCapture) {
-            _updateGuideStatus(guideMatch);
+            _updateGuideStatus(guideMatch, phase: _currentPhase);
           } else if (_embeddingService.isReady) {
             final DateTime now = DateTime.now();
             final DateTime? last = _lastCaptureAt;
@@ -563,7 +567,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     // tall portrait phones where the CameraPreview is letterboxed.
     final Rect guideRect = _computeGuideRect(containerSize);
 
-    return _evaluateGuideMatchRects(bboxScreen, guideRect);
+    return _evaluateGuideMatchRects(bboxScreen, guideRect, phase: _currentPhase);
   }
 
   void _updateNoFaceStatus() {
@@ -575,7 +579,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     });
   }
 
-  void _updateGuideStatus(_GuideMatch match) {
+  void _updateGuideStatus(_GuideMatch match, {required _OrientationPhase phase}) {
     if (!mounted) return;
     setState(() {
       _latestEmbedding = null;
@@ -585,10 +589,22 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
               'Center your face inside the oval before we can capture this step.';
           break;
         case _GuideMatch.tooSmall:
-          _statusMessage = 'Move closer so your face fills more of the oval.';
+          _statusMessage = switch (phase) {
+            _OrientationPhase.far =>
+              'You are too far. Move a bit closer for the FAR distance capture.',
+            _OrientationPhase.near =>
+              'Move closer so your face fills more of the oval (NEAR capture).',
+            _ => 'Move closer so your face fills more of the oval.',
+          };
           break;
         case _GuideMatch.tooLarge:
-          _statusMessage = 'Move farther so your face fits inside the oval.';
+          _statusMessage = switch (phase) {
+            _OrientationPhase.far =>
+              'Move farther so your face is smaller (FAR capture).',
+            _OrientationPhase.near =>
+              'You are too close. Move slightly farther for the NEAR capture.',
+            _ => 'Move farther so your face fits inside the oval.',
+          };
           break;
         case _GuideMatch.ok:
           // No-op; the caller should not request a status update.
@@ -610,10 +626,14 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     final Rect guideRect = _computeGuideRect(frameSize);
     if (guideRect.width == 0 || guideRect.height == 0) return _GuideMatch.ok;
 
-    return _evaluateGuideMatchRects(bbox, guideRect);
+    return _evaluateGuideMatchRects(bbox, guideRect, phase: _currentPhase);
   }
 
-  _GuideMatch _evaluateGuideMatchRects(Rect bbox, Rect guideRect) {
+  _GuideMatch _evaluateGuideMatchRects(
+    Rect bbox,
+    Rect guideRect, {
+    required _OrientationPhase phase,
+  }) {
     // Strict center check using ellipse math.
     final Offset guideCenter = guideRect.center;
     final Offset boxCenter = bbox.center;
@@ -640,16 +660,49 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     final double guideArea = guideW * guideH;
     final double areaRatio = guideArea <= 0 ? 0 : (bboxArea / guideArea);
 
+    // Size gating tuned for MLKit face boxes (more tolerant than a full-head guide).
+    // For distance-specific phases, we narrow the accepted size range so we
+    // intentionally capture both a farther and a closer template.
+    double minArea = _kMinFaceAreaVsGuide;
+    double maxArea = _kMaxFaceAreaVsGuide;
+    double minW = _kMinFaceWidthVsGuide;
+    double minH = _kMinFaceHeightVsGuide;
+    double maxW = _kMaxFaceWidthVsGuide;
+    double maxH = _kMaxFaceHeightVsGuide;
+
+    switch (phase) {
+      case _OrientationPhase.far:
+        // Farther from camera: require the face to be smaller than normal.
+        minArea = 0.06;
+        maxArea = 0.25;
+        minW = 0.12;
+        minH = 0.12;
+        maxW = 0.60;
+        maxH = 0.60;
+        break;
+      case _OrientationPhase.near:
+        // Closer to camera: require the face to be larger than normal.
+        minArea = 0.18;
+        maxArea = _kMaxFaceAreaVsGuide;
+        minW = 0.28;
+        minH = 0.28;
+        maxW = _kMaxFaceWidthVsGuide;
+        maxH = _kMaxFaceHeightVsGuide;
+        break;
+      default:
+        break;
+    }
+
     final bool tooSmall =
-        areaRatio < _kMinFaceAreaVsGuide ||
-        bboxWidth < guideW * _kMinFaceWidthVsGuide ||
-        bboxHeight < guideH * _kMinFaceHeightVsGuide;
+        areaRatio < minArea ||
+        bboxWidth < guideW * minW ||
+        bboxHeight < guideH * minH;
     if (tooSmall) return _GuideMatch.tooSmall;
 
     final bool tooLarge =
-        areaRatio > _kMaxFaceAreaVsGuide ||
-        bboxWidth > guideW * _kMaxFaceWidthVsGuide ||
-        bboxHeight > guideH * _kMaxFaceHeightVsGuide;
+        areaRatio > maxArea ||
+        bboxWidth > guideW * maxW ||
+        bboxHeight > guideH * maxH;
     if (tooLarge) return _GuideMatch.tooLarge;
 
     return _GuideMatch.ok;
@@ -714,6 +767,8 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       _OrientationPhase.right => 'Next: Turn Right',
       _OrientationPhase.up => 'Next: Tilt Up',
       _OrientationPhase.down => 'Next: Tilt Down',
+      _OrientationPhase.far => 'Next: FAR Distance',
+      _OrientationPhase.near => 'Next: NEAR Distance',
       _OrientationPhase.front => 'Next: Face Forward',
     };
 
@@ -726,6 +781,10 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
           'Tilt your chin slightly UP (look a bit higher) while keeping your face inside the oval.',
       _OrientationPhase.down =>
           'Tilt your chin slightly DOWN (look a bit lower) while keeping your face inside the oval.',
+      _OrientationPhase.far =>
+        'Step back a bit so your face looks smaller inside the oval. Hold still for 3 quick captures.',
+      _OrientationPhase.near =>
+        'Move closer so your face fills more of the oval. Hold still for 3 quick captures.',
       _OrientationPhase.front => 'Face forward and stay centered in the oval.',
     };
 
@@ -799,6 +858,10 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
         return 'Tilt slightly up';
       case _OrientationPhase.down:
         return 'Tilt slightly down';
+      case _OrientationPhase.far:
+        return 'Move farther (far distance)';
+      case _OrientationPhase.near:
+        return 'Move closer (near distance)';
     }
   }
 

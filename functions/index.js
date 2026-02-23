@@ -833,3 +833,80 @@ exports.adminDeleteUser = onCall({ cors: true, timeoutSeconds: 120 }, async (req
 
   return { ok: true };
 });
+
+async function deleteAttendanceSessionById({ db, sessionId }) {
+  const sessionRef = db.collection('attendanceSessions').doc(sessionId);
+  const snap = await sessionRef.get();
+  if (!snap.exists) {
+    return { deleted: false, reason: 'not-found' };
+  }
+
+  // Delete known subcollections first, then delete the session doc.
+  await deleteQueryInBatches(sessionRef.collection('attendees'));
+  await deleteQueryInBatches(sessionRef.collection('captures'));
+  await sessionRef.delete();
+  return { deleted: true };
+}
+
+exports.adminDeleteAttendanceSession = onCall({ cors: true, timeoutSeconds: 300 }, async (request) => {
+  requireAdmin(request);
+  const sessionId = request.data && request.data.sessionId ? String(request.data.sessionId) : '';
+  if (!sessionId) {
+    throw new HttpsError('invalid-argument', 'sessionId is required');
+  }
+
+  const db = getFirestore();
+  try {
+    const res = await deleteAttendanceSessionById({ db, sessionId });
+    return { ok: true, ...res };
+  } catch (error) {
+    throw toHttpsError('Delete attendance session', error);
+  }
+});
+
+exports.adminBulkDeleteAttendanceSessions = onCall(
+  { cors: true, timeoutSeconds: 540 },
+  async (request) => {
+    requireAdmin(request);
+    const sessionIds = request.data && Array.isArray(request.data.sessionIds)
+      ? request.data.sessionIds
+      : null;
+    if (!sessionIds || sessionIds.length === 0) {
+      throw new HttpsError('invalid-argument', 'sessionIds is required');
+    }
+    if (sessionIds.length > 50) {
+      throw new HttpsError('invalid-argument', 'Too many sessionIds (max 50 per call)');
+    }
+
+    const ids = sessionIds
+      .map((x) => (typeof x === 'string' ? x.trim() : ''))
+      .filter((x) => !!x);
+    if (ids.length === 0) {
+      throw new HttpsError('invalid-argument', 'sessionIds is empty');
+    }
+
+    const db = getFirestore();
+    const deleted = [];
+    const failed = [];
+
+    for (const sessionId of ids) {
+      try {
+        const res = await deleteAttendanceSessionById({ db, sessionId });
+        if (res.deleted) {
+          deleted.push(sessionId);
+        }
+      } catch (error) {
+        failed.push({ sessionId, error: error && error.message ? String(error.message) : String(error) });
+      }
+    }
+
+    return {
+      ok: true,
+      requestedCount: ids.length,
+      deletedCount: deleted.length,
+      failedCount: failed.length,
+      deletedIds: deleted,
+      failed,
+    };
+  }
+);
