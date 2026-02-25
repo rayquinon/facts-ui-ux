@@ -1,10 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
-import 'instructor_page.dart';
 import 'login.dart';
-import 'services/user_role_service.dart';
-import 'student_page.dart';
 import 'widgets/confirm_sign_out_dialog.dart';
 
 class VerifyEmailPageArgs {
@@ -120,53 +117,14 @@ class _VerifyEmailPageState extends State<VerifyEmailPage> {
   }
 
   Future<void> _navigateAfterVerified(User? user) async {
-    final String? explicitDestination = widget.destinationRoute;
-    if (explicitDestination != null && explicitDestination.isNotEmpty) {
-      Navigator.of(context).pushNamedAndRemoveUntil(
-        explicitDestination,
-        (Route<dynamic> route) => false,
-      );
-      return;
-    }
+    // Always go through AuthGate so role-based gates (like phone verification)
+    // are applied consistently.
+    Navigator.of(context).pushNamedAndRemoveUntil(
+      '/',
+      (Route<dynamic> route) => false,
+    );
+    return;
 
-    // Deep-link / direct navigation case: infer destination from profile role.
-    final String uid = user?.uid ?? FirebaseAuth.instance.currentUser?.uid ?? '';
-    if (uid.isEmpty) return;
-
-    try {
-      final String? role = await UserRoleService.fetchRoleByUid(uid);
-      if (!mounted) return;
-      final String? inferred = switch (role) {
-        'student' => StudentPage.routeName,
-        'instructor' => InstructorPage.routeName,
-        _ => null,
-      };
-      if (inferred == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Verified, but your profile role could not be loaded. Please sign out and sign in again.',
-            ),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-        return;
-      }
-      Navigator.of(context).pushNamedAndRemoveUntil(
-        inferred,
-        (Route<dynamic> route) => false,
-      );
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Verified, but failed to load your profile. Please sign out and sign in again.',
-          ),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    }
   }
 
   @override

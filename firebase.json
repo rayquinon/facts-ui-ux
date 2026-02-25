@@ -45,7 +45,7 @@
         "headers": [
           {
             "key": "Cache-Control",
-            "value": "no-cache"
+            "value": "no-store, max-age=0"
           }
         ]
       },
@@ -54,7 +54,7 @@
         "headers": [
           {
             "key": "Cache-Control",
-            "value": "no-cache"
+            "value": "no-store, max-age=0"
           }
         ]
       },
@@ -64,15 +64,6 @@
           {
             "key": "Cache-Control",
             "value": "public, max-age=60"
-          }
-        ]
-      },
-      {
-        "source": "/downloads/**",
-        "headers": [
-          {
-            "key": "Cache-Control",
-            "value": "public, max-age=3600"
           }
         ]
       }

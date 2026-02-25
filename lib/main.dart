@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_functions/cloud_functions.dart';
@@ -21,8 +23,166 @@ import 'services/app_update_types.dart';
 import 'reports/generate_report_page.dart';
 import 'reports/instructor_sessions_report_page.dart';
 import 'verify_email_page.dart';
+import 'verify_phone_page.dart';
 import 'widgets/confirm_sign_out_dialog.dart';
 import 'widgets/android_only_feature_page.dart';
+
+final GlobalKey<NavigatorState> _rootNavigatorKey = GlobalKey<NavigatorState>();
+
+class _StudentInactivityLogoutController with WidgetsBindingObserver {
+  _StudentInactivityLogoutController._();
+
+  static final _StudentInactivityLogoutController instance =
+      _StudentInactivityLogoutController._();
+
+  static const Duration _timeout = Duration(minutes: 15);
+  static const Duration _minResetInterval = Duration(milliseconds: 250);
+
+  bool _enabled = false;
+  bool _loggingOut = false;
+  bool _promptVisible = false;
+  Timer? _timer;
+  DateTime _lastInteractionAt = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastResetAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  void enable() {
+    if (_enabled) return;
+    _enabled = true;
+    _loggingOut = false;
+    _lastInteractionAt = DateTime.now();
+    _lastResetAt = _lastInteractionAt;
+    WidgetsBinding.instance.addObserver(this);
+    GestureBinding.instance.pointerRouter.addGlobalRoute(_handlePointerEvent);
+    _scheduleTimer();
+  }
+
+  void disable() {
+    if (!_enabled) return;
+    _enabled = false;
+    _loggingOut = false;
+    _timer?.cancel();
+    _timer = null;
+    WidgetsBinding.instance.removeObserver(this);
+    GestureBinding.instance.pointerRouter.removeGlobalRoute(
+      _handlePointerEvent,
+    );
+  }
+
+  void _handlePointerEvent(PointerEvent event) {
+    if (!_enabled || _loggingOut || _promptVisible) return;
+    if (event is PointerDownEvent || event is PointerSignalEvent) {
+      _bump();
+    }
+  }
+
+  void _bump() {
+    if (_promptVisible) return;
+    final DateTime now = DateTime.now();
+    if (now.difference(_lastResetAt) < _minResetInterval) return;
+    _lastResetAt = now;
+    _lastInteractionAt = now;
+    _scheduleTimer();
+  }
+
+  void _scheduleTimer() {
+    _timer?.cancel();
+    if (!_enabled) return;
+    final DateTime now = DateTime.now();
+    final Duration elapsed = now.difference(_lastInteractionAt);
+    final Duration remaining = _timeout - elapsed;
+    if (remaining <= Duration.zero) {
+      _timer = Timer(Duration.zero, _onTimeout);
+      return;
+    }
+    _timer = Timer(remaining, _onTimeout);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (!_enabled || _loggingOut) return;
+    if (state == AppLifecycleState.resumed) {
+      final DateTime now = DateTime.now();
+      if (!_promptVisible && now.difference(_lastInteractionAt) >= _timeout) {
+        _onTimeout();
+      } else if (!_promptVisible) {
+        _scheduleTimer();
+      }
+    }
+  }
+
+  void _onTimeout() {
+    if (!_enabled || _loggingOut || _promptVisible) return;
+    _showSessionExpiredPrompt();
+  }
+
+  Future<void> _showSessionExpiredPrompt() async {
+    if (!_enabled || _loggingOut || _promptVisible) return;
+    _promptVisible = true;
+    _timer?.cancel();
+    _timer = null;
+
+    final BuildContext? context = _rootNavigatorKey.currentContext;
+    if (context == null) {
+      // No context yet; try again soon.
+      _promptVisible = false;
+      _scheduleTimer();
+      return;
+    }
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) {
+        return PopScope(
+          canPop: false,
+          child: AlertDialog(
+            title: const Text('Session expired'),
+            content: const Text(
+              'You have been inactive for 15 minutes. For your account security, please log in again.',
+            ),
+            actions: <Widget>[
+              FilledButton(
+                onPressed: () async {
+                  Navigator.of(dialogContext).pop();
+                  await _logoutNow();
+                },
+                child: const Text('Log out'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+
+    // If the dialog closed without logging out (should not happen), resume timer.
+    if (_enabled && !_loggingOut) {
+      _promptVisible = false;
+      _lastInteractionAt = DateTime.now();
+      _scheduleTimer();
+    }
+  }
+
+  Future<void> _logoutNow() async {
+    if (!_enabled || _loggingOut) return;
+    _loggingOut = true;
+    try {
+      await FirebaseAuth.instance.signOut();
+    } catch (_) {
+      // Best-effort only.
+    }
+
+    final NavigatorState? nav = _rootNavigatorKey.currentState;
+    if (nav != null) {
+      try {
+        nav.pushNamedAndRemoveUntil(LoginPage.routeName, (_) => false);
+      } catch (_) {
+        // AuthGate will still react to signOut.
+      }
+    }
+    _loggingOut = false;
+    _promptVisible = false;
+  }
+}
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -61,6 +221,7 @@ class FactsApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: _rootNavigatorKey,
       title: 'Facts',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
@@ -235,11 +396,13 @@ class _AuthGateState extends State<AuthGate> {
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (BuildContext context, AsyncSnapshot<User?> snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
+          _StudentInactivityLogoutController.instance.disable();
           return const _AuthLoadingView();
         }
 
         final User? user = snapshot.data;
         if (user == null) {
+          _StudentInactivityLogoutController.instance.disable();
           return const LoginPage();
         }
 
@@ -267,15 +430,20 @@ class _AuthGateState extends State<AuthGate> {
                     !isAdmin &&
                     role != 'instructor' &&
                     role != 'admin') {
+                  _StudentInactivityLogoutController.instance.disable();
                   return const _AuthErrorView(
                     message:
                         'Web access is available only for admin and instructor accounts.\n\nPlease use the mobile app for student access.',
                   );
                 }
 
-                if (isAdmin) return const AdminPage();
+                if (isAdmin) {
+                  _StudentInactivityLogoutController.instance.disable();
+                  return const AdminPage();
+                }
 
                 if (role == 'admin') {
+                  _StudentInactivityLogoutController.instance.disable();
                   return _BootstrapAdminClaimView(
                     user: user,
                     onBootstrapped: _triggerAuthRefresh,
@@ -283,6 +451,7 @@ class _AuthGateState extends State<AuthGate> {
                 }
 
                 if (!user.emailVerified) {
+                  _StudentInactivityLogoutController.instance.disable();
                   final String? destinationRoute = switch (role) {
                     'student' => StudentPage.routeName,
                     'instructor' => InstructorPage.routeName,
@@ -301,10 +470,19 @@ class _AuthGateState extends State<AuthGate> {
 
                 switch (role) {
                   case 'student':
+                    _StudentInactivityLogoutController.instance.enable();
+                    if ((user.phoneNumber ?? '').isEmpty) {
+                      return VerifyPhonePage(onVerified: _triggerAuthRefresh);
+                    }
                     return const StudentPage();
                   case 'instructor':
+                    _StudentInactivityLogoutController.instance.disable();
+                    if ((user.phoneNumber ?? '').isEmpty) {
+                      return VerifyPhonePage(onVerified: _triggerAuthRefresh);
+                    }
                     return const InstructorPage();
                   default:
+                    _StudentInactivityLogoutController.instance.disable();
                     return const _AuthErrorView(
                       message:
                           'Your account is missing a role assignment. Please contact support.',

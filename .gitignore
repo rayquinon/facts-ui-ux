@@ -17,6 +17,7 @@ migrate_working_dir/
 
 # Hosted build artifacts
 public/downloads/*.apk
+public/downloads/version.json
 public/app/
 
 # Firebase deploy cache
@@ -57,6 +58,11 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Android release signing (NEVER commit)
+/android/key.properties
+/android/app/*.jks
+/android/app/*.keystore
 
 # Large model files managed outside git
 assets/models/w600k_r50.onnx

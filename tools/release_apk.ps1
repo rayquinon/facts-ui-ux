@@ -78,9 +78,15 @@ $manifest = @{
   latestBuildNumber = $buildNumber
   latestVersionName = $versionName
   # Use version-stamped URLs to avoid client/CDN caching returning an older APK.
-  apkUrl = "https://simple-distributed-database.web.app/downloads/app-latest-$versionSafe.apk"
-  arm64Url = "https://simple-distributed-database.web.app/downloads/app-latest-arm64-$versionSafe.apk"
-  androidPageUrl = 'https://simple-distributed-database.web.app/android/'
+  apkUrl = "https://facts.shiro.codes/downloads/app-latest-$versionSafe.apk"
+  arm64Url = "https://facts.shiro.codes/downloads/app-latest-arm64-$versionSafe.apk"
+  androidPageUrl = 'https://facts.shiro.codes/android/'
+
+  # Fallback URLs (same hosting site, alternate domain).
+  apkUrlAlt = "https://simple-distributed-database.web.app/downloads/app-latest-$versionSafe.apk"
+  arm64UrlAlt = "https://simple-distributed-database.web.app/downloads/app-latest-arm64-$versionSafe.apk"
+  androidPageUrlAlt = 'https://simple-distributed-database.web.app/android/'
+
   updatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
 }
 
@@ -104,5 +110,5 @@ Copy-Item -Recurse -Force $srcWeb $webOut
 Write-Host "Deploying Firebase Hosting…"
 firebase deploy --only hosting
 
-Write-Host "Done. Latest APK: https://simple-distributed-database.web.app/downloads/app-latest.apk"
-Write-Host "Done. Versioned APK: https://simple-distributed-database.web.app/downloads/app-latest-$versionSafe.apk"
+Write-Host "Done. Latest APK: https://facts.shiro.codes/downloads/app-latest.apk"
+Write-Host "Done. Versioned APK: https://facts.shiro.codes/downloads/app-latest-$versionSafe.apk"

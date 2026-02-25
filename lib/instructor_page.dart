@@ -1131,11 +1131,12 @@ class _InstructorPageState extends State<InstructorPage> {
                 clipBehavior: Clip.none,
                 children: <Widget>[
                   const Icon(Icons.menu),
-                  Positioned(
-                    top: -2,
-                    right: -2,
-                    child: _buildOfflineBadge(theme, size: 12),
-                  ),
+                  if (_offlineModeChecking || _offlineModeStatus?.isReady != true)
+                    Positioned(
+                      top: -2,
+                      right: -2,
+                      child: _buildOfflineBadge(theme, size: 12),
+                    ),
                 ],
               ),
             );

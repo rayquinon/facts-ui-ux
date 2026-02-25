@@ -12,8 +12,12 @@ class AppUpdateService {
   AppUpdateService._();
 
   // Keep this as a plain Hosting file to avoid Firestore/Remote Config costs.
-  static const String _manifestUrl =
-      'https://simple-distributed-database.web.app/downloads/version.json';
+  static const List<String> _manifestUrls = <String>[
+    // Custom domain (preferred).
+    'https://facts.shiro.codes/downloads/version.json',
+    // Default Firebase Hosting domain (fallback).
+    'https://simple-distributed-database.web.app/downloads/version.json',
+  ];
 
   Future<AppUpdateInfo?> checkForUpdate({Duration timeout = const Duration(seconds: 3)}) async {
     final PackageInfo info = await PackageInfo.fromPlatform();
@@ -33,6 +37,10 @@ class AppUpdateService {
     final String? arm64Url = _readString(manifest['arm64Url']);
     final String? androidPageUrl = _readString(manifest['androidPageUrl']);
 
+    final String? apkUrlAlt = _readString(manifest['apkUrlAlt']);
+    final String? arm64UrlAlt = _readString(manifest['arm64UrlAlt']);
+    final String? androidPageUrlAlt = _readString(manifest['androidPageUrlAlt']);
+
     return AppUpdateInfo(
       currentBuildNumber: currentBuild,
       currentVersion: currentVersion,
@@ -41,6 +49,9 @@ class AppUpdateService {
       apkUrl: apkUrl,
       arm64Url: arm64Url,
       androidPageUrl: androidPageUrl,
+      apkUrlAlt: apkUrlAlt,
+      arm64UrlAlt: arm64UrlAlt,
+      androidPageUrlAlt: androidPageUrlAlt,
     );
   }
 
@@ -49,29 +60,38 @@ class AppUpdateService {
     client.connectionTimeout = timeout;
 
     try {
-      final Uri uri = Uri.parse(_manifestUrl).replace(
-        queryParameters: <String, String>{
-          // Avoid stale cached manifests (some networks/proxies ignore headers).
-          't': DateTime.now().millisecondsSinceEpoch.toString(),
-        },
-      );
-      final HttpClientRequest request = await client.getUrl(uri).timeout(timeout);
-      request.headers.set(HttpHeaders.acceptHeader, 'application/json');
+      for (final String url in _manifestUrls) {
+        final Uri uri = Uri.parse(url).replace(
+          queryParameters: <String, String>{
+            // Avoid stale cached manifests (some networks/proxies ignore headers).
+            't': DateTime.now().millisecondsSinceEpoch.toString(),
+          },
+        );
 
-      final HttpClientResponse response = await request.close().timeout(timeout);
-      if (response.statusCode != 200) {
-        return null;
-      }
+        try {
+          final HttpClientRequest request = await client.getUrl(uri).timeout(timeout);
+          request.headers.set(HttpHeaders.acceptHeader, 'application/json');
 
-      final String body = await response.transform(utf8.decoder).join().timeout(timeout);
-      final Object? decoded = jsonDecode(body);
-      if (decoded is Map<String, dynamic>) {
-        return decoded;
-      }
-      if (decoded is Map) {
-        return decoded.map((Object? key, Object? value) {
-          return MapEntry<String, dynamic>(key.toString(), value);
-        });
+          final HttpClientResponse response = await request.close().timeout(timeout);
+          if (response.statusCode != 200) {
+            continue;
+          }
+
+          final String body =
+              await response.transform(utf8.decoder).join().timeout(timeout);
+          final Object? decoded = jsonDecode(body);
+          if (decoded is Map<String, dynamic>) {
+            return decoded;
+          }
+          if (decoded is Map) {
+            return decoded.map((Object? key, Object? value) {
+              return MapEntry<String, dynamic>(key.toString(), value);
+            });
+          }
+        } catch (_) {
+          // Try next URL.
+          continue;
+        }
       }
       return null;
     } catch (_) {

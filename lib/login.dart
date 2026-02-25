@@ -6,10 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import 'admin_page.dart';
-import 'instructor_page.dart';
 import 'signup_pickrole.dart';
-import 'student_page.dart';
 import 'services/user_role_service.dart';
 import 'services/app_update_service.dart';
 import 'services/app_update_types.dart';
@@ -85,19 +82,15 @@ class _LoginPageState extends State<LoginPage> {
           token.claims != null &&
           (token.claims!['admin'] == true || token.claims!['admin'] == 'true');
 
-      late final String destinationRoute;
       String welcomeMessage = 'Welcome back, ${user.email ?? email}';
 
       if (isAdmin) {
-        destinationRoute = AdminPage.routeName;
         welcomeMessage = 'Signed in as Admin';
       } else {
         final String? role = await UserRoleService.fetchRoleByUid(user.uid);
         if (role == 'student') {
-          destinationRoute = StudentPage.routeName;
           welcomeMessage = 'Welcome back, student!';
         } else if (role == 'instructor') {
-          destinationRoute = InstructorPage.routeName;
           welcomeMessage = 'Welcome back, instructor!';
         } else {
           messenger.showSnackBar(
@@ -151,14 +144,19 @@ class _LoginPageState extends State<LoginPage> {
             ),
           );
         }
-        Navigator.of(context).pushReplacementNamed(
-          VerifyEmailPage.routeName,
-          arguments: VerifyEmailPageArgs(destinationRoute: destinationRoute),
-        );
+          Navigator.of(context).pushReplacementNamed(
+            VerifyEmailPage.routeName,
+            arguments: const VerifyEmailPageArgs(destinationRoute: '/'),
+          );
         return;
       }
 
-      Navigator.of(context).pushReplacementNamed(destinationRoute);
+      // Always go through AuthGate so any new gates (phone verification, etc)
+      // are applied consistently.
+      Navigator.of(context).pushNamedAndRemoveUntil(
+        '/',
+        (Route<dynamic> route) => false,
+      );
     } on FirebaseAuthException catch (error) {
       messenger.showSnackBar(
         SnackBar(

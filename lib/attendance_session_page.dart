@@ -63,11 +63,11 @@ class AttendanceSessionPage extends StatefulWidget {
 class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   // Recognition is strictly gated to minimize false positives.
   // Tune these with real class data if needed.
-  static const double _similarityThreshold = 0.60;
+  static const double _similarityThreshold = 0.62;
   static const double _singleTemplateThreshold = 0.68;
-  static const double _templateHitThreshold = 0.60;
+  static const double _templateHitThreshold = 0.62;
   static const int _minTemplateHits = 2;
-  static const double _similarityMargin = 0.08;
+  static const double _similarityMargin = 0.10;
   static const double _confidenceSpan = 0.20;
   static const Duration _captureCooldown = Duration(seconds: 1);
   static const Duration _confirmingCaptureCooldown = Duration(milliseconds: 300);

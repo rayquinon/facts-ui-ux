@@ -32,7 +32,7 @@ const double _kMinFaceHeightVsGuide = 0.18;
 const double _kMaxFaceWidthVsGuide = 1.15;
 const double _kMaxFaceHeightVsGuide = 1.10;
 
-Rect _computeGuideRect(Size size) {
+Rect _computeGuideRect(Size size, {double scale = 1.0}) {
   if (size.width <= 0 || size.height <= 0) {
     return Rect.zero;
   }
@@ -44,8 +44,11 @@ Rect _computeGuideRect(Size size) {
   final double maxWidth = size.width * 0.88;
   final double maxHeight = size.height * 0.82;
 
-  final double minWidth = size.width * 0.52;
-  final double minHeight = size.height * 0.52;
+  // Allow a smaller guide when we instruct the user to move back.
+  final bool isSmallMode = scale < 0.999;
+  final double minFactor = isSmallMode ? 0.40 : 0.52;
+  final double minWidth = size.width * minFactor;
+  final double minHeight = size.height * minFactor;
 
   // Keep the aspect ratio intact while applying constraints.
   double height = maxHeight;
@@ -79,6 +82,30 @@ Rect _computeGuideRect(Size size) {
   if (height > maxHeight) {
     height = maxHeight;
     width = height * _kGuideAspectRatio;
+  }
+
+  // Apply dynamic scaling to guide size to reinforce distance instructions.
+  if (scale != 1.0) {
+    width *= scale;
+    height *= scale;
+
+    // Clamp back to bounds while preserving aspect ratio.
+    if (width > maxWidth) {
+      width = maxWidth;
+      height = width / _kGuideAspectRatio;
+    }
+    if (height > maxHeight) {
+      height = maxHeight;
+      width = height * _kGuideAspectRatio;
+    }
+    if (width < minWidth) {
+      width = minWidth;
+      height = width / _kGuideAspectRatio;
+    }
+    if (height < minHeight) {
+      height = minHeight;
+      width = height * _kGuideAspectRatio;
+    }
   }
 
   return Rect.fromCenter(
@@ -134,6 +161,10 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   String? _statusMessage;
   int _currentPhaseIndex = 0;
   bool _autoSaveTriggered = false;
+  _GuideMatch _uiGuideMatch = _GuideMatch.ok;
+  _GuideMatch? _pendingUiGuideMatch;
+  DateTime? _pendingUiGuideSince;
+  static const Duration _kGuideUiStabilize = Duration(milliseconds: 350);
   final Map<_OrientationPhase, List<List<double>>> _phaseEmbeddings = {
     _OrientationPhase.front: <List<double>>[],
     _OrientationPhase.left: <List<double>>[],
@@ -388,6 +419,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       final InputImage inputImage = _buildInputImage(image);
       final List<Face> faces = await detector.processImage(inputImage);
       if (faces.isEmpty) {
+        _updateGuideUiMatch(_GuideMatch.ok);
         _updateFaceReadyState(false);
         if (_enrollmentStarted) {
           _updateNoFaceStatus();
@@ -413,6 +445,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
                 previewRect,
                 rotationCompensation: _lastRotationCompensation,
               );
+        _updateGuideUiMatch(guideMatch);
         // IMPORTANT: MLKit's boundingBox is typically the face region, not the full head.
         // The original size thresholds were tuned for a full-head guide and can be
         // too strict, preventing the user from ever starting enrollment.
@@ -479,6 +512,29 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     } finally {
       _isProcessingFrame = false;
     }
+  }
+
+  void _updateGuideUiMatch(_GuideMatch match) {
+    // Only use distance-related matches to drive the oval size.
+    final _GuideMatch normalized = switch (match) {
+      _GuideMatch.tooSmall => _GuideMatch.tooSmall,
+      _GuideMatch.tooLarge => _GuideMatch.tooLarge,
+      _ => _GuideMatch.ok,
+    };
+
+    final DateTime now = DateTime.now();
+    if (_pendingUiGuideMatch != normalized) {
+      _pendingUiGuideMatch = normalized;
+      _pendingUiGuideSince = now;
+      return;
+    }
+
+    final DateTime? since = _pendingUiGuideSince;
+    if (since == null) return;
+    if (now.difference(since) < _kGuideUiStabilize) return;
+
+    if (!mounted || _uiGuideMatch == normalized) return;
+    setState(() => _uiGuideMatch = normalized);
   }
 
   void _updateStatusWhenNotStarted(String message) {
@@ -1237,6 +1293,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
                           phase: _currentPhase,
                           showDirectionArrow: _enrollmentStarted,
                           previewRect: previewRect,
+                          guideMatch: _uiGuideMatch,
                         ),
                       ),
                   ],
@@ -1329,22 +1386,36 @@ class _FaceGuideOverlay extends StatelessWidget {
     required this.phase,
     required this.showDirectionArrow,
     required this.previewRect,
+    required this.guideMatch,
   });
 
   final String phaseLabel;
   final _OrientationPhase phase;
   final bool showDirectionArrow;
   final Rect? previewRect;
+  final _GuideMatch guideMatch;
 
   @override
   Widget build(BuildContext context) {
     final TextTheme textTheme = Theme.of(context).textTheme;
+
+    // Dynamic sizing: bigger oval when user is too far (move closer), smaller
+    // oval when user is too close (move back). Medium for "good distance".
+    final double guideScale = switch (guideMatch) {
+      _GuideMatch.tooSmall => 1.12,
+      _GuideMatch.tooLarge => 0.84,
+      _ => 1.0,
+    };
+
     return IgnorePointer(
       child: Stack(
         children: <Widget>[
           Positioned.fill(
             child: CustomPaint(
-              painter: _FaceGuideMaskPainter(previewRect: previewRect),
+              painter: _FaceGuideMaskPainter(
+                previewRect: previewRect,
+                guideScale: guideScale,
+              ),
             ),
           ),
           Align(
@@ -1406,16 +1477,20 @@ class _FaceGuideOverlay extends StatelessWidget {
 }
 
 class _FaceGuideMaskPainter extends CustomPainter {
-  const _FaceGuideMaskPainter({required this.previewRect});
+  const _FaceGuideMaskPainter({
+    required this.previewRect,
+    required this.guideScale,
+  });
 
   final Rect? previewRect;
+  final double guideScale;
 
   @override
   void paint(Canvas canvas, Size size) {
     final Rect bounds = Offset.zero & size;
     // Always size the guide to the full available area so it doesn't shrink
     // when the CameraPreview is letterboxed.
-    final Rect guideRect = _computeGuideRect(size);
+    final Rect guideRect = _computeGuideRect(size, scale: guideScale);
 
     final Path maskPath = Path()
       ..fillType = PathFillType.evenOdd
@@ -1435,5 +1510,9 @@ class _FaceGuideMaskPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+  bool shouldRepaint(covariant CustomPainter oldDelegate) {
+    if (oldDelegate is! _FaceGuideMaskPainter) return true;
+    return oldDelegate.previewRect != previewRect ||
+        oldDelegate.guideScale != guideScale;
+  }
 }
