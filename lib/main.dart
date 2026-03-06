@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:app_links/app_links.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_functions/cloud_functions.dart';
@@ -22,6 +23,7 @@ import 'services/app_update_service.dart';
 import 'services/app_update_types.dart';
 import 'reports/generate_report_page.dart';
 import 'reports/instructor_sessions_report_page.dart';
+import 'reset_password_page.dart';
 import 'verify_email_page.dart';
 import 'verify_phone_page.dart';
 import 'widgets/confirm_sign_out_dialog.dart';
@@ -290,6 +292,12 @@ class FactsApp extends StatelessWidget {
           }
           return AttendanceSessionPage(config: config);
         },
+        ResetPasswordPage.routeName: (BuildContext context) {
+          final ModalRoute<dynamic>? route = ModalRoute.of(context);
+          final ResetPasswordPageArgs? args =
+              route?.settings.arguments as ResetPasswordPageArgs?;
+          return ResetPasswordPage(oobCode: args?.oobCode ?? '');
+        },
       },
       onUnknownRoute: (RouteSettings settings) => MaterialPageRoute<void>(
         builder: (BuildContext context) =>
@@ -314,6 +322,7 @@ class AuthGate extends StatefulWidget {
 class _AuthGateState extends State<AuthGate> {
   int _authRefreshKey = 0;
   bool _updateCheckedThisLaunch = false;
+  StreamSubscription<Uri>? _appLinksSub;
 
   void _triggerAuthRefresh() {
     setState(() => _authRefreshKey++);
@@ -322,9 +331,79 @@ class _AuthGateState extends State<AuthGate> {
   @override
   void initState() {
     super.initState();
+    _initAppLinks();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkForAndroidUpdateOnce();
     });
+  }
+
+  void _initAppLinks() {
+    if (kIsWeb) return;
+
+    final AppLinks appLinks = AppLinks();
+
+    _appLinksSub?.cancel();
+    _appLinksSub = appLinks.uriLinkStream.listen(
+      (Uri uri) {
+        _handleIncomingLink(uri);
+      },
+      onError: (_) {
+        // Ignore link stream errors.
+      },
+    );
+
+    appLinks.getInitialLink().then((Uri? uri) {
+      if (uri != null) _handleIncomingLink(uri);
+    }).catchError((_) {
+      // Ignore.
+    });
+  }
+
+  void _handleIncomingLink(Uri uri) {
+    Uri effectiveUri = uri;
+    final String host = uri.host.toLowerCase();
+
+    // If the link is a Firebase Dynamic Link (page.link), unwrap the actual deep link.
+    if (host.endsWith('.page.link')) {
+      final String raw = uri.queryParameters['link'] ?? '';
+      if (raw.isNotEmpty) {
+        try {
+          effectiveUri = Uri.parse(raw);
+        } catch (_) {
+          return;
+        }
+      } else {
+        return;
+      }
+    }
+
+    final String effectiveHost = effectiveUri.host.toLowerCase();
+    final String path = effectiveUri.path;
+    const Set<String> allowedHosts = <String>{
+      'facts.shiro.codes',
+      'simple-distributed-database.web.app',
+      'simple-distributed-database.firebaseapp.com',
+    };
+    if (!allowedHosts.contains(effectiveHost)) return;
+    final bool isResetPath = path.startsWith('/reset');
+    final bool isFirebaseActionPath = path.startsWith('/__/auth/action');
+    if (!isResetPath && !isFirebaseActionPath) return;
+
+    final String code = (effectiveUri.queryParameters['oobCode'] ?? '').trim();
+    if (code.isEmpty) return;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _rootNavigatorKey.currentState?.pushNamed(
+        ResetPasswordPage.routeName,
+        arguments: ResetPasswordPageArgs(oobCode: code),
+      );
+    });
+  }
+
+  @override
+  void dispose() {
+    _appLinksSub?.cancel();
+    super.dispose();
   }
 
   Future<void> _checkForAndroidUpdateOnce() async {

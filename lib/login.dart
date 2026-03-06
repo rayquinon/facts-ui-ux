@@ -259,6 +259,10 @@ class _LoginPageState extends State<LoginPage> {
     );
 
     try {
+      // Dynamic Links is required for handleCodeInApp flows, but is no longer
+      // available in some Firebase Console versions/projects. Instead, use the
+      // standard Firebase reset email which points to /__/auth/action.
+      // We capture that link via Android App Links and complete reset in-app.
       await FirebaseAuth.instance.sendPasswordResetEmail(email: trimmedEmail);
       if (!mounted) return;
       messenger.showSnackBar(

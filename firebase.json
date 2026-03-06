@@ -26,10 +26,20 @@
     "public": "public",
     "ignore": [
       "firebase.json",
-      "**/.*",
+      ".firebase/**",
+      ".git/**",
+      ".gitignore",
       "**/node_modules/**"
     ],
     "rewrites": [
+      {
+        "source": "/reset",
+        "destination": "/app/index.html"
+      },
+      {
+        "source": "/reset/**",
+        "destination": "/app/index.html"
+      },
       {
         "source": "/app",
         "destination": "/app/index.html"

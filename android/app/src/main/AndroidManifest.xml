@@ -26,6 +26,82 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+
+            <!-- App Links: open password reset links in-app -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="facts.shiro.codes"
+                    android:pathPrefix="/reset" />
+            </intent-filter>
+
+            <!-- App Links fallback: Firebase Hosting default domain -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="simple-distributed-database.web.app"
+                    android:pathPrefix="/reset" />
+            </intent-filter>
+
+            <!-- Standard Firebase Auth email action handler -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="simple-distributed-database.web.app"
+                    android:pathPrefix="/__/auth/action" />
+            </intent-filter>
+
+            <!-- App Links fallback: legacy firebaseapp.com domain -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="simple-distributed-database.firebaseapp.com"
+                    android:pathPrefix="/reset" />
+            </intent-filter>
+
+            <!-- Standard Firebase Auth email action handler -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="simple-distributed-database.firebaseapp.com"
+                    android:pathPrefix="/__/auth/action" />
+            </intent-filter>
+
+            <!-- Standard Firebase Auth email action handler (custom domain, if used) -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="facts.shiro.codes"
+                    android:pathPrefix="/__/auth/action" />
+            </intent-filter>
+
+            <!-- Firebase Dynamic Links domain (required for handleCodeInApp) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="simple-distributed-database.page.link" />
+            </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->

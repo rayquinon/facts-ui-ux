@@ -5,6 +5,93 @@ const { getFirestore, FieldValue, FieldPath } = require('firebase-admin/firestor
 
 initializeApp();
 
+// Firebase Web API key is not a secret, but keeping it in env makes rotation easier.
+// Falls back to the current project's web API key if not provided.
+const FIREBASE_WEB_API_KEY =
+  process.env.FIREBASE_WEB_API_KEY ||
+  // facts-ui-ux (web)
+  'AIzaSyCIX6BPWg4vO25X-3WuvREdArIIOU2lyK4';
+
+function maskPhoneE164(phoneNumber) {
+  if (typeof phoneNumber !== 'string' || !phoneNumber.trim()) return '';
+  const digits = phoneNumber.trim().replace(/\D/g, '');
+  if (digits.length <= 4) return phoneNumber.trim();
+  const headLen = Math.min(3, Math.max(1, digits.length - 2));
+  const head = digits.slice(0, headLen);
+  const tail = digits.slice(-2);
+  const stars = Math.max(0, digits.length - head.length - tail.length);
+  return `+${head}${'*'.repeat(stars)}${tail}`;
+}
+
+async function verifyResetOobCode(oobCode) {
+  const code = String(oobCode || '').trim();
+  if (!code) {
+    throw new HttpsError('invalid-argument', 'oobCode is required');
+  }
+
+  const url = `https://identitytoolkit.googleapis.com/v1/accounts:resetPassword?key=${encodeURIComponent(
+    FIREBASE_WEB_API_KEY,
+  )}`;
+
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ oobCode: code }),
+    });
+  } catch (_) {
+    throw new HttpsError('unavailable', 'Could not reach auth service');
+  }
+
+  let json;
+  try {
+    json = await res.json();
+  } catch (_) {
+    json = null;
+  }
+
+  if (!res.ok) {
+    const message = json && json.error && json.error.message ? String(json.error.message) : 'INVALID_OOB_CODE';
+    // Normalize common Identity Toolkit errors.
+    if (message === 'EXPIRED_OOB_CODE' || message === 'INVALID_OOB_CODE') {
+      throw new HttpsError('invalid-argument', 'Invalid or expired reset link');
+    }
+    throw new HttpsError('unknown', 'Could not validate reset link');
+  }
+
+  const email = json && typeof json.email === 'string' ? json.email.trim() : '';
+  if (!email) {
+    throw new HttpsError('invalid-argument', 'Invalid or expired reset link');
+  }
+  return { email };
+}
+
+exports.getPasswordResetPhone = onCall({ cors: true }, async (request) => {
+  const oobCode = request.data && request.data.oobCode ? String(request.data.oobCode) : '';
+  const { email } = await verifyResetOobCode(oobCode);
+
+  let user;
+  try {
+    user = await getAuth().getUserByEmail(email);
+  } catch (_) {
+    // Don't leak whether the user exists; oobCode validation already ensures link possession.
+    throw new HttpsError('invalid-argument', 'Invalid or expired reset link');
+  }
+
+  const phoneNumber = typeof user.phoneNumber === 'string' ? user.phoneNumber.trim() : '';
+  if (!phoneNumber) {
+    throw new HttpsError('failed-precondition', 'No phone number linked to this account');
+  }
+
+  return {
+    ok: true,
+    email,
+    phoneNumber,
+    maskedPhone: maskPhoneE164(phoneNumber),
+  };
+});
+
 function requireSignedIn(request) {
   const auth = request.auth;
   if (!auth) {
