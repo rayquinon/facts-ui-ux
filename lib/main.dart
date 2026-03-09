@@ -392,6 +392,12 @@ class _AuthGateState extends State<AuthGate> {
     final String code = (effectiveUri.queryParameters['oobCode'] ?? '').trim();
     if (code.isEmpty) return;
 
+    // Only route into password reset while signed out.
+    // Otherwise, Android may re-deliver the initial reset link on app restart,
+    // causing a confusing loop back to the reset screen after login.
+    final User? currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser != null) return;
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _rootNavigatorKey.currentState?.pushNamed(
         ResetPasswordPage.routeName,
