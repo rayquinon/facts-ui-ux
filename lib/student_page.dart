@@ -1466,18 +1466,16 @@ class _StudentProfileEditSectionState
     }
     setState(() => _saving = true);
     final String name = _nameController.text.trim();
-    final String studentId = _idController.text.trim();
 
     try {
       final String uid = widget.profile.userId;
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(uid)
-          .set(<String, Object?>{
-            'displayName': name,
-            'studentId': studentId,
-            'updatedAt': FieldValue.serverTimestamp(),
-          }, SetOptions(merge: true));
+      await FirebaseFirestore.instance.collection('users').doc(uid).set(
+        <String, Object?>{
+          'displayName': name,
+          'updatedAt': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true),
+      );
 
       final User? user = FirebaseAuth.instance.currentUser;
       if (user != null) {
@@ -1550,17 +1548,14 @@ class _StudentProfileEditSectionState
                   TextFormField(
                     controller: _idController,
                     textInputAction: TextInputAction.done,
+                    enabled: false,
                     decoration: const InputDecoration(
                       labelText: 'Student ID',
+                      helperText:
+                          'Student ID is locked. Contact an admin to change it.',
                       prefixIcon: Icon(Icons.numbers_outlined),
                       border: OutlineInputBorder(),
                     ),
-                    validator: (String? value) {
-                      final String v = (value ?? '').trim();
-                      if (v.isEmpty) return 'Student ID is required.';
-                      if (v.length > 60) return 'Student ID is too long.';
-                      return null;
-                    },
                   ),
                   const SizedBox(height: 18),
                   SizedBox(

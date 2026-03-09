@@ -107,8 +107,8 @@ Get-ChildItem -Path $webOut -Force | Remove-Item -Recurse -Force
 $srcWeb = Join-Path $PWD "build\web\*"
 Copy-Item -Recurse -Force $srcWeb $webOut
 
-Write-Host "Deploying Firebase Hosting…"
-firebase deploy --only hosting
+Write-Host "Deploying Firebase Hosting + Firestore rules…"
+firebase deploy --only "hosting,firestore:rules"
 
 Write-Host "Done. Latest APK: https://facts.shiro.codes/downloads/app-latest.apk"
 Write-Host "Done. Versioned APK: https://facts.shiro.codes/downloads/app-latest-$versionSafe.apk"

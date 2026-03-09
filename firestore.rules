@@ -227,7 +227,10 @@ service cloud.firestore {
           // Prevent self-approval / admin-only changes.
           unchanged('approved') &&
           unchanged('approvedAt') &&
-          unchanged('approvedBy');
+          unchanged('approvedBy') &&
+          // Student ID is immutable after initial claim; changes must go through admin flow.
+          unchanged('studentId') &&
+          unchanged('Student ID');
       }
 
       allow create: if (

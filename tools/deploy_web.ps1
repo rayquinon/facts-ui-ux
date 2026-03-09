@@ -17,7 +17,7 @@ New-Item -ItemType Directory -Path $dest | Out-Null
 Write-Host "Copying build output…"
 Copy-Item -Recurse -Force (Join-Path $src '*') $dest
 
-Write-Host "Deploying Firebase Hosting…"
-firebase deploy --only hosting
+Write-Host "Deploying Firebase Hosting + Firestore rules…"
+firebase deploy --only "hosting,firestore:rules"
 
 Write-Host "Done. Web app should be at https://simple-distributed-database.web.app/app/"
