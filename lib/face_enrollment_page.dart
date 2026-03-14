@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:camera/camera.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -11,6 +10,7 @@ import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 
 import 'services/face_embedding_service.dart';
 import 'services/face_quality_exception.dart';
+import 'services/vps_embeddings_api_client.dart';
 
 enum _OrientationPhase { front, left, right, up, down, far, near }
 
@@ -127,8 +127,10 @@ class FaceEnrollmentPage extends StatefulWidget {
 }
 
 class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
+  static const VpsEmbeddingsApiClient _vpsClient = VpsEmbeddingsApiClient();
+
   // Keep enrollment fast while still storing multiple templates for matching.
-  // We capture 3 embeddings and store all 3 as `faceEmbeds`.
+  // We capture a few embeddings per pose and store one template per phase.
   static const int _capturesPerPhase = 3;
   static const int _storedEmbeddingsPerPhase = 3;
   static final List<_OrientationPhase> _phaseOrder = <_OrientationPhase>[
@@ -198,6 +200,37 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   bool get _faceScanningSupported =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
+  List<double> _l2NormalizeVector(List<double> v) {
+    if (v.isEmpty) return <double>[];
+    double sumSquares = 0;
+    for (final double x in v) {
+      sumSquares += x * x;
+    }
+    if (sumSquares <= 0) return <double>[];
+    final double inv = 1.0 / math.sqrt(sumSquares);
+    return v.map((double x) => x * inv).toList(growable: false);
+  }
+
+  List<double> _averageVectors(List<List<double>> vectors) {
+    if (vectors.isEmpty) return <double>[];
+    final int length = vectors.first.length;
+    if (length <= 0) return <double>[];
+    for (final List<double> v in vectors) {
+      if (v.length != length) {
+        return List<double>.from(vectors.first, growable: false);
+      }
+    }
+
+    final List<double> sum = List<double>.filled(length, 0);
+    for (final List<double> v in vectors) {
+      for (int i = 0; i < length; i++) {
+        sum[i] += v[i];
+      }
+    }
+    final double invCount = 1.0 / vectors.length;
+    return sum.map((double x) => x * invCount).toList(growable: false);
+  }
+
   Future<void> _checkEnrollmentLock() async {
     final User? user = FirebaseAuth.instance.currentUser;
     if (user == null) {
@@ -207,19 +240,12 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       return;
     }
     try {
-      final DocumentSnapshot<Map<String, dynamic>> snapshot =
-          await FirebaseFirestore.instance
-              .collection('users')
-              .doc(user.uid)
-              .get();
-      final Map<String, dynamic>? data = snapshot.data();
-      final bool hasEmbeds =
-          (data?['faceEmbeds'] is List &&
-              (data!['faceEmbeds'] as List).isNotEmpty) ||
-          (data?['faceEmbed'] is List &&
-              (data!['faceEmbed'] as List).isNotEmpty);
+      final VpsEmbeddingsRecord? record = await _vpsClient.getEmbeddingForUid(
+        user.uid,
+        forceRefreshToken: true,
+      );
       if (!mounted) return;
-      if (hasEmbeds) {
+      if (record != null) {
         setState(() {
           _enrollmentLocked = true;
           _statusMessage =
@@ -1163,27 +1189,49 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
 
     setState(() => _isSaving = true);
     try {
-      final List<List<double>> selectedVectors =
-          _selectRepresentativeEmbeddings(perPhase: _storedEmbeddingsPerPhase);
+      final Map<_OrientationPhase, List<List<double>>> selectedByPhase =
+          _selectRepresentativeEmbeddingsByPhase(
+        perPhase: _storedEmbeddingsPerPhase,
+      );
 
-      // Firestore does not support nested arrays (List<List<num>>).
-      // Store as an array of maps instead.
-      final List<Map<String, dynamic>> embeddingsForStorage = selectedVectors
-          .map((List<double> v) => <String, dynamic>{'v': v})
-          .toList(growable: false);
-      await FirebaseFirestore.instance.collection('users').doc(user.uid).set(<
-        String,
-        dynamic
-      >{
-        // Keep the averaged embedding for backward compatibility/quick matching.
-        'faceEmbed': embedding,
+      final List<List<double>> templates = <List<double>>[];
+      for (final _OrientationPhase phase in _phaseOrder) {
+        final List<List<double>> vectors =
+            selectedByPhase[phase] ?? <List<double>>[];
+        if (vectors.isEmpty) continue;
+        final List<double> averaged = _averageVectors(vectors);
+        final List<double> normalized = _l2NormalizeVector(averaged);
+        final List<double> template =
+            normalized.isNotEmpty ? normalized : averaged;
+        if (template.isNotEmpty) {
+          templates.add(template);
+        }
+      }
 
-        // Store multiple samples for robust matching.
-        'faceEmbeds': embeddingsForStorage,
-        'faceEmbedCount': embeddingsForStorage.length,
-        'faceEmbedProvider': 'onnx_v1',
-        'faceEmbedUpdatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
+      final List<List<double>> vectorsToCombine = templates.isNotEmpty
+          ? templates
+          : <List<double>>[_l2NormalizeVector(embedding)];
+      final List<double> averagedAll = _averageVectors(vectorsToCombine);
+      final List<double> normalizedAll = _l2NormalizeVector(averagedAll);
+      final List<double> payloadSingle =
+          normalizedAll.isNotEmpty ? normalizedAll : averagedAll;
+
+      if (templates.isNotEmpty) {
+        await _vpsClient.putEmbeddingsForUid(
+          user.uid,
+          embeddings: templates,
+          embedding: payloadSingle,
+          model: 'onnx_v1',
+          forceRefreshToken: true,
+        );
+      } else {
+        await _vpsClient.putEmbeddingForUid(
+          user.uid,
+          embedding: payloadSingle,
+          model: 'onnx_v1',
+          forceRefreshToken: true,
+        );
+      }
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Face enrolled successfully.')),
@@ -1201,14 +1249,16 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     }
   }
 
-  List<List<double>> _selectRepresentativeEmbeddings({required int perPhase}) {
-    final List<List<double>> selected = <List<double>>[];
+  Map<_OrientationPhase, List<List<double>>> _selectRepresentativeEmbeddingsByPhase({
+    required int perPhase,
+  }) {
+    final Map<_OrientationPhase, List<List<double>>> selected =
+        <_OrientationPhase, List<List<double>>>{};
+
     for (final _OrientationPhase phase in _phaseOrder) {
       final List<List<double>> bucket =
           _phaseEmbeddings[phase] ?? <List<double>>[];
-      if (bucket.isEmpty) {
-        continue;
-      }
+      if (bucket.isEmpty) continue;
 
       final List<int> indices = <int>[];
       if (perPhase <= 1 || bucket.length == 1) {
@@ -1225,8 +1275,12 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       final Set<int> uniq = indices
           .where((int i) => i >= 0 && i < bucket.length)
           .toSet();
+      final List<List<double>> picked = <List<double>>[];
       for (final int i in uniq) {
-        selected.add(List<double>.from(bucket[i], growable: false));
+        picked.add(List<double>.from(bucket[i], growable: false));
+      }
+      if (picked.isNotEmpty) {
+        selected[phase] = picked;
       }
     }
     return selected;

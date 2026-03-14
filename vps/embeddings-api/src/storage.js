@@ -47,8 +47,21 @@ export function createStorage({ dataDir }) {
     return true;
   }
 
+  async function deleteEmbedding(uid) {
+    uid = safeUid(uid);
+    const recordPath = path.join(dataDir, 'embeddings', `${uid}.json`);
+    try {
+      await fs.unlink(recordPath);
+      return true;
+    } catch (e) {
+      if (e && (e.code === 'ENOENT' || e.code === 'ENOTDIR')) return false;
+      throw e;
+    }
+  }
+
   return {
     getEmbedding,
     putEmbedding,
+    deleteEmbedding,
   };
 }

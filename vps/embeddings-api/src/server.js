@@ -21,10 +21,16 @@ const storage = createStorage({ dataDir: env.dataDir });
 
 const putBodySchema = z
   .object({
-    embedding: z.array(z.number().finite()).min(1),
+    // Legacy single-template payload.
+    embedding: z.array(z.number().finite()).min(1).optional(),
+    // Multi-template payload.
+    embeddings: z.array(z.array(z.number().finite()).min(1)).min(1).optional(),
     model: z.string().min(1).optional(),
   })
-  .strict();
+  .strict()
+  .refine((v) => (v.embedding && v.embedding.length > 0) || (v.embeddings && v.embeddings.length > 0), {
+    message: 'Either embedding or embeddings is required',
+  });
 
 function json(res, status, body) {
   const payload = JSON.stringify(body);
@@ -134,9 +140,13 @@ const server = http.createServer(async (req, res) => {
           return json(res, 400, { error: 'invalid_body', details: parsed.error.flatten() });
         }
 
+        const embedding = parsed.data.embedding ?? (parsed.data.embeddings ? parsed.data.embeddings[0] : null);
+        const embeddings = parsed.data.embeddings ?? (parsed.data.embedding ? [parsed.data.embedding] : null);
+
         const record = {
           uid: targetUid,
-          embedding: parsed.data.embedding,
+          embedding,
+          embeddings,
           model: parsed.data.model ?? null,
           updatedAt: new Date().toISOString(),
           updatedBy: auth.uid,
@@ -146,7 +156,16 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, { ok: true });
       }
 
-      res.setHeader('allow', 'GET, PUT');
+      if (req.method === 'DELETE') {
+        if (!isSelf && !hasRole(auth.claims, 'admin')) {
+          return json(res, 403, { error: 'forbidden' });
+        }
+
+        const deleted = await storage.deleteEmbedding(targetUid);
+        return json(res, 200, { ok: true, deleted });
+      }
+
+      res.setHeader('allow', 'GET, PUT, DELETE');
       return json(res, 405, { error: 'method_not_allowed' });
     }
 

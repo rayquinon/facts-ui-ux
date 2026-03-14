@@ -1131,7 +1131,8 @@ class _InstructorPageState extends State<InstructorPage> {
                 clipBehavior: Clip.none,
                 children: <Widget>[
                   const Icon(Icons.menu),
-                  if (_offlineModeChecking || _offlineModeStatus?.isReady != true)
+                  if (_offlineModeChecking ||
+                      _offlineModeStatus?.isReady != true)
                     Positioned(
                       top: -2,
                       right: -2,
@@ -1149,6 +1150,8 @@ class _InstructorPageState extends State<InstructorPage> {
             Text(_sectionTitle()),
           ],
         ),
+        actions: <Widget>[
+        ],
       ),
       drawer: Drawer(
         child: SafeArea(

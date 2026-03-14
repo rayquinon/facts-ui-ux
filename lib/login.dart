@@ -92,6 +92,10 @@ class _LoginPageState extends State<LoginPage> {
           welcomeMessage = 'Welcome back, student!';
         } else if (role == 'instructor') {
           welcomeMessage = 'Welcome back, instructor!';
+        } else if (role == 'admin') {
+          // Role-based admin access is bootstrapped into an admin custom claim
+          // via the AuthGate. Allow login to proceed so the bootstrap view can run.
+          welcomeMessage = 'Welcome back, admin!';
         } else {
           messenger.showSnackBar(
             const SnackBar(

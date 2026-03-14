@@ -10,6 +10,7 @@ import 'services/excuse_request_service.dart';
 import 'services/open_external_url.dart';
 import 'widgets/confirm_sign_out_dialog.dart';
 import 'widgets/request_excuse_dialog.dart';
+import 'services/vps_embeddings_api_client.dart';
 
 enum _StudentSection { dashboard, requestExcuse, profile }
 
@@ -78,6 +79,31 @@ class StudentPage extends StatefulWidget {
 }
 
 class _StudentPageState extends State<StudentPage> {
+  static const VpsEmbeddingsApiClient _vpsClient = VpsEmbeddingsApiClient();
+
+  String? _enrollmentUid;
+  Future<bool>? _hasEnrollmentFuture;
+
+  void _ensureEnrollmentFuture(String uid) {
+    if (_enrollmentUid == uid && _hasEnrollmentFuture != null) {
+      return;
+    }
+    _enrollmentUid = uid;
+    _hasEnrollmentFuture = _checkVpsEnrollment(uid);
+  }
+
+  Future<bool> _checkVpsEnrollment(String uid) async {
+    final VpsEmbeddingsRecord? record = await _vpsClient.getEmbeddingForUid(uid);
+    return record != null;
+  }
+
+  void _retryEnrollmentCheck(String uid) {
+    setState(() {
+      _enrollmentUid = uid;
+      _hasEnrollmentFuture = _checkVpsEnrollment(uid);
+    });
+  }
+
   Future<void> _handleSignOut() async {
     final bool shouldSignOut = await showConfirmSignOutDialog(context);
     if (!shouldSignOut) return;
@@ -115,7 +141,16 @@ class _StudentPageState extends State<StudentPage> {
       );
       return;
     }
-    await Navigator.of(context).pushNamed(FaceEnrollmentPage.routeName);
+    final Object? result = await Navigator.of(
+      context,
+    ).pushNamed(FaceEnrollmentPage.routeName);
+    if (!mounted) return;
+    if (result == true) {
+      final User? user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        _retryEnrollmentCheck(user.uid);
+      }
+    }
   }
 
   @override
@@ -126,6 +161,9 @@ class _StudentPageState extends State<StudentPage> {
         body: Center(child: Text('No authenticated user found.')),
       );
     }
+
+    _ensureEnrollmentFuture(user.uid);
+
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
       stream: FirebaseFirestore.instance
           .collection('users')
@@ -155,34 +193,47 @@ class _StudentPageState extends State<StudentPage> {
               );
             }
             final Map<String, dynamic>? data = snapshot.data?.data();
-            final List<dynamic>? faceEmbeds =
-                data?['faceEmbeds'] as List<dynamic>?;
-            final List<dynamic>? faceEmbed =
-                data?['faceEmbed'] as List<dynamic>?;
-            final bool hasEnrollment =
-                (faceEmbeds != null && faceEmbeds.isNotEmpty) ||
-                (faceEmbed != null && faceEmbed.isNotEmpty);
 
-            if (!hasEnrollment) {
-              return _FaceEnrollmentRequiredView(
-                onSignOut: () => _handleSignOut(),
-                onStartEnrollment: () => _launchEnrollment(),
-              );
-            }
+            return FutureBuilder<bool>(
+              future: _hasEnrollmentFuture,
+              builder: (BuildContext context, AsyncSnapshot<bool> enrollSnap) {
+                if (enrollSnap.connectionState != ConnectionState.done) {
+                  return const Scaffold(
+                    body: Center(child: CircularProgressIndicator()),
+                  );
+                }
 
-            final _StudentProfile profile = _StudentProfile(
-              userId: user.uid,
-              displayName: _resolveDisplayName(data, user),
-              section: (data?['section'] as String?)?.trim() ?? '',
-              term:
-                  (data?['currentTerm'] as String?) ??
-                  (data?['term'] as String?),
-              studentId: _resolveStudentId(data, user),
-            );
+                if (enrollSnap.hasError) {
+                  return _EnrollmentCheckFailedView(
+                    error: enrollSnap.error,
+                    onRetry: () => _retryEnrollmentCheck(user.uid),
+                    onSignOut: () => _handleSignOut(),
+                  );
+                }
 
-            return _StudentHomeShell(
-              profile: profile,
-              onSignOut: () => _handleSignOut(),
+                final bool hasEnrollment = enrollSnap.data ?? false;
+                if (!hasEnrollment) {
+                  return _FaceEnrollmentRequiredView(
+                    onSignOut: () => _handleSignOut(),
+                    onStartEnrollment: () => _launchEnrollment(),
+                  );
+                }
+
+                final _StudentProfile profile = _StudentProfile(
+                  userId: user.uid,
+                  displayName: _resolveDisplayName(data, user),
+                  section: (data?['section'] as String?)?.trim() ?? '',
+                  term:
+                      (data?['currentTerm'] as String?) ??
+                      (data?['term'] as String?),
+                  studentId: _resolveStudentId(data, user),
+                );
+
+                return _StudentHomeShell(
+                  profile: profile,
+                  onSignOut: () => _handleSignOut(),
+                );
+              },
             );
           },
     );
@@ -202,6 +253,60 @@ class _StudentPageState extends State<StudentPage> {
       return raw.trim();
     }
     return user.uid;
+  }
+}
+
+class _EnrollmentCheckFailedView extends StatelessWidget {
+  const _EnrollmentCheckFailedView({
+    required this.error,
+    required this.onRetry,
+    required this.onSignOut,
+  });
+
+  final Object? error;
+  final VoidCallback onRetry;
+  final VoidCallback onSignOut;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              const Text(
+                'Unable to verify face enrollment right now.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Please check your connection and try again.\n\n$error',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                alignment: WrapAlignment.center,
+                children: <Widget>[
+                  ElevatedButton(
+                    onPressed: onRetry,
+                    child: const Text('Retry'),
+                  ),
+                  OutlinedButton(
+                    onPressed: onSignOut,
+                    child: const Text('Sign out'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -255,6 +360,8 @@ class _StudentHomeShellState extends State<_StudentHomeShell> {
             Text(_sectionTitle()),
           ],
         ),
+        actions: <Widget>[
+        ],
       ),
       drawer: Drawer(
         child: SafeArea(

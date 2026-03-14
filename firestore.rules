@@ -214,6 +214,16 @@ service cloud.firestore {
         return isSignedIn() && request.auth.uid == userId;
       }
 
+      function touchesFaceEmbeddingFields() {
+        return request.writeFields.hasAny([
+          'faceEmbed',
+          'faceEmbeds',
+          'faceEmbedCount',
+          'faceEmbedProvider',
+          'faceEmbedUpdatedAt'
+        ]);
+      }
+
       function unchanged(field) {
         return !(field in request.resource.data) || request.resource.data[field] == resource.data[field];
       }
@@ -233,18 +243,18 @@ service cloud.firestore {
           unchanged('Student ID');
       }
 
-      allow create: if (
+      allow create: if ((
         isOwner() &&
         request.resource.data.role in allowedUserRoleValues() &&
         nonEmptyString(request.resource.data['Full Name']) &&
         nonEmptyString(request.resource.data.Email) &&
         // Do not allow users to create themselves as approved.
         (!('approved' in request.resource.data) || request.resource.data.approved == false)
-      ) || isAdmin();
+      ) || isAdmin()) && !touchesFaceEmbeddingFields();
 
       allow read: if isOwner() || isAdmin() || isRoleAdmin() || isInstructor();
 
-      allow update: if isAdmin() || validOwnerUpdate();
+      allow update: if (isAdmin() || validOwnerUpdate()) && !touchesFaceEmbeddingFields();
 
       allow delete: if isAdmin();
     }

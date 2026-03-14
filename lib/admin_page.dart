@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
@@ -15,6 +16,7 @@ import 'reports/instructor_sessions_report_page.dart';
 import 'services/excuse_request_service.dart';
 import 'services/open_external_url.dart';
 import 'services/user_role_service.dart';
+import 'services/vps_embeddings_api_client.dart';
 
 enum _AdminSection {
   overview,
@@ -201,9 +203,9 @@ class _AdminPageState extends State<AdminPage> {
                     title: const Text('Instructor Sessions Report'),
                     onTap: () {
                       Navigator.of(context).pop();
-                      Navigator.of(context).pushNamed(
-                        InstructorSessionsReportPage.routeName,
-                      );
+                      Navigator.of(
+                        context,
+                      ).pushNamed(InstructorSessionsReportPage.routeName);
                     },
                   ),
                   const Divider(height: 1),
@@ -645,6 +647,8 @@ class _AdminPageState extends State<AdminPage> {
             );
           },
         ),
+        actions: <Widget>[
+        ],
       ),
       body: LayoutBuilder(
         builder: (BuildContext context, BoxConstraints constraints) {
@@ -785,7 +789,8 @@ class _AdminPageState extends State<AdminPage> {
                         studentsTotal: resolved.students,
                         instructorsTotal: resolved.instructors,
                         studentsBySection: resolved.studentsBySection,
-                        instructorsByDepartment: resolved.instructorsByDepartment,
+                        instructorsByDepartment:
+                            resolved.instructorsByDepartment,
                       ),
                     ],
                   ],
@@ -828,10 +833,7 @@ class _AdminPageState extends State<AdminPage> {
       'users',
     );
 
-    String resolveField(
-      Map<String, dynamic> data,
-      List<String> candidates,
-    ) {
+    String resolveField(Map<String, dynamic> data, List<String> candidates) {
       for (final String key in candidates) {
         final Object? value = data[key];
         if (value is String && value.trim().isNotEmpty) {
@@ -882,11 +884,14 @@ class _AdminPageState extends State<AdminPage> {
         in instructorsSnap.docs) {
       final Map<String, dynamic> data = doc.data();
       final String dept = normalizeBucket(
-        resolveField(data, <String>['Department', 'department', 'departmentName']),
+        resolveField(data, <String>[
+          'Department',
+          'department',
+          'departmentName',
+        ]),
         emptyLabel: 'Not assigned',
       );
-      instructorsByDepartment[dept] =
-          (instructorsByDepartment[dept] ?? 0) + 1;
+      instructorsByDepartment[dept] = (instructorsByDepartment[dept] ?? 0) + 1;
     }
 
     Map<String, int> sortByCountDescThenKey(Map<String, int> input) {
@@ -1173,8 +1178,8 @@ class _EnrollmentCombinedChartCard extends StatelessWidget {
     final int maxValue = bars.isEmpty
         ? 0
         : bars
-            .map(((_ChartBarEntry e) => e.value))
-            .reduce((int a, int b) => a > b ? a : b);
+              .map(((_ChartBarEntry e) => e.value))
+              .reduce((int a, int b) => a > b ? a : b);
 
     return Card(
       child: Padding(
@@ -1218,10 +1223,7 @@ class _EnrollmentCombinedChartCard extends StatelessWidget {
                 ),
               )
             else
-              _MultiSeriesBarChart(
-                bars: bars,
-                maxValue: maxValue,
-              ),
+              _MultiSeriesBarChart(bars: bars, maxValue: maxValue),
           ],
         ),
       ),
@@ -1238,10 +1240,7 @@ class _EnrollmentCombinedChartCard extends StatelessWidget {
 }
 
 class _MultiSeriesBarChart extends StatelessWidget {
-  const _MultiSeriesBarChart({
-    required this.bars,
-    required this.maxValue,
-  });
+  const _MultiSeriesBarChart({required this.bars, required this.maxValue});
 
   final List<_ChartBarEntry> bars;
   final int maxValue;
@@ -1263,7 +1262,9 @@ class _MultiSeriesBarChart extends StatelessWidget {
             children: bars.map((_ChartBarEntry e) {
               final double ratio = maxValue <= 0 ? 0 : (e.value / maxValue);
               final double barHeight = (ratio * 120).clamp(4.0, 120.0);
-              final String label = e.label.trim().isEmpty ? '—' : e.label.trim();
+              final String label = e.label.trim().isEmpty
+                  ? '—'
+                  : e.label.trim();
 
               return Padding(
                 padding: const EdgeInsets.only(right: 12),
@@ -3214,6 +3215,7 @@ class _UserManagementPanel extends StatefulWidget {
 enum _BulkUserAction {
   editProfile,
   fixFaceEnrollment,
+  migrateFaceEnrollmentToVps,
   clearFaceEnrollment,
   deleteUser,
 }
@@ -3297,6 +3299,17 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
   final Map<String, Map<String, dynamic>> _userDocPatches =
       <String, Map<String, dynamic>>{};
 
+  final Map<String, bool> _vpsEnrollmentCache = <String, bool>{};
+  final Set<String> _vpsEnrollmentInFlight = <String>{};
+
+  static const String _kVpsEnrollmentOverrideKey = '_vpsEnrolled';
+
+  bool _hasLegacyFaceEnrollment(Map<String, dynamic> data) {
+    return ((data['faceEmbeds'] is List) &&
+            (data['faceEmbeds'] as List).isNotEmpty) ||
+        ((data['faceEmbed'] is List) && (data['faceEmbed'] as List).isNotEmpty);
+  }
+
   Map<String, dynamic> _patchedUserData(
     QueryDocumentSnapshot<Map<String, dynamic>> doc,
   ) {
@@ -3307,10 +3320,57 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     return <String, dynamic>{...doc.data(), ...patch};
   }
 
-  bool _hasFaceEnrollment(Map<String, dynamic> data) {
+  bool _hasFaceEnrollment(String uid, Map<String, dynamic> data) {
+    final Object? override = data[_kVpsEnrollmentOverrideKey];
+    if (override is bool) {
+      return override;
+    }
+
+    final bool? cached = _vpsEnrollmentCache[uid];
+    if (cached != null) {
+      return cached;
+    }
     return ((data['faceEmbeds'] is List) &&
             (data['faceEmbeds'] as List).isNotEmpty) ||
         ((data['faceEmbed'] is List) && (data['faceEmbed'] as List).isNotEmpty);
+  }
+
+  Future<void> _ensureVpsEnrollmentCached(String uid) async {
+    if (_vpsEnrollmentCache.containsKey(uid)) return;
+    if (_vpsEnrollmentInFlight.contains(uid)) return;
+    _vpsEnrollmentInFlight.add(uid);
+
+    try {
+      const VpsEmbeddingsApiClient vpsClient = VpsEmbeddingsApiClient();
+      bool enrolled;
+      try {
+        enrolled = (await vpsClient.getEmbeddingForUid(
+              uid,
+              forceRefreshToken: false,
+            )) !=
+            null;
+      } on VpsEmbeddingsApiException catch (e) {
+        if (e.statusCode == 401 || e.statusCode == 403) {
+          enrolled = (await vpsClient.getEmbeddingForUid(
+                uid,
+                forceRefreshToken: true,
+              )) !=
+              null;
+        } else {
+          rethrow;
+        }
+      }
+
+      _vpsEnrollmentCache[uid] = enrolled;
+      _applyVpsEnrollmentPatch(uid, enrolled);
+      if (mounted) {
+        setState(() {});
+      }
+    } catch (error, stackTrace) {
+      debugPrint('VPS enrollment check failed for $uid: $error\n$stackTrace');
+    } finally {
+      _vpsEnrollmentInFlight.remove(uid);
+    }
   }
 
   bool _isAdminAccount(String uid, Map<String, dynamic> data) {
@@ -3326,7 +3386,9 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
   }
 
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _filteredUserDocs() {
-    if (_loadedUserDocs.isEmpty) return const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+    if (_loadedUserDocs.isEmpty) {
+      return const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+    }
 
     final String q = _searchQuery;
 
@@ -3356,12 +3418,63 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
 
   void _applyClearedEnrollmentPatch(String uid) {
     _userDocPatches[uid] = <String, dynamic>{
-      'faceEmbed': const <dynamic>[],
-      'faceEmbeds': const <dynamic>[],
-      'faceEmbedCount': 0,
-      'faceEmbedProvider': null,
-      'faceEmbedUpdatedAt': null,
+      _kVpsEnrollmentOverrideKey: false,
     };
+  }
+
+  void _applyVpsEnrollmentPatch(String uid, bool enrolled) {
+    final Map<String, dynamic> existing =
+        _userDocPatches[uid] ?? const <String, dynamic>{};
+    _userDocPatches[uid] = <String, dynamic>{
+      ...existing,
+      _kVpsEnrollmentOverrideKey: enrolled,
+    };
+  }
+
+  List<double> _l2NormalizeVector(List<double> v) {
+    if (v.isEmpty) return <double>[];
+    double sumSquares = 0;
+    for (final double x in v) {
+      sumSquares += x * x;
+    }
+    if (sumSquares <= 0) return <double>[];
+    final double inv = 1.0 / math.sqrt(sumSquares);
+    return v.map((double x) => x * inv).toList(growable: false);
+  }
+
+  List<double>? _extractLegacyEmbedding(Map<String, dynamic> data) {
+    final Object? rawMulti = data['faceEmbeds'];
+    if (rawMulti is List) {
+      for (final Object? item in rawMulti) {
+        List<num>? nums;
+        if (item is List) {
+          nums = item.whereType<num>().toList(growable: false);
+        } else if (item is Map) {
+          final Object? v = item['v'];
+          if (v is List) {
+            nums = v.whereType<num>().toList(growable: false);
+          }
+        }
+        if (nums == null || nums.isEmpty) continue;
+        final List<double> vec = nums
+            .where((num n) => n.isFinite)
+            .map((num n) => n.toDouble())
+            .toList(growable: false);
+        if (vec.isNotEmpty) return vec;
+      }
+    }
+
+    final Object? rawSingle = data['faceEmbed'];
+    if (rawSingle is List) {
+      final List<double> vec = rawSingle
+          .whereType<num>()
+          .where((num n) => n.isFinite)
+          .map((num n) => n.toDouble())
+          .toList(growable: false);
+      if (vec.isNotEmpty) return vec;
+    }
+
+    return null;
   }
 
   Future<void> _refreshUsersById(Iterable<String> uids) async {
@@ -3508,7 +3621,7 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
         docs
             .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
               final Map<String, dynamic> data = _patchedUserData(doc);
-              return _hasFaceEnrollment(data);
+              return _hasLegacyFaceEnrollment(data);
             })
             .toList(growable: false);
 
@@ -3569,30 +3682,117 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     unawaited(_refreshUsersById(touched));
   }
 
+  Future<void> _runBulkMigrateFaceEnrollmentToVps() async {
+    if (_bulkActionRunning) return;
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
+        _selectedDocs();
+    if (docs.isEmpty) return;
+
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docsWithLegacy =
+        docs.where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+          final Map<String, dynamic> data = _patchedUserData(doc);
+          return _hasLegacyFaceEnrollment(data);
+        }).toList(growable: false);
+
+    final int totalTargeted = docsWithLegacy.length;
+    if (totalTargeted == 0) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No selected users have legacy Firestore embeddings.'),
+        ),
+      );
+      return;
+    }
+
+    final bool confirmed = await _confirmBulkAction(
+      title: 'Migrate Face Enrollment to VPS',
+      message:
+          'This will copy each selected user\'s legacy Firestore embedding to the VPS, then delete the embedding fields from Firestore.\n\nContinue for $totalTargeted user(s)?',
+      confirmLabel: 'Migrate',
+    );
+    if (!confirmed) return;
+
+    setState(() => _bulkActionRunning = true);
+    _startBulkProgress('Migrating face enrollment to VPS', totalTargeted);
+
+    int success = 0;
+    int failed = 0;
+    final Set<String> touched = <String>{};
+    const VpsEmbeddingsApiClient vpsClient = VpsEmbeddingsApiClient();
+
+    for (final QueryDocumentSnapshot<Map<String, dynamic>> doc
+        in docsWithLegacy) {
+      final String name = _resolveDisplayName(doc.data(), doc.id);
+      try {
+        final Map<String, dynamic> data = _patchedUserData(doc);
+        final List<double>? legacy = _extractLegacyEmbedding(data);
+        if (legacy == null) {
+          failed++;
+          _tickBulkProgress(succeeded: false, currentLabel: name);
+          continue;
+        }
+
+        final List<double> normalized = _l2NormalizeVector(legacy);
+        final List<double> payload =
+            normalized.isNotEmpty ? normalized : legacy;
+
+        await vpsClient.putEmbeddingForUid(
+          doc.id,
+          embedding: payload,
+          model: 'onnx_v1_migrated',
+          forceRefreshToken: success == 0,
+        );
+
+        // Best-effort cleanup: delete legacy Firestore embedding fields via Admin SDK.
+        // VPS is the source of truth; migration should still be considered successful
+        // if the VPS write succeeded.
+        try {
+          await _functions.httpsCallable('adminClearFaceEnrollment').call(
+            <String, dynamic>{'uid': doc.id},
+          );
+        } catch (_) {
+          // Ignore; cleanup can be retried later.
+        }
+
+        touched.add(doc.id);
+        success++;
+        _tickBulkProgress(succeeded: true, currentLabel: name);
+
+        if (mounted) {
+          setState(() {
+            _applyVpsEnrollmentPatch(doc.id, true);
+          });
+        }
+      } catch (_) {
+        failed++;
+        _tickBulkProgress(succeeded: false, currentLabel: name);
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _bulkActionRunning = false;
+      _multiSelectEnabled = false;
+      _selectedUserIds.clear();
+    });
+    _finishBulkProgress();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Migration completed. Success: $success, Failed: $failed.'),
+      ),
+    );
+
+    unawaited(_refreshUsersById(touched));
+  }
+
   Future<void> _runBulkClearFaceEnrollment() async {
     if (_bulkActionRunning) return;
     final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
         _selectedDocs();
     if (docs.isEmpty) return;
 
-    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docsWithEnrollment =
-        docs
-            .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-              final Map<String, dynamic> data = _patchedUserData(doc);
-              return _hasFaceEnrollment(data);
-            })
-            .toList(growable: false);
-
-    final int totalTargeted = docsWithEnrollment.length;
-    if (totalTargeted == 0) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('No selected users have face enrollment data.'),
-        ),
-      );
-      return;
-    }
+    final int totalTargeted = docs.length;
 
     final bool confirmed = await _confirmBulkAction(
       title: 'Clear Face Enrollment',
@@ -3607,13 +3807,22 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     int success = 0;
     int failed = 0;
     final Set<String> cleared = <String>{};
-    for (final QueryDocumentSnapshot<Map<String, dynamic>> doc
-        in docsWithEnrollment) {
+    const VpsEmbeddingsApiClient vpsClient = VpsEmbeddingsApiClient();
+    for (final QueryDocumentSnapshot<Map<String, dynamic>> doc in docs) {
       final String name = _resolveDisplayName(doc.data(), doc.id);
       try {
-        await _functions.httpsCallable('adminClearFaceEnrollment').call(
-          <String, dynamic>{'uid': doc.id},
-        );
+        await vpsClient.deleteEmbeddingForUid(doc.id);
+
+        // Best-effort cleanup: delete any legacy Firestore embedding fields.
+        // (This uses Admin SDK and is not blocked by client rules.)
+        try {
+          await _functions.httpsCallable('adminClearFaceEnrollment').call(
+            <String, dynamic>{'uid': doc.id},
+          );
+        } catch (_) {
+          // Ignore; VPS is the source of truth.
+        }
+
         cleared.add(doc.id);
         success++;
         _tickBulkProgress(succeeded: true, currentLabel: name);
@@ -3665,10 +3874,17 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     int success = 0;
     int failed = 0;
     final Set<String> deleted = <String>{};
+    const VpsEmbeddingsApiClient vpsClient = VpsEmbeddingsApiClient();
 
     for (final QueryDocumentSnapshot<Map<String, dynamic>> doc in docs) {
       final String name = _resolveDisplayName(doc.data(), doc.id);
       try {
+        // Best-effort: also remove face embedding from VPS (source of truth).
+        try {
+          await vpsClient.deleteEmbeddingForUid(doc.id);
+        } catch (_) {
+          // Ignore; user deletion should still proceed.
+        }
         await _functions.httpsCallable('adminDeleteUser').call(
           <String, dynamic>{'uid': doc.id},
         );
@@ -3949,9 +4165,17 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     if (confirmed != true) return;
 
     try {
-      await _functions.httpsCallable('adminClearFaceEnrollment').call(
-        <String, dynamic>{'uid': uid},
-      );
+      const VpsEmbeddingsApiClient vpsClient = VpsEmbeddingsApiClient();
+      await vpsClient.deleteEmbeddingForUid(uid);
+
+      // Best-effort cleanup: delete any legacy Firestore embedding fields.
+      try {
+        await _functions.httpsCallable('adminClearFaceEnrollment').call(
+          <String, dynamic>{'uid': uid},
+        );
+      } catch (_) {
+        // Ignore; VPS is the source of truth.
+      }
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
@@ -3970,13 +4194,87 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     }
   }
 
+  Future<void> _migrateFaceEnrollmentToVps(String uid) async {
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('Migrate face enrollment to VPS?'),
+        content: const Text(
+          'This will copy the legacy Firestore embedding for this account to the VPS, then delete the embedding fields from Firestore.\n\nUse this only as a one-time migration for existing records.',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Migrate'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    try {
+      final DocumentSnapshot<Map<String, dynamic>> snap = await _firestore
+          .collection('users')
+          .doc(uid)
+          .get(const GetOptions(source: Source.server));
+      final Map<String, dynamic> data = snap.data() ?? <String, dynamic>{};
+      final List<double>? legacy = _extractLegacyEmbedding(data);
+      if (legacy == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No legacy Firestore embedding found.')),
+        );
+        return;
+      }
+
+      final List<double> normalized = _l2NormalizeVector(legacy);
+      final List<double> payload = normalized.isNotEmpty ? normalized : legacy;
+
+      const VpsEmbeddingsApiClient vpsClient = VpsEmbeddingsApiClient();
+      await vpsClient.putEmbeddingForUid(
+        uid,
+        embedding: payload,
+        model: 'onnx_v1_migrated',
+        forceRefreshToken: true,
+      );
+
+      // Best-effort cleanup: delete legacy Firestore embedding fields via Admin SDK.
+      try {
+        await _functions.httpsCallable('adminClearFaceEnrollment').call(
+          <String, dynamic>{'uid': uid},
+        );
+      } catch (_) {
+        // Ignore; VPS is the source of truth.
+      }
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Migration completed.')),
+      );
+
+      setState(() {
+        _applyVpsEnrollmentPatch(uid, true);
+      });
+      unawaited(_refreshUsersById(<String>[uid]));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to migrate: $error')),
+      );
+    }
+  }
+
   Future<void> _deleteUser(String uid, String label) async {
     final bool? confirmed = await showDialog<bool>(
       context: context,
       builder: (BuildContext context) => AlertDialog(
         title: const Text('Delete user?'),
         content: Text(
-          'This will permanently delete the account ($label), remove their profile, and attempt to remove their attendance references. This cannot be undone.',
+          'This will permanently delete the account ($label), remove their profile, delete their VPS face enrollment, and attempt to remove their attendance references. This cannot be undone.',
         ),
         actions: <Widget>[
           TextButton(
@@ -3993,6 +4291,13 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     if (confirmed != true) return;
 
     try {
+      // Best-effort: also remove face embedding from VPS (source of truth).
+      try {
+        const VpsEmbeddingsApiClient vpsClient = VpsEmbeddingsApiClient();
+        await vpsClient.deleteEmbeddingForUid(uid);
+      } catch (_) {
+        // Ignore; user deletion should still proceed.
+      }
       await _functions.httpsCallable('adminDeleteUser').call(<String, dynamic>{
         'uid': uid,
       });
@@ -4457,6 +4762,8 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                 await _runBulkEditProfiles();
                               case _BulkUserAction.fixFaceEnrollment:
                                 await _runBulkFixFaceEnrollment();
+                              case _BulkUserAction.migrateFaceEnrollmentToVps:
+                                await _runBulkMigrateFaceEnrollmentToVps();
                               case _BulkUserAction.clearFaceEnrollment:
                                 await _runBulkClearFaceEnrollment();
                               case _BulkUserAction.deleteUser:
@@ -4472,6 +4779,10 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                               PopupMenuItem<_BulkUserAction>(
                                 value: _BulkUserAction.fixFaceEnrollment,
                                 child: Text('Fix Face Enrollment'),
+                              ),
+                              PopupMenuItem<_BulkUserAction>(
+                                value: _BulkUserAction.migrateFaceEnrollmentToVps,
+                                child: Text('Migrate Face Enrollment to VPS'),
                               ),
                               PopupMenuItem<_BulkUserAction>(
                                 value: _BulkUserAction.clearFaceEnrollment,
@@ -4677,7 +4988,18 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                               doc.id,
                             );
                             final String role = (data['role'] as String?) ?? '';
-                            final bool hasEnrollment = _hasFaceEnrollment(data);
+                            final String normalizedRole = role.trim().toLowerCase();
+                            if (normalizedRole == 'student' ||
+                                normalizedRole.contains('student')) {
+                              unawaited(_ensureVpsEnrollmentCached(doc.id));
+                            }
+
+                            final bool hasEnrollment = _hasFaceEnrollment(
+                              doc.id,
+                              data,
+                            );
+                            final bool hasLegacyEnrollment =
+                              _hasLegacyFaceEnrollment(data);
                             final bool approved = data['approved'] == true;
                             final bool selected = _selectedUserIds.contains(
                               doc.id,
@@ -4706,8 +5028,7 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                           child: Icon(
                                             Icons.face,
                                             size: 10,
-                                            color:
-                                                theme.colorScheme.onTertiary,
+                                            color: theme.colorScheme.onTertiary,
                                           ),
                                         ),
                                       ),
@@ -4759,6 +5080,9 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                               doc.id,
                                             );
                                             break;
+                                          case 'migrateToVps':
+                                            _migrateFaceEnrollmentToVps(doc.id);
+                                            break;
                                           case 'clearEnrollment':
                                             _clearFaceEnrollment(doc.id);
                                             break;
@@ -4780,20 +5104,24 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                               value: 'approve',
                                               child: Text('Approve instructor'),
                                             ),
-                                          if (hasEnrollment)
+                                          if (hasLegacyEnrollment)
                                             const PopupMenuItem<String>(
                                               value: 'migrateEnrollment',
                                               child: Text(
                                                 'Fix face enrollment format',
                                               ),
                                             ),
-                                          if (hasEnrollment)
+                                          if (hasLegacyEnrollment)
                                             const PopupMenuItem<String>(
-                                              value: 'clearEnrollment',
+                                              value: 'migrateToVps',
                                               child: Text(
-                                                'Clear face enrollment',
+                                                'Migrate face enrollment to VPS',
                                               ),
                                             ),
+                                          const PopupMenuItem<String>(
+                                            value: 'clearEnrollment',
+                                            child: Text('Clear face enrollment'),
+                                          ),
                                           const PopupMenuDivider(),
                                           const PopupMenuItem<String>(
                                             value: 'delete',
@@ -4928,10 +5256,7 @@ class _AttendanceSessionsPanelState extends State<_AttendanceSessionsPanel> {
             'startedAt',
             isGreaterThanOrEqualTo: Timestamp.fromDate(window.$1),
           )
-          .where(
-            'startedAt',
-            isLessThan: Timestamp.fromDate(window.$2),
-          );
+          .where('startedAt', isLessThan: Timestamp.fromDate(window.$2));
     }
     if (_lastDoc != null) {
       q = q.startAfterDocument(_lastDoc!);
@@ -4943,7 +5268,8 @@ class _AttendanceSessionsPanelState extends State<_AttendanceSessionsPanel> {
     final DateTime now = DateTime.now();
     final DateTime first = DateTime(now.year - 2, 1, 1);
     final DateTime last = DateTime(now.year + 1, 12, 31);
-    final DateTimeRange initial = _customRange ??
+    final DateTimeRange initial =
+        _customRange ??
         DateTimeRange(
           start: _dayKey(now.subtract(const Duration(days: 6))),
           end: _dayKey(now),
@@ -5046,10 +5372,9 @@ class _AttendanceSessionsPanelState extends State<_AttendanceSessionsPanel> {
             .httpsCallable('adminBulkDeleteAttendanceSessions')
             .call(<String, dynamic>{'sessionIds': chunk});
         final dynamic data = res.data;
-        final int deletedCount =
-            (data is Map && data['deletedCount'] is num)
-                ? (data['deletedCount'] as num).toInt()
-                : 0;
+        final int deletedCount = (data is Map && data['deletedCount'] is num)
+            ? (data['deletedCount'] as num).toInt()
+            : 0;
         final int failedCount = (data is Map && data['failedCount'] is num)
             ? (data['failedCount'] as num).toInt()
             : 0;
@@ -5096,53 +5421,53 @@ class _AttendanceSessionsPanelState extends State<_AttendanceSessionsPanel> {
       int deleted = 0;
       int failed = 0;
 
-        final ({int deletedCount, int failedCount}) result =
+      final ({int deletedCount, int failedCount}) result =
           (await showDialog<({int deletedCount, int failedCount})>(
-        context: context,
-        barrierDismissible: false,
-        builder: (BuildContext dialogContext) {
-          bool started = false;
-          return StatefulBuilder(
-            builder:
-                (BuildContext context, void Function(void Function()) set) {
-              if (!started) {
-                started = true;
-                unawaited(() async {
-                  final ({int deletedCount, int failedCount}) res =
-                      await _deleteIdsInChunks(
-                    ids,
-                    onProgress: (int p, int d, int f) {
-                      if (!dialogContext.mounted) return;
-                      set(() {
-                        processed = p;
-                        deleted = d;
-                        failed = f;
-                      });
-                    },
-                  );
-                  if (!dialogContext.mounted) return;
-                  Navigator.of(dialogContext).pop(res);
-                }());
-              }
+            context: context,
+            barrierDismissible: false,
+            builder: (BuildContext dialogContext) {
+              bool started = false;
+              return StatefulBuilder(
+                builder:
+                    (BuildContext context, void Function(void Function()) set) {
+                      if (!started) {
+                        started = true;
+                        unawaited(() async {
+                          final ({int deletedCount, int failedCount}) res =
+                              await _deleteIdsInChunks(
+                                ids,
+                                onProgress: (int p, int d, int f) {
+                                  if (!dialogContext.mounted) return;
+                                  set(() {
+                                    processed = p;
+                                    deleted = d;
+                                    failed = f;
+                                  });
+                                },
+                              );
+                          if (!dialogContext.mounted) return;
+                          Navigator.of(dialogContext).pop(res);
+                        }());
+                      }
 
-              return AlertDialog(
-                title: const Text('Deleting…'),
-                content: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    const LinearProgressIndicator(),
-                    const SizedBox(height: 12),
-                    Text('Processed: $processed / ${ids.length}'),
-                    Text('Deleted: $deleted'),
-                    if (failed > 0) Text('Failed: $failed'),
-                  ],
-                ),
+                      return AlertDialog(
+                        title: const Text('Deleting…'),
+                        content: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: <Widget>[
+                            const LinearProgressIndicator(),
+                            const SizedBox(height: 12),
+                            Text('Processed: $processed / ${ids.length}'),
+                            Text('Deleted: $deleted'),
+                            if (failed > 0) Text('Failed: $failed'),
+                          ],
+                        ),
+                      );
+                    },
               );
             },
-          );
-        },
-      )) ??
+          )) ??
           (deletedCount: 0, failedCount: ids.length);
 
       if (!mounted) return;
@@ -5184,10 +5509,7 @@ class _AttendanceSessionsPanelState extends State<_AttendanceSessionsPanel> {
             'startedAt',
             isGreaterThanOrEqualTo: Timestamp.fromDate(window.$1),
           )
-          .where(
-            'startedAt',
-            isLessThan: Timestamp.fromDate(window.$2),
-          );
+          .where('startedAt', isLessThan: Timestamp.fromDate(window.$2));
     }
 
     if (startAfter != null) {
@@ -5200,8 +5522,8 @@ class _AttendanceSessionsPanelState extends State<_AttendanceSessionsPanel> {
     if (_bulkDeleting) return;
     final String scope =
         (_dateFilter == 'all' && _statusFilter == 'all' && _search.isEmpty)
-            ? 'ALL sessions'
-            : 'all sessions matching your current filters';
+        ? 'ALL sessions'
+        : 'all sessions matching your current filters';
 
     final bool? confirmed = await showDialog<bool>(
       context: context,
@@ -5232,95 +5554,100 @@ class _AttendanceSessionsPanelState extends State<_AttendanceSessionsPanel> {
       int deleted = 0;
       int failed = 0;
 
-        final ({int scanned, int matched, int deleted, int failed}) result =
-          (await showDialog<({int scanned, int matched, int deleted, int failed})>(
-        context: context,
-        barrierDismissible: false,
-        builder: (BuildContext dialogContext) {
-          bool started = false;
-          return StatefulBuilder(
-            builder:
-                (BuildContext context, void Function(void Function()) set) {
-              if (!started) {
-                started = true;
-                unawaited(() async {
-                  final List<String> buffer = <String>[];
-                  QueryDocumentSnapshot<Map<String, dynamic>>? last;
+      final ({int scanned, int matched, int deleted, int failed}) result =
+          (await showDialog<
+            ({int scanned, int matched, int deleted, int failed})
+          >(
+            context: context,
+            barrierDismissible: false,
+            builder: (BuildContext dialogContext) {
+              bool started = false;
+              return StatefulBuilder(
+                builder:
+                    (BuildContext context, void Function(void Function()) set) {
+                      if (!started) {
+                        started = true;
+                        unawaited(() async {
+                          final List<String> buffer = <String>[];
+                          QueryDocumentSnapshot<Map<String, dynamic>>? last;
 
-                  while (true) {
-                    final QuerySnapshot<Map<String, dynamic>> snap =
-                        await _buildBulkScanQuery(startAfter: last).get(
-                      const GetOptions(source: Source.server),
-                    );
-                    if (snap.docs.isEmpty) break;
+                          while (true) {
+                            final QuerySnapshot<Map<String, dynamic>> snap =
+                                await _buildBulkScanQuery(
+                                  startAfter: last,
+                                ).get(const GetOptions(source: Source.server));
+                            if (snap.docs.isEmpty) break;
 
-                    for (final QueryDocumentSnapshot<Map<String, dynamic>> doc
-                        in snap.docs) {
-                      scanned++;
-                      if (_matchesClientFilters(doc)) {
-                        buffer.add(doc.id);
-                        matched++;
-                        if (buffer.length >= _bulkChunkSize) {
-                          final ({int deletedCount, int failedCount}) res =
-                              await _deleteIdsInChunks(
-                            List<String>.from(buffer),
-                          );
-                          deleted += res.deletedCount;
-                          failed += res.failedCount;
-                          buffer.clear();
+                            for (final QueryDocumentSnapshot<
+                                  Map<String, dynamic>
+                                >
+                                doc
+                                in snap.docs) {
+                              scanned++;
+                              if (_matchesClientFilters(doc)) {
+                                buffer.add(doc.id);
+                                matched++;
+                                if (buffer.length >= _bulkChunkSize) {
+                                  final ({int deletedCount, int failedCount})
+                                  res = await _deleteIdsInChunks(
+                                    List<String>.from(buffer),
+                                  );
+                                  deleted += res.deletedCount;
+                                  failed += res.failedCount;
+                                  buffer.clear();
+                                  if (!dialogContext.mounted) return;
+                                  set(() {});
+                                }
+                              }
+                              if (!dialogContext.mounted) return;
+                              if (scanned % 50 == 0) set(() {});
+                            }
+
+                            last = snap.docs.last;
+                            if (!dialogContext.mounted) return;
+                            set(() {});
+                            if (snap.size < _bulkScanPageSize) break;
+                          }
+
+                          if (buffer.isNotEmpty) {
+                            final ({int deletedCount, int failedCount}) res =
+                                await _deleteIdsInChunks(
+                                  List<String>.from(buffer),
+                                );
+                            deleted += res.deletedCount;
+                            failed += res.failedCount;
+                            buffer.clear();
+                          }
+
                           if (!dialogContext.mounted) return;
-                          set(() {});
-                        }
+                          Navigator.of(dialogContext).pop((
+                            scanned: scanned,
+                            matched: matched,
+                            deleted: deleted,
+                            failed: failed,
+                          ));
+                        }());
                       }
-                      if (!dialogContext.mounted) return;
-                      if (scanned % 50 == 0) set(() {});
-                    }
 
-                    last = snap.docs.last;
-                    if (!dialogContext.mounted) return;
-                    set(() {});
-                    if (snap.size < _bulkScanPageSize) break;
-                  }
-
-                  if (buffer.isNotEmpty) {
-                    final ({int deletedCount, int failedCount}) res =
-                        await _deleteIdsInChunks(List<String>.from(buffer));
-                    deleted += res.deletedCount;
-                    failed += res.failedCount;
-                    buffer.clear();
-                  }
-
-                  if (!dialogContext.mounted) return;
-                  Navigator.of(dialogContext).pop(
-                    (
-                      scanned: scanned,
-                      matched: matched,
-                      deleted: deleted,
-                      failed: failed,
-                    ),
-                  );
-                }());
-              }
-
-              return AlertDialog(
-                title: const Text('Deleting…'),
-                content: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    const LinearProgressIndicator(),
-                    const SizedBox(height: 12),
-                    Text('Scanned: $scanned'),
-                    Text('Matched: $matched'),
-                    Text('Deleted: $deleted'),
-                    if (failed > 0) Text('Failed: $failed'),
-                  ],
-                ),
+                      return AlertDialog(
+                        title: const Text('Deleting…'),
+                        content: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: <Widget>[
+                            const LinearProgressIndicator(),
+                            const SizedBox(height: 12),
+                            Text('Scanned: $scanned'),
+                            Text('Matched: $matched'),
+                            Text('Deleted: $deleted'),
+                            if (failed > 0) Text('Failed: $failed'),
+                          ],
+                        ),
+                      );
+                    },
               );
             },
-          );
-        },
-      )) ??
+          )) ??
           (scanned: 0, matched: 0, deleted: 0, failed: 0);
 
       if (!mounted) return;
@@ -5481,8 +5808,8 @@ class _AttendanceSessionsPanelState extends State<_AttendanceSessionsPanel> {
                     onPressed: (_bulkDeleting || _selectedIds.isEmpty)
                         ? null
                         : () => _confirmAndDeleteSelected(
-                              _selectedIds.toList(growable: false),
-                            ),
+                            _selectedIds.toList(growable: false),
+                          ),
                     icon: const Icon(Icons.delete_outline, size: 18),
                     label: Text('Delete selected (${_selectedIds.length})'),
                   ),
@@ -5511,10 +5838,10 @@ class _AttendanceSessionsPanelState extends State<_AttendanceSessionsPanel> {
                         !_bulkDeleting && !_loading && !_loadingMore;
                     final String deleteAllLabel =
                         (_dateFilter == 'all' &&
-                                _statusFilter == 'all' &&
-                                _search.isEmpty)
-                            ? 'Delete ALL sessions'
-                            : 'Delete all matching filters';
+                            _statusFilter == 'all' &&
+                            _search.isEmpty)
+                        ? 'Delete ALL sessions'
+                        : 'Delete all matching filters';
                     return <PopupMenuEntry<String>>[
                       PopupMenuItem<String>(
                         value: 'deleteAll',
@@ -5526,8 +5853,7 @@ class _AttendanceSessionsPanelState extends State<_AttendanceSessionsPanel> {
                           subtitle: const Text('Includes students and scans'),
                         ),
                       ),
-                      if (_multiSelect)
-                        const PopupMenuDivider(),
+                      if (_multiSelect) const PopupMenuDivider(),
                       if (_multiSelect)
                         PopupMenuItem<String>(
                           value: 'clearSelection',
@@ -5740,10 +6066,11 @@ class _AttendanceSessionsPanelState extends State<_AttendanceSessionsPanel> {
                             : () async {
                                 final bool? deleted = await showDialog<bool>(
                                   context: context,
-                                  builder: (_) => _AttendanceSessionDetailsDialog(
-                                    sessionId: doc.id,
-                                    sessionRef: doc.reference,
-                                  ),
+                                  builder: (_) =>
+                                      _AttendanceSessionDetailsDialog(
+                                        sessionId: doc.id,
+                                        sessionRef: doc.reference,
+                                      ),
                                 );
                                 if (deleted == true && mounted) {
                                   await _refresh();
@@ -5768,8 +6095,8 @@ class _AttendanceSessionsPanelState extends State<_AttendanceSessionsPanel> {
                         isThreeLine: true,
                         trailing: _multiSelect
                             ? (_selectedIds.contains(doc.id)
-                                ? const Icon(Icons.check_circle)
-                                : const Icon(Icons.radio_button_unchecked))
+                                  ? const Icon(Icons.check_circle)
+                                  : const Icon(Icons.radio_button_unchecked))
                             : const Icon(Icons.chevron_right),
                       );
                     },
@@ -5932,46 +6259,49 @@ class _AttendanceSessionDetailsDialog extends StatelessWidget {
                         builder:
                             (
                               BuildContext context,
-                              AsyncSnapshot<DocumentSnapshot<Map<String, dynamic>>>
-                                  snapshot,
+                              AsyncSnapshot<
+                                DocumentSnapshot<Map<String, dynamic>>
+                              >
+                              snapshot,
                             ) {
-                          final Map<String, dynamic>? data = snapshot.data?.data();
-                          final Timestamp? startedAtTs =
-                              (data?['startedAt'] as Timestamp?) ??
-                              (data?['createdAt'] as Timestamp?);
+                              final Map<String, dynamic>? data = snapshot.data
+                                  ?.data();
+                              final Timestamp? startedAtTs =
+                                  (data?['startedAt'] as Timestamp?) ??
+                                  (data?['createdAt'] as Timestamp?);
 
-                          String fmt(Timestamp? ts) {
-                            if (ts == null) return '';
-                            final DateTime dt = ts.toDate();
-                            String two(int n) => n.toString().padLeft(2, '0');
-                            return '${dt.year}-${two(dt.month)}-${two(dt.day)} ${two(dt.hour)}:${two(dt.minute)}';
-                          }
+                              String fmt(Timestamp? ts) {
+                                if (ts == null) return '';
+                                final DateTime dt = ts.toDate();
+                                String two(int n) =>
+                                    n.toString().padLeft(2, '0');
+                                return '${dt.year}-${two(dt.month)}-${two(dt.day)} ${two(dt.hour)}:${two(dt.minute)}';
+                              }
 
-                          final String startedLabel = fmt(startedAtTs);
-                          final String title = startedLabel.isEmpty
-                              ? 'Session'
-                              : 'Session started: $startedLabel';
+                              final String startedLabel = fmt(startedAtTs);
+                              final String title = startedLabel.isEmpty
+                                  ? 'Session'
+                                  : 'Session started: $startedLabel';
 
-                          return Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: <Widget>[
-                              Text(
-                                title,
-                                style: theme.textTheme.titleMedium?.copyWith(
-                                  fontWeight: FontWeight.w700,
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              Text(
-                                'ID: $sessionId',
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: theme.colorScheme.onSurfaceVariant,
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ],
-                          );
-                        },
+                              return Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: <Widget>[
+                                  Text(
+                                    title,
+                                    style: theme.textTheme.titleMedium
+                                        ?.copyWith(fontWeight: FontWeight.w700),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  Text(
+                                    'ID: $sessionId',
+                                    style: theme.textTheme.bodySmall?.copyWith(
+                                      color: theme.colorScheme.onSurfaceVariant,
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ],
+                              );
+                            },
                       ),
                     ),
                     PopupMenuButton<String>(
@@ -6061,7 +6391,7 @@ class _AttendanceSessionDetailsDialog extends StatelessWidget {
             ].where((String v) => v.trim().isNotEmpty).join(' • ');
             final String status = (data['status']?.toString() ?? '').trim();
             final String instructorEmail =
-              (data['instructorEmail'] as String?) ?? '';
+                (data['instructorEmail'] as String?) ?? '';
             final String startedAt = _fmtTs(data['startedAt'] as Timestamp?);
             final String endedAt = _fmtTs(data['endedAt'] as Timestamp?);
 

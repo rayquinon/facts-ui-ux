@@ -11,6 +11,7 @@ import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 
 import 'services/face_embedding_service.dart';
 import 'services/face_quality_exception.dart';
+import 'services/vps_embeddings_api_client.dart';
 
 List<double> _l2NormalizeVector(List<double> v) {
   if (v.isEmpty) return <double>[];
@@ -92,6 +93,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   bool _isEndingSession = false;
   bool _initializing = true;
   String? _statusMessage;
+  String? _rosterTrace;
   String? _sessionDocId;
   bool _sessionClosed = false;
   DateTime? _sessionStartedAt;
@@ -302,9 +304,20 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   }
 
   Future<void> _loadRosterEmbeddings() async {
-    final Query<Map<String, dynamic>> baseQuery = _firestore
-        .collection('users')
-        .where('role', isEqualTo: 'student');
+    if (mounted) {
+      setState(() => _rosterTrace = 'Trace: loading...');
+    }
+
+    final CollectionReference<Map<String, dynamic>> usersCollection =
+      _firestore.collection('users');
+    final Query<Map<String, dynamic>> baseQuery =
+      usersCollection.where('role', isEqualTo: 'student');
+
+    String? lastQueryLabel;
+    String? lastQueryError;
+    int usersFetched = 0;
+    bool usedBroadFallback = false;
+    bool usedBaseFallback = false;
 
     final String sectionLabel = (widget.config.section ?? '').trim();
     Query<Map<String, dynamic>> query = baseQuery;
@@ -316,12 +329,26 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     try {
       snapshot = await query
           .get(const GetOptions(source: Source.server))
-          .timeout(const Duration(seconds: 3));
+          .timeout(const Duration(seconds: 6));
+      lastQueryLabel = sectionLabel.isEmpty
+          ? 'role=student (server)'
+          : 'role=student+section (server)';
     } catch (_) {
-      snapshot = await query
-          .get(const GetOptions(source: Source.cache))
-          .timeout(const Duration(seconds: 3));
+      try {
+        snapshot = await query
+            .get(const GetOptions(source: Source.cache))
+            .timeout(const Duration(seconds: 3));
+        lastQueryLabel = sectionLabel.isEmpty
+            ? 'role=student (cache)'
+            : 'role=student+section (cache)';
+      } catch (e) {
+        // Keep empty snapshot; fallbacks below may succeed.
+        snapshot = await query.get(const GetOptions(source: Source.cache));
+        lastQueryError = e.toString();
+      }
     }
+
+    usersFetched = snapshot.docs.length;
 
     // If a section is provided but the exact-match query returns nothing,
     // fall back to a best-effort client-side filter. This avoids common
@@ -330,48 +357,324 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       try {
         final QuerySnapshot<Map<String, dynamic>> fallback = await baseQuery
             .get(const GetOptions(source: Source.server))
-            .timeout(const Duration(seconds: 3));
+            .timeout(const Duration(seconds: 6));
         snapshot = fallback;
+        usedBaseFallback = true;
+        lastQueryLabel = 'role=student (server)';
       } catch (_) {
         try {
           final QuerySnapshot<Map<String, dynamic>> fallback = await baseQuery
               .get(const GetOptions(source: Source.cache))
               .timeout(const Duration(seconds: 3));
           snapshot = fallback;
-        } catch (_) {
+          usedBaseFallback = true;
+          lastQueryLabel = 'role=student (cache)';
+        } catch (e) {
           // Keep the empty snapshot.
+          lastQueryError = e.toString();
         }
       }
     }
 
-    final String normalizedWanted = _normalizeLabel(sectionLabel);
-    final List<_RecognizedStudent> roster = snapshot.docs
-        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-          if (sectionLabel.isEmpty) return true;
-          final Object? rawSection = doc.data()['section'];
-          final String normalizedActual = _normalizeLabel(
-            rawSection?.toString() ?? '',
-          );
-          return normalizedActual == normalizedWanted;
-        })
-        .map(_RecognizedStudent.fromDocument)
-        .whereType<_RecognizedStudent>()
-        .toList(growable: false);
+    usersFetched = snapshot.docs.length;
 
-    if (mounted) {
-      setState(() => _roster = roster);
+    // If we still have no results, fall back to a broad users fetch and
+    // client-side filtering. This helps when stored role/section values
+    // have casing/spacing mismatches (e.g., "Student" vs "student").
+    if (snapshot.docs.isEmpty) {
+      // Broad fallback: fetch more users and filter client-side.
+      // This handles legacy schemas where role/section are missing or
+      // differently-cased.
+      try {
+        snapshot = await usersCollection
+            .orderBy(FieldPath.documentId)
+            .limit(1000)
+            .get(const GetOptions(source: Source.server))
+            .timeout(const Duration(seconds: 8));
+        usedBroadFallback = true;
+        lastQueryLabel = 'users (server)';
+      } catch (_) {
+        try {
+          snapshot = await usersCollection
+              .orderBy(FieldPath.documentId)
+              .limit(1000)
+              .get(const GetOptions(source: Source.cache))
+              .timeout(const Duration(seconds: 4));
+          usedBroadFallback = true;
+          lastQueryLabel = 'users (cache)';
+        } catch (e) {
+          // Keep empty.
+          lastQueryError = e.toString();
+        }
+      }
+    }
+
+    usersFetched = snapshot.docs.length;
+
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> candidateDocs =
+        snapshot.docs.where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+      return _isStudentProfile(doc.data());
+    }).toList(growable: false);
+
+    bool usedSectionFallback = false;
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> rosterDocs = candidateDocs;
+    if (sectionLabel.isNotEmpty) {
+      final String normalizedWantedSection = _normalizeLabel(sectionLabel);
+      rosterDocs = candidateDocs.where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+        final Map<String, dynamic> data = doc.data();
+        final Object? rawSection =
+            data['section'] ?? data['Section'] ?? data['SECTION'];
+        final String normalizedActualSection =
+            _normalizeLabel(rawSection?.toString() ?? '');
+        return normalizedActualSection == normalizedWantedSection;
+      }).toList(growable: false);
+
+      // If section filtering results in no matches but we do have student
+      // profiles, fall back to scanning all students. This prevents a
+      // zero-roster session when section labels are missing/mismatched.
+      if (rosterDocs.isEmpty && candidateDocs.isNotEmpty) {
+        rosterDocs = candidateDocs;
+        usedSectionFallback = true;
+      }
+    }
+
+    try {
+      final _RosterEmbeddingsFetchOutcome outcome =
+          await _fetchRosterEmbeddingsFromVps(rosterDocs);
+      final List<_RecognizedStudent> roster = outcome.roster;
+
+      const VpsEmbeddingsApiClient diagClient = VpsEmbeddingsApiClient();
+      final bool vpsHealthy = await diagClient.healthz(
+        timeoutOverride: const Duration(seconds: 3),
+      );
+
+      final String trace = 'Trace: vpsHealth=${vpsHealthy ? "ok" : "fail"}'
+          ' q=${lastQueryLabel ?? "?"}'
+          '${lastQueryError == null ? "" : " err=${lastQueryError!.split("\n").first}"}'
+          ' users=$usersFetched'
+          ' candidates=${candidateDocs.length}'
+          ' rosterDocs=${rosterDocs.length}'
+          ' vps(ok=${roster.length} miss=${outcome.missing} forb=${outcome.forbidden} fail=${outcome.failed})'
+          '${usedBaseFallback ? " baseFallback" : ""}'
+          '${usedBroadFallback ? " broadFallback" : ""}';
+
+      if (mounted) {
+        setState(() {
+          _roster = roster;
+          _rosterTrace = trace;
+        });
+      }
+
       if (roster.isEmpty) {
+        if (candidateDocs.isEmpty) {
+          _updateStatus(
+            sectionLabel.isEmpty
+                ? 'No students found to scan.'
+                : 'No students found for section "$sectionLabel".',
+          );
+        } else if (usedSectionFallback) {
+          _updateStatus(
+            'No students loaded for recognition. Section "$sectionLabel" did not match any student profiles, and embeddings failed to load. '
+            'Try fixing section labels or scanning without a section filter.',
+          );
+        } else if (outcome.forbidden > 0) {
+          _updateStatus(
+            'Could not load roster embeddings. Permission denied by VPS for ${outcome.forbidden} students. '
+            'Sign out/in to refresh your token, and ensure your account has the instructor/admin claim.',
+          );
+        } else if (outcome.failed > 0) {
+          _updateStatus(
+            'No students loaded for recognition. ${outcome.failed} embeddings failed to load. Check VPS connectivity.',
+          );
+        } else if (outcome.missing > 0) {
+          _updateStatus(
+            'No students loaded for recognition. ${outcome.missing} not enrolled yet.',
+          );
+        } else {
+          _updateStatus(
+            sectionLabel.isEmpty
+                ? 'No students loaded for recognition. Check connection and enrollment.'
+                : 'No students loaded for section "$sectionLabel". Check section labels and enrollment.',
+          );
+        }
+      } else if (usedSectionFallback) {
         _updateStatus(
-          sectionLabel.isEmpty
-              ? 'No students loaded for recognition. Check connection and enrollment.'
-              : 'No students loaded for section "$sectionLabel". Check section labels and enrollment.',
+          'Loaded ${roster.length} students for recognition. Section "$sectionLabel" did not match any profiles, so scanning all students.',
         );
+      } else if (outcome.failed > 0) {
+        _updateStatus(
+          'Loaded ${roster.length} students for recognition. ${outcome.failed} failed to load embeddings.',
+        );
+      } else if (outcome.missing > 0) {
+        _updateStatus(
+          'Loaded ${roster.length} students for recognition. ${outcome.missing} not enrolled yet.',
+        );
+      } else if (outcome.forbidden > 0) {
+        _updateStatus(
+          'Loaded ${roster.length} students for recognition. ${outcome.forbidden} forbidden (check instructor/admin claim).',
+        );
+      }
+    } catch (error, stackTrace) {
+      debugPrint('Roster load failed: $error\n$stackTrace');
+      final String trace = 'Trace: exception=${error.toString().split("\n").first}';
+      if (mounted) {
+        setState(() {
+          _roster = <_RecognizedStudent>[];
+          _rosterTrace = trace;
+        });
+        _updateStatus('Failed to load roster for recognition.');
       }
     }
   }
 
   String _normalizeLabel(String input) {
     return input.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+  }
+
+  bool _isStudentRole(Object? rawRole) {
+    if (rawRole == null) return false;
+    if (rawRole is String) {
+      final String normalized = _normalizeLabel(rawRole);
+      return normalized == 'student' || normalized.contains('student');
+    }
+    if (rawRole is List) {
+      for (final Object? v in rawRole) {
+        if (v == null) continue;
+        final String normalized = _normalizeLabel(v.toString());
+        if (normalized == 'student' || normalized.contains('student')) {
+          return true;
+        }
+      }
+      return false;
+    }
+    final String normalized = _normalizeLabel(rawRole.toString());
+    return normalized == 'student' || normalized.contains('student');
+  }
+
+  bool _isStudentProfile(Map<String, dynamic> data) {
+    if (_isStudentRole(data['role'])) return true;
+    final Object? rawStudentId =
+        data['studentId'] ?? data['StudentId'] ?? data['Student ID'];
+    if (rawStudentId is String) {
+      return rawStudentId.trim().isNotEmpty;
+    }
+    if (rawStudentId != null) {
+      final String s = rawStudentId.toString().trim();
+      return s.isNotEmpty;
+    }
+    return false;
+  }
+
+  Future<_RosterEmbeddingsFetchOutcome> _fetchRosterEmbeddingsFromVps(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) async {
+    const VpsEmbeddingsApiClient client = VpsEmbeddingsApiClient();
+    const int batchSize = 8;
+
+    final List<_RecognizedStudent> roster = <_RecognizedStudent>[];
+    int missing = 0;
+    int failed = 0;
+    int forbidden = 0;
+    String? firstForbiddenUid;
+    String? firstFailedUid;
+
+    for (int i = 0; i < docs.length; i += batchSize) {
+      final int end = math.min(i + batchSize, docs.length);
+      final List<QueryDocumentSnapshot<Map<String, dynamic>>> batch =
+          docs.sublist(i, end);
+
+      final List<_SingleEmbeddingFetchOutcome> results = await Future.wait(
+        batch.map((QueryDocumentSnapshot<Map<String, dynamic>> doc) async {
+          try {
+            VpsEmbeddingsRecord? record;
+            try {
+              record = await client.getEmbeddingForUid(
+                doc.id,
+                forceRefreshToken: false,
+              );
+            } on VpsEmbeddingsApiException catch (e) {
+              if (e.statusCode == 401 || e.statusCode == 403) {
+                // Common when custom claims were recently updated. Retry once
+                // with a forced refresh.
+                record = await client.getEmbeddingForUid(
+                  doc.id,
+                  forceRefreshToken: true,
+                );
+              } else {
+                rethrow;
+              }
+            }
+            if (record == null) {
+              return const _SingleEmbeddingFetchOutcome.missing();
+            }
+            final List<List<double>> rawTemplates = record.embeddings.isNotEmpty
+                ? record.embeddings
+                : <List<double>>[record.embedding];
+            final List<List<double>> templates = rawTemplates
+                .map(_l2NormalizeVector)
+                .where((List<double> v) => v.isNotEmpty)
+                .toList(growable: false);
+            if (templates.isEmpty) return const _SingleEmbeddingFetchOutcome.failed();
+            final String displayName = _RecognizedStudent._resolveDisplayName(
+              doc.data(),
+              doc.id,
+            );
+            return _SingleEmbeddingFetchOutcome.student(
+              _RecognizedStudent(
+              userId: doc.id,
+              displayName: displayName,
+              embeddings: templates,
+              ),
+            );
+          } on TimeoutException {
+            return const _SingleEmbeddingFetchOutcome.failed();
+          } on VpsEmbeddingsApiException catch (e) {
+            if (e.statusCode == 404) {
+              return const _SingleEmbeddingFetchOutcome.missing();
+            }
+            if (e.statusCode == 401 || e.statusCode == 403) {
+              firstForbiddenUid ??= doc.id;
+              return const _SingleEmbeddingFetchOutcome.forbidden();
+            }
+            firstFailedUid ??= doc.id;
+            return const _SingleEmbeddingFetchOutcome.failed();
+          } catch (_) {
+            firstFailedUid ??= doc.id;
+            return const _SingleEmbeddingFetchOutcome.failed();
+          }
+        }),
+      );
+
+      for (final _SingleEmbeddingFetchOutcome outcome in results) {
+        if (outcome.student != null) {
+          roster.add(outcome.student!);
+        } else if (outcome.isMissing) {
+          missing++;
+        } else if (outcome.isForbidden) {
+          forbidden++;
+        } else if (outcome.isFailed) {
+          failed++;
+        }
+      }
+    }
+
+    if (forbidden > 0 && firstForbiddenUid != null) {
+      debugPrint(
+        'Roster VPS fetch: forbidden=$forbidden (first uid=$firstForbiddenUid)',
+      );
+    }
+    if (failed > 0 && firstFailedUid != null) {
+      debugPrint(
+        'Roster VPS fetch: failed=$failed (first uid=$firstFailedUid)',
+      );
+    }
+
+    return _RosterEmbeddingsFetchOutcome(
+      roster: roster,
+      missing: missing,
+      failed: failed,
+      forbidden: forbidden,
+    );
   }
 
   Future<void> _initializeDeviceCamera() async {
@@ -792,7 +1095,11 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         );
       }
     } else {
-      if (bestCandidateHitCount < _minTemplateHits) {
+      final int requiredHits = math.min(
+        templateCount,
+        templateCount >= 5 ? 3 : _minTemplateHits,
+      );
+      if (bestCandidateHitCount < requiredHits) {
         return _MatchResult(
           embedding: embedding,
           similarity: bestScore,
@@ -1382,6 +1689,12 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                         ),
+                        const SizedBox(height: 6),
+                        SelectableText(
+                          _rosterTrace ?? 'Trace: (loading...)',
+                          style: theme.textTheme.bodySmall,
+                          maxLines: 4,
+                        ),
                       ],
                     ),
                   ),
@@ -1600,6 +1913,46 @@ class _AttendanceCapture {
   final double? confidence;
 }
 
+class _RosterEmbeddingsFetchOutcome {
+  const _RosterEmbeddingsFetchOutcome({
+    required this.roster,
+    required this.missing,
+    required this.failed,
+    required this.forbidden,
+  });
+
+  final List<_RecognizedStudent> roster;
+  final int missing;
+  final int failed;
+  final int forbidden;
+}
+
+class _SingleEmbeddingFetchOutcome {
+  const _SingleEmbeddingFetchOutcome._({
+    this.student,
+    required this.isMissing,
+    required this.isFailed,
+    required this.isForbidden,
+  });
+
+  const _SingleEmbeddingFetchOutcome.student(_RecognizedStudent s)
+      : this._(student: s, isMissing: false, isFailed: false, isForbidden: false);
+
+  const _SingleEmbeddingFetchOutcome.missing()
+      : this._(student: null, isMissing: true, isFailed: false, isForbidden: false);
+
+    const _SingleEmbeddingFetchOutcome.forbidden()
+      : this._(student: null, isMissing: false, isFailed: false, isForbidden: true);
+
+  const _SingleEmbeddingFetchOutcome.failed()
+      : this._(student: null, isMissing: false, isFailed: true, isForbidden: false);
+
+  final _RecognizedStudent? student;
+  final bool isMissing;
+  final bool isFailed;
+  final bool isForbidden;
+}
+
 class _RecognizedStudent {
   const _RecognizedStudent({
     required this.userId,
@@ -1610,66 +1963,6 @@ class _RecognizedStudent {
   final String userId;
   final String displayName;
   final List<List<double>> embeddings;
-
-  static _RecognizedStudent? fromDocument(
-    QueryDocumentSnapshot<Map<String, dynamic>> doc,
-  ) {
-    final Map<String, dynamic> data = doc.data();
-    final String? provider = data['faceEmbedProvider'] as String?;
-    if (!kIsWeb && provider == 'web_fallback') {
-      return null;
-    }
-    final List<List<double>> embeddings = _readEmbeddings(data);
-    if (embeddings.isEmpty) {
-      return null;
-    }
-    final String displayName = _resolveDisplayName(data, doc.id);
-    return _RecognizedStudent(
-      userId: doc.id,
-      displayName: displayName,
-      embeddings: embeddings,
-    );
-  }
-
-  static List<List<double>> _readEmbeddings(Map<String, dynamic> data) {
-    final dynamic rawMulti = data['faceEmbeds'];
-    if (rawMulti is List && rawMulti.isNotEmpty) {
-      final List<List<double>> parsed = <List<double>>[];
-      for (final dynamic item in rawMulti) {
-        List<num>? rawVec;
-        if (item is List) {
-          rawVec = item.whereType<num>().toList(growable: false);
-        } else if (item is Map) {
-          final dynamic v = item['v'];
-          if (v is List) {
-            rawVec = v.whereType<num>().toList(growable: false);
-          }
-        }
-        if (rawVec == null || rawVec.isEmpty) continue;
-
-        final List<double> vec = rawVec
-            .map((num v) => v.toDouble())
-            .toList(growable: false);
-        final List<double> normalized = _l2NormalizeVector(vec);
-        if (normalized.isNotEmpty) {
-          parsed.add(normalized);
-        }
-      }
-      if (parsed.isNotEmpty) {
-        return parsed;
-      }
-    }
-
-    final List<dynamic>? rawSingle = data['faceEmbed'] as List<dynamic>?;
-    if (rawSingle == null || rawSingle.isEmpty) {
-      return <List<double>>[];
-    }
-    final List<double> embedding = rawSingle
-        .map((dynamic value) => (value as num).toDouble())
-        .toList(growable: false);
-    final List<double> normalized = _l2NormalizeVector(embedding);
-    return normalized.isEmpty ? <List<double>>[] : <List<double>>[normalized];
-  }
 
   static String _resolveDisplayName(Map<String, dynamic> data, String docId) {
     const List<String> candidateKeys = <String>[
