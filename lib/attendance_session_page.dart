@@ -592,6 +592,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     int forbidden = 0;
     String? firstForbiddenUid;
     String? firstFailedUid;
+    final Set<String> forbiddenUids = <String>{};
 
     for (int i = 0; i < docs.length; i += batchSize) {
       final int end = math.min(i + batchSize, docs.length);
@@ -678,17 +679,81 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         }),
       );
 
-      for (final _SingleEmbeddingFetchOutcome outcome in results) {
+      for (int j = 0; j < results.length; j++) {
+        final _SingleEmbeddingFetchOutcome outcome = results[j];
         if (outcome.student != null) {
           roster.add(outcome.student!);
         } else if (outcome.isMissing) {
           missing++;
         } else if (outcome.isForbidden) {
           forbidden++;
+          forbiddenUids.add(batch[j].id);
         } else if (outcome.isFailed) {
           failed++;
         }
       }
+    }
+
+    // If we attempted to bootstrap an instructor claim during this run, some
+    // early requests in the batch may have already returned 403 before the claim
+    // was set + token refreshed. Retry those forbidden UIDs once.
+    if (forbiddenUids.isNotEmpty && _attemptedInstructorClaimBootstrap) {
+      int forbiddenAfterRetry = 0;
+      String? firstForbiddenAfter;
+
+      for (final QueryDocumentSnapshot<Map<String, dynamic>> doc in docs) {
+        if (!forbiddenUids.contains(doc.id)) continue;
+        try {
+          final VpsEmbeddingsRecord? record = await client.getEmbeddingForUid(
+            doc.id,
+            forceRefreshToken: true,
+          );
+          if (record == null) {
+            missing++;
+            continue;
+          }
+          final List<List<double>> rawTemplates = record.embeddings.isNotEmpty
+              ? record.embeddings
+              : <List<double>>[record.embedding];
+          final List<List<double>> templates = rawTemplates
+              .map(_l2NormalizeVector)
+              .where((List<double> v) => v.isNotEmpty)
+              .toList(growable: false);
+          if (templates.isEmpty) {
+            failed++;
+            continue;
+          }
+          final String displayName = _RecognizedStudent._resolveDisplayName(
+            doc.data(),
+            doc.id,
+          );
+          roster.add(
+            _RecognizedStudent(
+              userId: doc.id,
+              displayName: displayName,
+              embeddings: templates,
+            ),
+          );
+        } on VpsEmbeddingsApiException catch (e) {
+          if (e.statusCode == 404) {
+            missing++;
+            continue;
+          }
+          if (e.statusCode == 401 || e.statusCode == 403) {
+            forbiddenAfterRetry++;
+            firstForbiddenAfter ??= doc.id;
+            continue;
+          }
+          failed++;
+        } on TimeoutException {
+          failed++;
+        } catch (_) {
+          failed++;
+        }
+      }
+
+      forbidden = forbiddenAfterRetry;
+      firstForbiddenUid = firstForbiddenUid ?? firstForbiddenAfter;
     }
 
     if (forbidden > 0 && firstForbiddenUid != null) {
