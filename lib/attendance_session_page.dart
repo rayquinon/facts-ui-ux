@@ -100,7 +100,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   bool _isEndingSession = false;
   bool _initializing = true;
   String? _statusMessage;
-  String? _rosterTrace;
   bool _attemptedInstructorClaimBootstrap = false;
   DateTime? _lastFrameProcessedAt;
   String? _sessionDocId;
@@ -313,20 +312,10 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   }
 
   Future<void> _loadRosterEmbeddings() async {
-    if (mounted) {
-      setState(() => _rosterTrace = 'Trace: loading...');
-    }
-
     final CollectionReference<Map<String, dynamic>> usersCollection =
       _firestore.collection('users');
     final Query<Map<String, dynamic>> baseQuery =
       usersCollection.where('role', isEqualTo: 'student');
-
-    String? lastQueryLabel;
-    String? lastQueryError;
-    int usersFetched = 0;
-    bool usedBroadFallback = false;
-    bool usedBaseFallback = false;
 
     final String sectionLabel = (widget.config.section ?? '').trim();
     Query<Map<String, dynamic>> query = baseQuery;
@@ -339,25 +328,16 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       snapshot = await query
           .get(const GetOptions(source: Source.server))
           .timeout(const Duration(seconds: 6));
-      lastQueryLabel = sectionLabel.isEmpty
-          ? 'role=student (server)'
-          : 'role=student+section (server)';
     } catch (_) {
       try {
         snapshot = await query
             .get(const GetOptions(source: Source.cache))
             .timeout(const Duration(seconds: 3));
-        lastQueryLabel = sectionLabel.isEmpty
-            ? 'role=student (cache)'
-            : 'role=student+section (cache)';
       } catch (e) {
         // Keep empty snapshot; fallbacks below may succeed.
         snapshot = await query.get(const GetOptions(source: Source.cache));
-        lastQueryError = e.toString();
       }
     }
-
-    usersFetched = snapshot.docs.length;
 
     // If a section is provided but the exact-match query returns nothing,
     // fall back to a best-effort client-side filter. This avoids common
@@ -368,24 +348,17 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
             .get(const GetOptions(source: Source.server))
             .timeout(const Duration(seconds: 6));
         snapshot = fallback;
-        usedBaseFallback = true;
-        lastQueryLabel = 'role=student (server)';
       } catch (_) {
         try {
           final QuerySnapshot<Map<String, dynamic>> fallback = await baseQuery
               .get(const GetOptions(source: Source.cache))
               .timeout(const Duration(seconds: 3));
           snapshot = fallback;
-          usedBaseFallback = true;
-          lastQueryLabel = 'role=student (cache)';
         } catch (e) {
           // Keep the empty snapshot.
-          lastQueryError = e.toString();
         }
       }
     }
-
-    usersFetched = snapshot.docs.length;
 
     // If we still have no results, fall back to a broad users fetch and
     // client-side filtering. This helps when stored role/section values
@@ -400,8 +373,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
             .limit(1000)
             .get(const GetOptions(source: Source.server))
             .timeout(const Duration(seconds: 8));
-        usedBroadFallback = true;
-        lastQueryLabel = 'users (server)';
       } catch (_) {
         try {
           snapshot = await usersCollection
@@ -409,16 +380,11 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
               .limit(1000)
               .get(const GetOptions(source: Source.cache))
               .timeout(const Duration(seconds: 4));
-          usedBroadFallback = true;
-          lastQueryLabel = 'users (cache)';
         } catch (e) {
           // Keep empty.
-          lastQueryError = e.toString();
         }
       }
     }
-
-    usersFetched = snapshot.docs.length;
 
     final List<QueryDocumentSnapshot<Map<String, dynamic>>> candidateDocs =
         snapshot.docs.where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
@@ -452,25 +418,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           await _fetchRosterEmbeddingsFromVps(rosterDocs);
       final List<_RecognizedStudent> roster = outcome.roster;
 
-      const VpsEmbeddingsApiClient diagClient = VpsEmbeddingsApiClient();
-      final bool vpsHealthy = await diagClient.healthz(
-        timeoutOverride: const Duration(seconds: 3),
-      );
-
-      final String trace = 'Trace: vpsHealth=${vpsHealthy ? "ok" : "fail"}'
-          ' q=${lastQueryLabel ?? "?"}'
-          '${lastQueryError == null ? "" : " err=${lastQueryError.split("\n").first}"}'
-          ' users=$usersFetched'
-          ' candidates=${candidateDocs.length}'
-          ' rosterDocs=${rosterDocs.length}'
-          ' vps(ok=${roster.length} miss=${outcome.missing} forb=${outcome.forbidden} fail=${outcome.failed})'
-          '${usedBaseFallback ? " baseFallback" : ""}'
-          '${usedBroadFallback ? " broadFallback" : ""}';
-
       if (mounted) {
         setState(() {
           _roster = roster;
-          _rosterTrace = trace;
         });
       }
 
@@ -525,11 +475,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       }
     } catch (error, stackTrace) {
       debugPrint('Roster load failed: $error\n$stackTrace');
-      final String trace = 'Trace: exception=${error.toString().split("\n").first}';
       if (mounted) {
         setState(() {
           _roster = <_RecognizedStudent>[];
-          _rosterTrace = trace;
         });
         _updateStatus('Failed to load roster for recognition.');
       }
@@ -1826,12 +1774,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                           style: theme.textTheme.bodyMedium,
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 6),
-                        SelectableText(
-                          _rosterTrace ?? 'Trace: (loading...)',
-                          style: theme.textTheme.bodySmall,
-                          maxLines: 4,
                         ),
                       ],
                     ),
