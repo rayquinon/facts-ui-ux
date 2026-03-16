@@ -65,22 +65,28 @@ class AttendanceSessionPage extends StatefulWidget {
 class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   // Recognition is strictly gated to minimize false positives.
   // Tune these with real class data if needed.
-  static const double _similarityThreshold = 0.62;
-  static const double _singleTemplateThreshold = 0.68;
-  static const double _templateHitThreshold = 0.62;
-  static const int _minTemplateHits = 2;
-  static const double _similarityMargin = 0.10;
+  static const double _similarityThreshold = 0.70;
+  static const double _singleTemplateThreshold = 0.78;
+  static const double _templateHitThreshold = 0.68;
+  static const int _minTemplateHits = 3;
+  static const double _similarityMargin = 0.16;
   static const double _confidenceSpan = 0.20;
   static const Duration _captureCooldown = Duration(seconds: 1);
   static const Duration _confirmingCaptureCooldown = Duration(milliseconds: 300);
   static const Duration _duplicateCaptureCooldown = Duration(seconds: 10);
   static const Duration _unrecognizedCooldown = Duration(seconds: 4);
   static const Duration _ambiguousConfirmationWindow = Duration(seconds: 7);
-  static const int _ambiguousConfirmationsRequired = 2;
+  static const int _ambiguousConfirmationsRequired = 3;
   static const Duration _confirmationWindow = Duration(seconds: 6);
-  static const int _confirmationsRequired = 2;
+  static const int _confirmationsRequired = 3;
   static const Duration _maxConfirmationDuration = Duration(seconds: 12);
   static const Duration _autoEndAfterClassStart = Duration(minutes: 30);
+
+  // Throttle camera frame processing to avoid UI jank.
+  static const Duration _frameProcessingInterval = Duration(milliseconds: 180);
+  static const Duration _confirmingFrameProcessingInterval = Duration(
+    milliseconds: 120,
+  );
 
   final FaceEmbeddingService _embeddingService = FaceEmbeddingService.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -96,6 +102,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   String? _statusMessage;
   String? _rosterTrace;
   bool _attemptedInstructorClaimBootstrap = false;
+  DateTime? _lastFrameProcessedAt;
   String? _sessionDocId;
   bool _sessionClosed = false;
   DateTime? _sessionStartedAt;
@@ -131,7 +138,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     if (_recognitionSupported) {
       _faceDetector = FaceDetector(
         options: FaceDetectorOptions(
-          performanceMode: FaceDetectorMode.accurate,
+          performanceMode: FaceDetectorMode.fast,
           enableLandmarks: true,
           enableContours: false,
           enableTracking: false,
@@ -811,6 +818,20 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     if (_isWithinCooldown()) {
       return;
     }
+
+    // Extra throttle to keep preview smooth.
+    final DateTime now = _now();
+    final bool isConfirming =
+        _pendingStudentId != null || _pendingAmbiguousStudentId != null;
+    final Duration minInterval = isConfirming
+        ? _confirmingFrameProcessingInterval
+        : _frameProcessingInterval;
+    final DateTime? lastFrame = _lastFrameProcessedAt;
+    if (lastFrame != null && now.difference(lastFrame) < minInterval) {
+      return;
+    }
+    _lastFrameProcessedAt = now;
+
     _isProcessingFrame = true;
     try {
       final InputImage inputImage = _buildInputImage(image);
@@ -852,6 +873,17 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           primary = sorted.first;
         }
 
+        // Skip expensive embedding generation if the face pose is extreme.
+        final double yaw = primary.headEulerAngleY ?? 0.0;
+        final double pitch = primary.headEulerAngleX ?? 0.0;
+        const double maxYaw = 25;
+        const double maxPitch = 25;
+        if (yaw.abs() > maxYaw || pitch.abs() > maxPitch) {
+          _lastCaptureTime = _now();
+          _updateStatus('Look straight at the camera and hold still.');
+          return;
+        }
+
         final Rect bbox = _mapMlKitBboxToRaw(
           primary.boundingBox,
           rotationCompensation: _lastRotationCompensation,
@@ -870,6 +902,14 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           rawWidth: image.width.toDouble(),
           rawHeight: image.height.toDouble(),
         );
+
+        // If we can't see both eyes clearly, alignment is unreliable and can
+        // increase false positives.
+        if (leftEye == null || rightEye == null) {
+          _lastCaptureTime = _now();
+          _updateStatus('Hold still and face the camera.');
+          return;
+        }
 
         final List<double> embedding = await _embeddingService
             .generateEmbeddingAligned(
