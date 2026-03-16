@@ -22,6 +22,14 @@ const Set<int> _defaultMeetingWeekdays = <int>{
   DateTime.saturday,
 };
 
+int _compareNamesAsc(String a, String b) {
+  final String aa = a.trim().toLowerCase();
+  final String bb = b.trim().toLowerCase();
+  final int cmp = aa.compareTo(bb);
+  if (cmp != 0) return cmp;
+  return a.compareTo(b);
+}
+
 
 class GenerateReportPage extends StatefulWidget {
   const GenerateReportPage({super.key});
@@ -402,7 +410,8 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
           courseYear: courseYear,
           marks: marks,
         );
-      }).toList()..sort((a, b) => a.studentName.compareTo(b.studentName));
+        }).toList()
+          ..sort((a, b) => _compareNamesAsc(a.studentName, b.studentName));
       if (!mounted) return;
       setState(() {
         _previewRows = rows;
@@ -488,7 +497,8 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
           courseYear: courseYear,
           marksByDay: marks,
         );
-      }).toList()..sort((a, b) => a.studentName.compareTo(b.studentName));
+      }).toList()
+        ..sort((a, b) => _compareNamesAsc(a.studentName, b.studentName));
 
       final Uint8List templateBytes = (await rootBundle.load(
         'assets/reports/template.docx.docx',

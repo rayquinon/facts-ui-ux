@@ -3392,7 +3392,7 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
 
     final String q = _searchQuery;
 
-    return _loadedUserDocs
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = _loadedUserDocs
         .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
           final Map<String, dynamic> data = _patchedUserData(doc);
           return !_isAdminAccount(doc.id, data);
@@ -3413,7 +3413,24 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
           final Map<String, dynamic> data = _patchedUserData(doc);
           return _buildSearchHaystack(data, doc.id).contains(q);
         })
-        .toList(growable: false);
+
+        .toList(growable: true);
+
+    docs.sort((a, b) {
+      final Map<String, dynamic> dataA = _patchedUserData(a);
+      final Map<String, dynamic> dataB = _patchedUserData(b);
+      final String rawA = _resolveDisplayName(dataA, a.id).trim();
+      final String rawB = _resolveDisplayName(dataB, b.id).trim();
+      final String keyA = (rawA.isEmpty ? a.id : rawA).toLowerCase();
+      final String keyB = (rawB.isEmpty ? b.id : rawB).toLowerCase();
+      final int cmp = keyA.compareTo(keyB);
+      if (cmp != 0) return cmp;
+      final int rawCmp = rawA.compareTo(rawB);
+      if (rawCmp != 0) return rawCmp;
+      return a.id.compareTo(b.id);
+    });
+
+    return docs;
   }
 
   void _applyClearedEnrollmentPatch(String uid) {
