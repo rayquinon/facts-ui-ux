@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:camera/camera.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -94,6 +95,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   bool _initializing = true;
   String? _statusMessage;
   String? _rosterTrace;
+  bool _attemptedInstructorClaimBootstrap = false;
   String? _sessionDocId;
   bool _sessionClosed = false;
   DateTime? _sessionStartedAt;
@@ -450,7 +452,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
       final String trace = 'Trace: vpsHealth=${vpsHealthy ? "ok" : "fail"}'
           ' q=${lastQueryLabel ?? "?"}'
-          '${lastQueryError == null ? "" : " err=${lastQueryError!.split("\n").first}"}'
+          '${lastQueryError == null ? "" : " err=${lastQueryError.split("\n").first}"}'
           ' users=$usersFetched'
           ' candidates=${candidateDocs.length}'
           ' rosterDocs=${rosterDocs.length}'
@@ -571,6 +573,19 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     const VpsEmbeddingsApiClient client = VpsEmbeddingsApiClient();
     const int batchSize = 8;
 
+    Future<void> tryBootstrapInstructorClaimOnce() async {
+      if (_attemptedInstructorClaimBootstrap) return;
+      _attemptedInstructorClaimBootstrap = true;
+      try {
+        await FirebaseFunctions.instance
+            .httpsCallable('bootstrapInstructorClaim')
+            .call(<String, dynamic>{});
+        await FirebaseAuth.instance.currentUser?.getIdToken(true);
+      } catch (e) {
+        debugPrint('bootstrapInstructorClaim failed: $e');
+      }
+    }
+
     final List<_RecognizedStudent> roster = <_RecognizedStudent>[];
     int missing = 0;
     int failed = 0;
@@ -596,10 +611,25 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
               if (e.statusCode == 401 || e.statusCode == 403) {
                 // Common when custom claims were recently updated. Retry once
                 // with a forced refresh.
-                record = await client.getEmbeddingForUid(
-                  doc.id,
-                  forceRefreshToken: true,
-                );
+                try {
+                  record = await client.getEmbeddingForUid(
+                    doc.id,
+                    forceRefreshToken: true,
+                  );
+                } on VpsEmbeddingsApiException catch (e2) {
+                  if (e2.statusCode == 403) {
+                    // If the VPS checks custom claims (e.g. `instructor: true`) but
+                    // the app only stored instructor role in Firestore, bootstrap
+                    // the claim once and retry.
+                    await tryBootstrapInstructorClaimOnce();
+                    record = await client.getEmbeddingForUid(
+                      doc.id,
+                      forceRefreshToken: true,
+                    );
+                  } else {
+                    rethrow;
+                  }
+                }
               } else {
                 rethrow;
               }
@@ -633,6 +663,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
               return const _SingleEmbeddingFetchOutcome.missing();
             }
             if (e.statusCode == 401 || e.statusCode == 403) {
+              if (e.statusCode == 403) {
+                await tryBootstrapInstructorClaimOnce();
+              }
               firstForbiddenUid ??= doc.id;
               return const _SingleEmbeddingFetchOutcome.forbidden();
             }

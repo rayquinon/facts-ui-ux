@@ -758,6 +758,59 @@ exports.adminApproveInstructor = onCall({ cors: true }, async (request) => {
     { merge: true }
   );
 
+  // VPS embeddings API authorizes roster reads using Firebase custom claims.
+  // Ensure approved instructors receive an `instructor: true` claim.
+  try {
+    const authApi = getAuth();
+    const userRecord = await authApi.getUser(uid);
+    const existingClaims = userRecord.customClaims || {};
+    await authApi.setCustomUserClaims(uid, { ...existingClaims, instructor: true });
+
+    // Best-effort marker for troubleshooting.
+    await db.collection('users').doc(uid).set(
+      { instructorClaimSetAt: FieldValue.serverTimestamp() },
+      { merge: true }
+    );
+  } catch (_) {
+    // Best-effort. Approval should still succeed even if claims update fails.
+  }
+
+  return { ok: true };
+});
+
+exports.bootstrapInstructorClaim = onCall({ cors: true }, async (request) => {
+  const uid = requireSignedIn(request);
+
+  const profile = await getUserProfile(uid);
+  if (!profile) {
+    throw new HttpsError('failed-precondition', 'User profile not found.');
+  }
+
+  if (profile.role !== 'instructor') {
+    throw new HttpsError('permission-denied', 'Instructor role required.');
+  }
+  if (profile.approved !== true) {
+    throw new HttpsError('permission-denied', 'Instructor account is not approved yet.');
+  }
+
+  const authApi = getAuth();
+  const userRecord = await authApi.getUser(uid);
+  const existingClaims = userRecord.customClaims || {};
+
+  // Only grant to self.
+  await authApi.setCustomUserClaims(uid, { ...existingClaims, instructor: true });
+
+  // Best-effort marker for troubleshooting.
+  try {
+    const db = getFirestore();
+    await db.collection('users').doc(uid).set(
+      { instructorClaimSetAt: FieldValue.serverTimestamp() },
+      { merge: true }
+    );
+  } catch (_) {
+    // ignore
+  }
+
   return { ok: true };
 });
 
