@@ -65,11 +65,11 @@ class AttendanceSessionPage extends StatefulWidget {
 class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   // Recognition is strictly gated to minimize false positives.
   // Tune these with real class data if needed.
-  static const double _similarityThreshold = 0.69;
-  static const double _singleTemplateThreshold = 0.77;
-  static const double _templateHitThreshold = 0.67;
-  static const int _minTemplateHits = 3;
-  static const double _similarityMargin = 0.15;
+  static const double _similarityThreshold = 0.68;
+  static const double _singleTemplateThreshold = 0.76;
+  static const double _templateHitThreshold = 0.66;
+  static const int _minTemplateHits = 2;
+  static const double _similarityMargin = 0.14;
   static const double _confidenceSpan = 0.20;
   static const Duration _captureCooldown = Duration(seconds: 1);
   static const Duration _confirmingCaptureCooldown = Duration(
@@ -78,9 +78,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   static const Duration _duplicateCaptureCooldown = Duration(seconds: 10);
   static const Duration _unrecognizedCooldown = Duration(seconds: 4);
   static const Duration _ambiguousConfirmationWindow = Duration(seconds: 7);
-  static const int _ambiguousConfirmationsRequired = 3;
+  static const int _ambiguousConfirmationsRequired = 2;
   static const Duration _confirmationWindow = Duration(seconds: 6);
-  static const int _confirmationsRequired = 3;
+  static const int _confirmationsRequired = 2;
   static const Duration _maxConfirmationDuration = Duration(seconds: 12);
   static const Duration _autoEndAfterClassStart = Duration(minutes: 30);
 
@@ -835,8 +835,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         // Skip expensive embedding generation if the face pose is extreme.
         final double yaw = primary.headEulerAngleY ?? 0.0;
         final double pitch = primary.headEulerAngleX ?? 0.0;
-        const double maxYaw = 25;
-        const double maxPitch = 25;
+        const double maxYaw = 28;
+        const double maxPitch = 28;
         if (yaw.abs() > maxYaw || pitch.abs() > maxPitch) {
           _lastCaptureTime = _now();
           _updateStatus('Look straight at the camera and hold still.');
@@ -1197,7 +1197,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     } else {
       final int requiredHits = math.min(
         templateCount,
-        templateCount >= 5 ? 3 : _minTemplateHits,
+        templateCount >= 6 ? 3 : _minTemplateHits,
       );
       if (bestCandidateHitCount < requiredHits) {
         return _MatchResult(
