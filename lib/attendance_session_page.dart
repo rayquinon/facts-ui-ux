@@ -72,7 +72,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   static const double _similarityMargin = 0.16;
   static const double _confidenceSpan = 0.20;
   static const Duration _captureCooldown = Duration(seconds: 1);
-  static const Duration _confirmingCaptureCooldown = Duration(milliseconds: 300);
+  static const Duration _confirmingCaptureCooldown = Duration(
+    milliseconds: 300,
+  );
   static const Duration _duplicateCaptureCooldown = Duration(seconds: 10);
   static const Duration _unrecognizedCooldown = Duration(seconds: 4);
   static const Duration _ambiguousConfirmationWindow = Duration(seconds: 7);
@@ -312,10 +314,12 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   }
 
   Future<void> _loadRosterEmbeddings() async {
-    final CollectionReference<Map<String, dynamic>> usersCollection =
-      _firestore.collection('users');
-    final Query<Map<String, dynamic>> baseQuery =
-      usersCollection.where('role', isEqualTo: 'student');
+    final CollectionReference<Map<String, dynamic>> usersCollection = _firestore
+        .collection('users');
+    final Query<Map<String, dynamic>> baseQuery = usersCollection.where(
+      'role',
+      isEqualTo: 'student',
+    );
 
     final String sectionLabel = (widget.config.section ?? '').trim();
     Query<Map<String, dynamic>> query = baseQuery;
@@ -387,22 +391,28 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     }
 
     final List<QueryDocumentSnapshot<Map<String, dynamic>>> candidateDocs =
-        snapshot.docs.where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-      return _isStudentProfile(doc.data());
-    }).toList(growable: false);
+        snapshot.docs
+            .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+              return _isStudentProfile(doc.data());
+            })
+            .toList(growable: false);
 
     bool usedSectionFallback = false;
-    List<QueryDocumentSnapshot<Map<String, dynamic>>> rosterDocs = candidateDocs;
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> rosterDocs =
+        candidateDocs;
     if (sectionLabel.isNotEmpty) {
       final String normalizedWantedSection = _normalizeLabel(sectionLabel);
-      rosterDocs = candidateDocs.where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-        final Map<String, dynamic> data = doc.data();
-        final Object? rawSection =
-            data['section'] ?? data['Section'] ?? data['SECTION'];
-        final String normalizedActualSection =
-            _normalizeLabel(rawSection?.toString() ?? '');
-        return normalizedActualSection == normalizedWantedSection;
-      }).toList(growable: false);
+      rosterDocs = candidateDocs
+          .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+            final Map<String, dynamic> data = doc.data();
+            final Object? rawSection =
+                data['section'] ?? data['Section'] ?? data['SECTION'];
+            final String normalizedActualSection = _normalizeLabel(
+              rawSection?.toString() ?? '',
+            );
+            return normalizedActualSection == normalizedWantedSection;
+          })
+          .toList(growable: false);
 
       // If section filtering results in no matches but we do have student
       // profiles, fall back to scanning all students. This prevents a
@@ -551,8 +561,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
     for (int i = 0; i < docs.length; i += batchSize) {
       final int end = math.min(i + batchSize, docs.length);
-      final List<QueryDocumentSnapshot<Map<String, dynamic>>> batch =
-          docs.sublist(i, end);
+      final List<QueryDocumentSnapshot<Map<String, dynamic>>> batch = docs
+          .sublist(i, end);
 
       final List<_SingleEmbeddingFetchOutcome> results = await Future.wait(
         batch.map((QueryDocumentSnapshot<Map<String, dynamic>> doc) async {
@@ -600,16 +610,17 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                 .map(_l2NormalizeVector)
                 .where((List<double> v) => v.isNotEmpty)
                 .toList(growable: false);
-            if (templates.isEmpty) return const _SingleEmbeddingFetchOutcome.failed();
+            if (templates.isEmpty)
+              return const _SingleEmbeddingFetchOutcome.failed();
             final String displayName = _RecognizedStudent._resolveDisplayName(
               doc.data(),
               doc.id,
             );
             return _SingleEmbeddingFetchOutcome.student(
               _RecognizedStudent(
-              userId: doc.id,
-              displayName: displayName,
-              embeddings: templates,
+                userId: doc.id,
+                displayName: displayName,
+                embeddings: templates,
               ),
             );
           } on TimeoutException {
@@ -886,8 +897,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     }
     final bool isConfirming =
         _pendingStudentId != null || _pendingAmbiguousStudentId != null;
-    final Duration cooldown =
-        isConfirming ? _confirmingCaptureCooldown : _captureCooldown;
+    final Duration cooldown = isConfirming
+        ? _confirmingCaptureCooldown
+        : _captureCooldown;
     return _now().difference(last) < cooldown;
   }
 
@@ -1029,7 +1041,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       }
 
       final String candidateId = result.student!.userId;
-      final String candidateName = result.student?.displayName ?? 'this student';
+      final String candidateName =
+          result.student?.displayName ?? 'this student';
       if (_pendingStudentId == candidateId) {
         _pendingConfirmations++;
         _pendingMismatchCount = 0;
@@ -1038,7 +1051,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         // original pending candidate so we can still reach 2 confirmations.
         _pendingMismatchCount++;
         const int mismatchTolerance = 1;
-        if (_pendingStudentId == null || _pendingMismatchCount > mismatchTolerance) {
+        if (_pendingStudentId == null ||
+            _pendingMismatchCount > mismatchTolerance) {
           _pendingStudentId = candidateId;
           _pendingStudentName = candidateName;
           _pendingConfirmations = 1;
@@ -1701,6 +1715,25 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     super.dispose();
   }
 
+  Future<void> _showRecognizedFaces() async {
+    if (!mounted) return;
+    final List<_AttendanceCapture> recognized = _recentCaptures
+        .where((c) => c.matchDisplayName != null)
+        .toList(growable: false);
+
+    await showModalBottomSheet<void>(
+      context: context,
+      builder: (BuildContext context) {
+        return SafeArea(
+          child: _RecentCapturesList(
+            captures: recognized,
+            controller: _captureListController,
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final AttendanceSessionConfig config = widget.config;
@@ -1731,6 +1764,11 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         appBar: AppBar(
           title: const Text('Recognition session'),
           actions: <Widget>[
+            IconButton(
+              tooltip: 'Recognized faces',
+              onPressed: _showRecognizedFaces,
+              icon: const Icon(Icons.people_alt_outlined),
+            ),
             TextButton.icon(
               onPressed: primaryEnabled ? _handlePrimarySessionAction : null,
               icon: _isEndingSession
@@ -1748,41 +1786,42 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           children: <Widget>[
             _SessionHeader(config: config, rosterCount: _roster.length),
             Expanded(
-              child: Column(
-                children: <Widget>[
-                  Expanded(
-                    child: Container(
-                      margin: const EdgeInsets.fromLTRB(8, 8, 8, 4),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(24),
-                        color: theme.colorScheme.surfaceContainerHighest,
-                      ),
-                      clipBehavior: Clip.antiAlias,
-                      child: preview,
-                    ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 8,
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: <Widget>[
-                        Text(
-                          _statusMessage ?? 'Initializing session... hold on.',
-                          style: theme.textTheme.bodyMedium,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
+              child: Container(
+                margin: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(24),
+                  color: theme.colorScheme.surfaceContainerHighest,
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: Stack(
+                  children: <Widget>[
+                    Positioned.fill(child: preview),
+                    Positioned(
+                      left: 12,
+                      right: 12,
+                      bottom: 12,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.surface.withOpacity(0.90),
+                          borderRadius: BorderRadius.circular(16),
                         ),
-                      ],
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 10,
+                          ),
+                          child: Text(
+                            _statusMessage ??
+                                'Initializing session... hold on.',
+                            style: theme.textTheme.bodyMedium,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ),
                     ),
-                  ),
-                  _RecentCapturesList(
-                    captures: _recentCaptures,
-                    controller: _captureListController,
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ],
@@ -1933,13 +1972,13 @@ class _RecentCapturesList extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Text('Recent captures', style: theme.textTheme.titleMedium),
+          Text('Recognized faces', style: theme.textTheme.titleMedium),
           SizedBox(
             height: 160,
             child: captures.isEmpty
                 ? const Center(
                     child: Text(
-                      'No captures yet. Position a student in front of the camera to begin.',
+                      'No recognized faces yet. Position a student in front of the camera to begin.',
                       textAlign: TextAlign.center,
                     ),
                   )
@@ -2016,16 +2055,31 @@ class _SingleEmbeddingFetchOutcome {
   });
 
   const _SingleEmbeddingFetchOutcome.student(_RecognizedStudent s)
-      : this._(student: s, isMissing: false, isFailed: false, isForbidden: false);
+    : this._(student: s, isMissing: false, isFailed: false, isForbidden: false);
 
   const _SingleEmbeddingFetchOutcome.missing()
-      : this._(student: null, isMissing: true, isFailed: false, isForbidden: false);
+    : this._(
+        student: null,
+        isMissing: true,
+        isFailed: false,
+        isForbidden: false,
+      );
 
-    const _SingleEmbeddingFetchOutcome.forbidden()
-      : this._(student: null, isMissing: false, isFailed: false, isForbidden: true);
+  const _SingleEmbeddingFetchOutcome.forbidden()
+    : this._(
+        student: null,
+        isMissing: false,
+        isFailed: false,
+        isForbidden: true,
+      );
 
   const _SingleEmbeddingFetchOutcome.failed()
-      : this._(student: null, isMissing: false, isFailed: true, isForbidden: false);
+    : this._(
+        student: null,
+        isMissing: false,
+        isFailed: true,
+        isForbidden: false,
+      );
 
   final _RecognizedStudent? student;
   final bool isMissing;
