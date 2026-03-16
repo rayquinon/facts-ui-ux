@@ -1739,6 +1739,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     final AttendanceSessionConfig config = widget.config;
     final ThemeData theme = Theme.of(context);
     final Widget preview = _buildPreviewPlaceholder();
+    final bool showOvalGuide =
+        !kIsWeb && (_cameraController?.value.isInitialized ?? false);
     final bool endNow = _shouldEndSessionNow();
     final bool canToggleCapture = _recognitionSupported;
     final bool primaryEnabled =
@@ -1796,6 +1798,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                 child: Stack(
                   children: <Widget>[
                     Positioned.fill(child: preview),
+                    if (showOvalGuide)
+                      const Positioned.fill(child: _OvalFaceGuideOverlay()),
                     Positioned(
                       left: 12,
                       right: 12,
@@ -1852,6 +1856,85 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
   String _formatConfidence(double value) {
     return '${(value * 100).toStringAsFixed(1)}%';
+  }
+}
+
+class _OvalFaceGuideOverlay extends StatelessWidget {
+  const _OvalFaceGuideOverlay();
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final Color scrim = theme.colorScheme.scrim.withOpacity(0.45);
+    final Color stroke = theme.colorScheme.onSurface.withOpacity(0.90);
+
+    return IgnorePointer(
+      child: CustomPaint(
+        painter: _OvalFaceGuidePainter(scrimColor: scrim, strokeColor: stroke),
+      ),
+    );
+  }
+}
+
+class _OvalFaceGuidePainter extends CustomPainter {
+  const _OvalFaceGuidePainter({
+    required this.scrimColor,
+    required this.strokeColor,
+  });
+
+  final Color scrimColor;
+  final Color strokeColor;
+
+  static const double _aspectRatio = 0.78;
+
+  Rect _computeGuideRect(Size size) {
+    final Rect bounds = Offset.zero & size;
+    if (bounds.isEmpty) return Rect.zero;
+
+    final double maxWidth = size.width * 0.88;
+    final double maxHeight = size.height * 0.82;
+
+    double height = maxHeight;
+    double width = height * _aspectRatio;
+    if (width > maxWidth) {
+      width = maxWidth;
+      height = width / _aspectRatio;
+    }
+
+    return Rect.fromCenter(
+      center: size.center(Offset.zero),
+      width: width,
+      height: height,
+    );
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final Rect bounds = Offset.zero & size;
+    final Rect guideRect = _computeGuideRect(size);
+    if (guideRect.isEmpty) return;
+
+    final Path maskPath = Path()
+      ..fillType = PathFillType.evenOdd
+      ..addRect(bounds)
+      ..addOval(guideRect);
+
+    final Paint dimPaint = Paint()
+      ..color = scrimColor
+      ..style = PaintingStyle.fill;
+    canvas.drawPath(maskPath, dimPaint);
+
+    final Paint borderPaint = Paint()
+      ..color = strokeColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3;
+    canvas.drawOval(guideRect, borderPaint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _OvalFaceGuidePainter oldDelegate) {
+    return oldDelegate.scrimColor != scrimColor ||
+        oldDelegate.strokeColor != strokeColor;
   }
 }
 
