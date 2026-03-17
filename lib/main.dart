@@ -26,6 +26,7 @@ import 'reports/instructor_sessions_report_page.dart';
 import 'reset_password_page.dart';
 import 'verify_email_page.dart';
 import 'verify_phone_page.dart';
+import 'auth_action_page.dart';
 import 'widgets/confirm_sign_out_dialog.dart';
 import 'widgets/android_only_feature_page.dart';
 
@@ -251,6 +252,26 @@ class FactsApp extends StatelessWidget {
         },
       ),
       home: const AuthGate(),
+      onGenerateRoute: (RouteSettings settings) {
+        final String? name = settings.name;
+        if (name == null || name.isEmpty) return null;
+
+        Uri? uri;
+        try {
+          uri = Uri.parse(name);
+        } catch (_) {
+          return null;
+        }
+
+        if (uri.path == '/__/auth/action' || uri.path == '/_/auth/action') {
+          return MaterialPageRoute<void>(
+            builder: (BuildContext context) => AuthActionPage(uri: uri!),
+            settings: settings,
+          );
+        }
+
+        return null;
+      },
       routes: <String, WidgetBuilder>{
         LoginPage.routeName: (BuildContext context) => const LoginPage(),
         SignupPickRolePage.routeName: (BuildContext context) =>
@@ -352,11 +373,14 @@ class _AuthGateState extends State<AuthGate> {
       },
     );
 
-    appLinks.getInitialLink().then((Uri? uri) {
-      if (uri != null) _handleIncomingLink(uri);
-    }).catchError((_) {
-      // Ignore.
-    });
+    appLinks
+        .getInitialLink()
+        .then((Uri? uri) {
+          if (uri != null) _handleIncomingLink(uri);
+        })
+        .catchError((_) {
+          // Ignore.
+        });
   }
 
   void _handleIncomingLink(Uri uri) {
@@ -386,7 +410,8 @@ class _AuthGateState extends State<AuthGate> {
     };
     if (!allowedHosts.contains(effectiveHost)) return;
     final bool isResetPath = path.startsWith('/reset');
-    final bool isFirebaseActionPath = path.startsWith('/__/auth/action');
+    final bool isFirebaseActionPath =
+        path.startsWith('/__/auth/action') || path.startsWith('/_/auth/action');
     if (!isResetPath && !isFirebaseActionPath) return;
 
     final String code = (effectiveUri.queryParameters['oobCode'] ?? '').trim();
