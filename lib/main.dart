@@ -227,23 +227,24 @@ class FactsApp extends StatelessWidget {
   static ColorScheme _buildColorScheme() {
     // Claymorphism works best with a dark, slightly colored base and warm accent.
     // Keep contrast high and avoid pure white; use a warm off-white for text.
-    final Color onDark = Colors.white.withOpacity(0.92);
-    final Color onDarkMuted = Colors.white.withOpacity(0.70);
+    final Color onDark = Colors.white.withValues(alpha: 0.92);
+    final Color onDarkMuted = Colors.white.withValues(alpha: 0.70);
 
-    return ColorScheme.dark(
+    final ColorScheme base = ColorScheme.dark(
       primary: _brandGold,
       onPrimary: _brandNavy,
       secondary: _brandGold,
       onSecondary: _brandNavy,
-      background: _brandNavy,
-      onBackground: onDark,
       surface: _brandNavy,
       onSurface: onDark,
-      surfaceVariant: const Color(0xFF24225F),
-      onSurfaceVariant: onDarkMuted,
-      outline: Colors.white.withOpacity(0.18),
+      outline: Colors.white.withValues(alpha: 0.18),
       error: const Color(0xFFFF6B6B),
       onError: Colors.black,
+    );
+
+    return base.copyWith(
+      surfaceContainerHighest: const Color(0xFF24225F),
+      onSurfaceVariant: onDarkMuted,
     );
   }
 
@@ -251,10 +252,10 @@ class FactsApp extends StatelessWidget {
   Widget build(BuildContext context) {
     final ColorScheme scheme = _buildColorScheme();
     final Color offWhite = scheme.onSurface;
-    final Color muted = scheme.onSurface.withOpacity(0.70);
-    final Color claySurface = scheme.surfaceVariant;
-    final Color clayShadow = Colors.black.withOpacity(0.38);
-    final Color clayHighlight = Colors.white.withOpacity(0.08);
+    final Color muted = scheme.onSurface.withValues(alpha: 0.70);
+    final Color claySurface = scheme.surfaceContainerHighest;
+    final Color clayShadow = Colors.black.withValues(alpha: 0.38);
+    final Color clayHighlight = Colors.white.withValues(alpha: 0.08);
 
     return MaterialApp(
       navigatorKey: _rootNavigatorKey,
@@ -265,15 +266,15 @@ class FactsApp extends StatelessWidget {
         colorScheme: scheme,
         visualDensity: VisualDensity.adaptivePlatformDensity,
         useMaterial3: true,
-        scaffoldBackgroundColor: scheme.background,
-        canvasColor: scheme.background,
+        scaffoldBackgroundColor: scheme.surface,
+        canvasColor: scheme.surface,
         shadowColor: clayShadow,
         textTheme: ThemeData.dark().textTheme.apply(
           bodyColor: offWhite,
           displayColor: offWhite,
         ),
         appBarTheme: AppBarTheme(
-          backgroundColor: scheme.background,
+          backgroundColor: scheme.surface,
           foregroundColor: offWhite,
           surfaceTintColor: Colors.transparent,
           elevation: 0,
@@ -368,11 +369,11 @@ class FactsApp extends StatelessWidget {
           ),
         ),
         dividerTheme: DividerThemeData(
-          color: scheme.outline.withOpacity(0.9),
+          color: scheme.outline.withValues(alpha: 0.9),
           thickness: 1,
           space: 1,
         ),
-        iconTheme: IconThemeData(color: offWhite.withOpacity(0.90)),
+        iconTheme: IconThemeData(color: offWhite.withValues(alpha: 0.90)),
         floatingActionButtonTheme: FloatingActionButtonThemeData(
           backgroundColor: scheme.primary,
           foregroundColor: scheme.onPrimary,
@@ -383,7 +384,7 @@ class FactsApp extends StatelessWidget {
           ),
         ),
         listTileTheme: ListTileThemeData(
-          iconColor: offWhite.withOpacity(0.90),
+          iconColor: offWhite.withValues(alpha: 0.90),
           textColor: offWhite,
         ),
         pageTransitionsTheme: const PageTransitionsTheme(

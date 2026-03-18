@@ -647,8 +647,7 @@ class _AdminPageState extends State<AdminPage> {
             );
           },
         ),
-        actions: <Widget>[
-        ],
+        actions: <Widget>[],
       ),
       body: LayoutBuilder(
         builder: (BuildContext context, BoxConstraints constraints) {
@@ -1368,17 +1367,40 @@ class _DepartmentMaintenancePanelState
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
-            Row(
-              children: <Widget>[
-                const Expanded(
-                  child: Text('Manage departments available across programs.'),
-                ),
-                FilledButton.icon(
+            LayoutBuilder(
+              builder: (BuildContext context, BoxConstraints constraints) {
+                final bool isCompact = constraints.maxWidth < 520;
+                final Widget helpText = const Text(
+                  'Manage departments available across programs.',
+                );
+                final Widget addButton = FilledButton.icon(
                   onPressed: () => _openDepartmentDialog(),
                   icon: const Icon(Icons.add),
-                  label: const Text('Add department'),
-                ),
-              ],
+                  label: const Text(
+                    'Add department',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                );
+
+                if (!isCompact) {
+                  return Row(
+                    children: <Widget>[
+                      Expanded(child: helpText),
+                      addButton,
+                    ],
+                  );
+                }
+
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    helpText,
+                    const SizedBox(height: 12),
+                    Align(alignment: Alignment.centerLeft, child: addButton),
+                  ],
+                );
+              },
             ),
             const SizedBox(height: 16),
             StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
@@ -1415,22 +1437,34 @@ class _DepartmentMaintenancePanelState
                         final bool isActive =
                             (data['isActive'] as bool?) ?? true;
                         final String abbr = (data['abbr'] as String?) ?? '';
+                        const BoxConstraints iconButtonConstraints =
+                            BoxConstraints.tightFor(width: 40, height: 40);
                         return ListTile(
                           title: Text(
                             data['name'] as String? ?? 'Unnamed department',
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
                           ),
                           subtitle: abbr.isEmpty
                               ? null
-                              : Text('Abbreviation: $abbr'),
-                          trailing: Wrap(
-                            spacing: 4,
+                              : Text(
+                                  'Abbreviation: $abbr',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
                             children: <Widget>[
                               IconButton(
+                                constraints: iconButtonConstraints,
+                                visualDensity: VisualDensity.compact,
                                 icon: const Icon(Icons.edit_outlined),
                                 tooltip: 'Edit',
                                 onPressed: () => _openDepartmentDialog(doc),
                               ),
                               IconButton(
+                                constraints: iconButtonConstraints,
+                                visualDensity: VisualDensity.compact,
                                 icon: const Icon(Icons.delete_outline),
                                 tooltip: 'Delete',
                                 onPressed: () => _deleteDepartment(doc.id),
@@ -1534,38 +1568,45 @@ class _DepartmentDialogState extends State<_DepartmentDialog> {
     final bool isEditing = widget.existing != null;
     return AlertDialog(
       title: Text(isEditing ? 'Edit department' : 'Add department'),
-      content: Form(
-        key: _formKey,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            TextFormField(
-              controller: _nameController,
-              decoration: const InputDecoration(labelText: 'Department name'),
-              validator: (String? value) =>
-                  value == null || value.trim().isEmpty ? 'Required' : null,
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 520),
+        child: SingleChildScrollView(
+          child: Form(
+            key: _formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                TextFormField(
+                  controller: _nameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Department name',
+                  ),
+                  validator: (String? value) =>
+                      value == null || value.trim().isEmpty ? 'Required' : null,
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _abbrController,
+                  decoration: const InputDecoration(labelText: 'Abbreviation'),
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  controller: _headNameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Department head (name)',
+                    helperText: 'Used for report “Submitted to”.',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Active'),
+                  value: _isActive,
+                  onChanged: (bool value) => setState(() => _isActive = value),
+                ),
+              ],
             ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _abbrController,
-              decoration: const InputDecoration(labelText: 'Abbreviation'),
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _headNameController,
-              decoration: const InputDecoration(
-                labelText: 'Department head (name)',
-                helperText: 'Used for report “Submitted to”.',
-              ),
-            ),
-            const SizedBox(height: 12),
-            SwitchListTile.adaptive(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('Active'),
-              value: _isActive,
-              onChanged: (bool value) => setState(() => _isActive = value),
-            ),
-          ],
+          ),
         ),
       ),
       actions: <Widget>[
@@ -3344,14 +3385,16 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
       const VpsEmbeddingsApiClient vpsClient = VpsEmbeddingsApiClient();
       bool enrolled;
       try {
-        enrolled = (await vpsClient.getEmbeddingForUid(
+        enrolled =
+            (await vpsClient.getEmbeddingForUid(
               uid,
               forceRefreshToken: false,
             )) !=
             null;
       } on VpsEmbeddingsApiException catch (e) {
         if (e.statusCode == 401 || e.statusCode == 403) {
-          enrolled = (await vpsClient.getEmbeddingForUid(
+          enrolled =
+              (await vpsClient.getEmbeddingForUid(
                 uid,
                 forceRefreshToken: true,
               )) !=
@@ -3392,29 +3435,30 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
 
     final String q = _searchQuery;
 
-    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = _loadedUserDocs
-        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-          final Map<String, dynamic> data = _patchedUserData(doc);
-          return !_isAdminAccount(doc.id, data);
-        })
-        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-          final Map<String, dynamic> data = _patchedUserData(doc);
-          final String role = ((data['role'] as String?) ?? '').toLowerCase();
-          if (role == 'student') {
-            return _showStudents;
-          }
-          if (role == 'instructor') {
-            return _showInstructors;
-          }
-          return true;
-        })
-        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-          if (q.isEmpty) return true;
-          final Map<String, dynamic> data = _patchedUserData(doc);
-          return _buildSearchHaystack(data, doc.id).contains(q);
-        })
-
-        .toList(growable: true);
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
+        _loadedUserDocs
+            .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+              final Map<String, dynamic> data = _patchedUserData(doc);
+              return !_isAdminAccount(doc.id, data);
+            })
+            .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+              final Map<String, dynamic> data = _patchedUserData(doc);
+              final String role = ((data['role'] as String?) ?? '')
+                  .toLowerCase();
+              if (role == 'student') {
+                return _showStudents;
+              }
+              if (role == 'instructor') {
+                return _showInstructors;
+              }
+              return true;
+            })
+            .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+              if (q.isEmpty) return true;
+              final Map<String, dynamic> data = _patchedUserData(doc);
+              return _buildSearchHaystack(data, doc.id).contains(q);
+            })
+            .toList(growable: true);
 
     docs.sort((a, b) {
       final Map<String, dynamic> dataA = _patchedUserData(a);
@@ -3434,9 +3478,7 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
   }
 
   void _applyClearedEnrollmentPatch(String uid) {
-    _userDocPatches[uid] = <String, dynamic>{
-      _kVpsEnrollmentOverrideKey: false,
-    };
+    _userDocPatches[uid] = <String, dynamic>{_kVpsEnrollmentOverrideKey: false};
   }
 
   void _applyVpsEnrollmentPatch(String uid, bool enrolled) {
@@ -3706,10 +3748,12 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     if (docs.isEmpty) return;
 
     final List<QueryDocumentSnapshot<Map<String, dynamic>>> docsWithLegacy =
-        docs.where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-          final Map<String, dynamic> data = _patchedUserData(doc);
-          return _hasLegacyFaceEnrollment(data);
-        }).toList(growable: false);
+        docs
+            .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+              final Map<String, dynamic> data = _patchedUserData(doc);
+              return _hasLegacyFaceEnrollment(data);
+            })
+            .toList(growable: false);
 
     final int totalTargeted = docsWithLegacy.length;
     if (totalTargeted == 0) {
@@ -3751,8 +3795,9 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
         }
 
         final List<double> normalized = _l2NormalizeVector(legacy);
-        final List<double> payload =
-            normalized.isNotEmpty ? normalized : legacy;
+        final List<double> payload = normalized.isNotEmpty
+            ? normalized
+            : legacy;
 
         await vpsClient.putEmbeddingForUid(
           doc.id,
@@ -3796,7 +3841,9 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     _finishBulkProgress();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Migration completed. Success: $success, Failed: $failed.'),
+        content: Text(
+          'Migration completed. Success: $success, Failed: $failed.',
+        ),
       ),
     );
 
@@ -4269,9 +4316,9 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
       }
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Migration completed.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Migration completed.')));
 
       setState(() {
         _applyVpsEnrollmentPatch(uid, true);
@@ -4279,9 +4326,9 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
       unawaited(_refreshUsersById(<String>[uid]));
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to migrate: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to migrate: $error')));
     }
   }
 
@@ -4798,7 +4845,8 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                 child: Text('Fix Face Enrollment'),
                               ),
                               PopupMenuItem<_BulkUserAction>(
-                                value: _BulkUserAction.migrateFaceEnrollmentToVps,
+                                value:
+                                    _BulkUserAction.migrateFaceEnrollmentToVps,
                                 child: Text('Migrate Face Enrollment to VPS'),
                               ),
                               PopupMenuItem<_BulkUserAction>(
@@ -5005,7 +5053,9 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                               doc.id,
                             );
                             final String role = (data['role'] as String?) ?? '';
-                            final String normalizedRole = role.trim().toLowerCase();
+                            final String normalizedRole = role
+                                .trim()
+                                .toLowerCase();
                             if (normalizedRole == 'student' ||
                                 normalizedRole.contains('student')) {
                               unawaited(_ensureVpsEnrollmentCached(doc.id));
@@ -5016,7 +5066,7 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                               data,
                             );
                             final bool hasLegacyEnrollment =
-                              _hasLegacyFaceEnrollment(data);
+                                _hasLegacyFaceEnrollment(data);
                             final bool approved = data['approved'] == true;
                             final bool selected = _selectedUserIds.contains(
                               doc.id,
@@ -5137,7 +5187,9 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                             ),
                                           const PopupMenuItem<String>(
                                             value: 'clearEnrollment',
-                                            child: Text('Clear face enrollment'),
+                                            child: Text(
+                                              'Clear face enrollment',
+                                            ),
                                           ),
                                           const PopupMenuDivider(),
                                           const PopupMenuItem<String>(

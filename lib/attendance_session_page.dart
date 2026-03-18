@@ -611,8 +611,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                 .map(_l2NormalizeVector)
                 .where((List<double> v) => v.isNotEmpty)
                 .toList(growable: false);
-            if (templates.isEmpty)
+            if (templates.isEmpty) {
               return const _SingleEmbeddingFetchOutcome.failed();
+            }
             final String displayName = _RecognizedStudent._resolveDisplayName(
               doc.data(),
               doc.id,
@@ -1813,7 +1814,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                       bottom: 12,
                       child: DecoratedBox(
                         decoration: BoxDecoration(
-                          color: theme.colorScheme.surface.withOpacity(0.90),
+                          color: theme.colorScheme.surface.withValues(
+                            alpha: 0.90,
+                          ),
                           borderRadius: BorderRadius.circular(16),
                           border: Border.all(
                             color: theme.colorScheme.outlineVariant.withValues(
@@ -1877,8 +1880,8 @@ class _OvalFaceGuideOverlay extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
-    final Color scrim = theme.colorScheme.scrim.withOpacity(0.45);
-    final Color stroke = theme.colorScheme.onSurface.withOpacity(0.90);
+    final Color scrim = theme.colorScheme.scrim.withValues(alpha: 0.45);
+    final Color stroke = theme.colorScheme.onSurface.withValues(alpha: 0.90);
 
     return IgnorePointer(
       child: CustomPaint(
