@@ -221,17 +221,169 @@ Future<void> main() async {
 class FactsApp extends StatelessWidget {
   const FactsApp({super.key});
 
+  static const Color _brandNavy = Color(0xFF1A1851);
+  static const Color _brandGold = Color(0xFFFCB315);
+
+  static ColorScheme _buildColorScheme() {
+    // Claymorphism works best with a dark, slightly colored base and warm accent.
+    // Keep contrast high and avoid pure white; use a warm off-white for text.
+    final Color onDark = Colors.white.withOpacity(0.92);
+    final Color onDarkMuted = Colors.white.withOpacity(0.70);
+
+    return ColorScheme.dark(
+      primary: _brandGold,
+      onPrimary: _brandNavy,
+      secondary: _brandGold,
+      onSecondary: _brandNavy,
+      background: _brandNavy,
+      onBackground: onDark,
+      surface: _brandNavy,
+      onSurface: onDark,
+      surfaceVariant: const Color(0xFF24225F),
+      onSurfaceVariant: onDarkMuted,
+      outline: Colors.white.withOpacity(0.18),
+      error: const Color(0xFFFF6B6B),
+      onError: Colors.black,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final ColorScheme scheme = _buildColorScheme();
+    final Color offWhite = scheme.onSurface;
+    final Color muted = scheme.onSurface.withOpacity(0.70);
+    final Color claySurface = scheme.surfaceVariant;
+    final Color clayShadow = Colors.black.withOpacity(0.38);
+    final Color clayHighlight = Colors.white.withOpacity(0.08);
+
     return MaterialApp(
       navigatorKey: _rootNavigatorKey,
       title: 'Facts',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        brightness: Brightness.light,
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        brightness: Brightness.dark,
+        colorScheme: scheme,
         visualDensity: VisualDensity.adaptivePlatformDensity,
         useMaterial3: true,
+        scaffoldBackgroundColor: scheme.background,
+        canvasColor: scheme.background,
+        shadowColor: clayShadow,
+        textTheme: ThemeData.dark().textTheme.apply(
+          bodyColor: offWhite,
+          displayColor: offWhite,
+        ),
+        appBarTheme: AppBarTheme(
+          backgroundColor: scheme.background,
+          foregroundColor: offWhite,
+          surfaceTintColor: Colors.transparent,
+          elevation: 0,
+          titleTextStyle: ThemeData.dark().textTheme.titleLarge?.copyWith(
+            color: offWhite,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        cardTheme: CardTheme(
+          color: claySurface,
+          elevation: 0,
+          shadowColor: Colors.transparent,
+          surfaceTintColor: Colors.transparent,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+            side: BorderSide(color: scheme.outline),
+          ),
+          margin: const EdgeInsets.all(16),
+        ),
+        dialogTheme: DialogTheme(
+          backgroundColor: claySurface,
+          surfaceTintColor: Colors.transparent,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
+            side: BorderSide(color: scheme.outline),
+          ),
+          titleTextStyle: ThemeData.dark().textTheme.titleMedium?.copyWith(
+            color: offWhite,
+            fontWeight: FontWeight.w700,
+          ),
+          contentTextStyle: ThemeData.dark().textTheme.bodyMedium?.copyWith(
+            color: offWhite,
+          ),
+        ),
+        snackBarTheme: SnackBarThemeData(
+          backgroundColor: claySurface,
+          contentTextStyle: ThemeData.dark().textTheme.bodyMedium?.copyWith(
+            color: offWhite,
+          ),
+          actionTextColor: scheme.primary,
+          behavior: SnackBarBehavior.floating,
+        ),
+        filledButtonTheme: FilledButtonThemeData(
+          style: FilledButton.styleFrom(
+            backgroundColor: scheme.primary,
+            foregroundColor: scheme.onPrimary,
+            textStyle: const TextStyle(fontWeight: FontWeight.w700),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+            ),
+          ),
+        ),
+        outlinedButtonTheme: OutlinedButtonThemeData(
+          style: OutlinedButton.styleFrom(
+            foregroundColor: offWhite,
+            side: BorderSide(color: scheme.outline),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+            ),
+          ),
+        ),
+        textButtonTheme: TextButtonThemeData(
+          style: TextButton.styleFrom(
+            foregroundColor: scheme.primary,
+            textStyle: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: claySurface,
+          hintStyle: TextStyle(color: muted),
+          labelStyle: TextStyle(color: offWhite),
+          helperStyle: TextStyle(color: muted),
+          errorStyle: const TextStyle(color: Color(0xFFFFA3A3)),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(18),
+            borderSide: BorderSide(color: scheme.outline),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(18),
+            borderSide: BorderSide(color: scheme.primary, width: 2),
+          ),
+          errorBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(18),
+            borderSide: BorderSide(color: scheme.error),
+          ),
+          focusedErrorBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(18),
+            borderSide: BorderSide(color: scheme.error, width: 2),
+          ),
+        ),
+        dividerTheme: DividerThemeData(
+          color: scheme.outline.withOpacity(0.9),
+          thickness: 1,
+          space: 1,
+        ),
+        iconTheme: IconThemeData(color: offWhite.withOpacity(0.90)),
+        floatingActionButtonTheme: FloatingActionButtonThemeData(
+          backgroundColor: scheme.primary,
+          foregroundColor: scheme.onPrimary,
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+            side: BorderSide(color: clayHighlight),
+          ),
+        ),
+        listTileTheme: ListTileThemeData(
+          iconColor: offWhite.withOpacity(0.90),
+          textColor: offWhite,
+        ),
         pageTransitionsTheme: const PageTransitionsTheme(
           builders: <TargetPlatform, PageTransitionsBuilder>{
             TargetPlatform.android: FadeUpwardsPageTransitionsBuilder(),
