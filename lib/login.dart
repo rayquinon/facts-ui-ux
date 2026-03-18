@@ -7,6 +7,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'signup_pickrole.dart';
+import 'widgets/clay_surface.dart';
 import 'services/user_role_service.dart';
 import 'services/app_update_service.dart';
 import 'services/app_update_types.dart';
@@ -148,19 +149,18 @@ class _LoginPageState extends State<LoginPage> {
             ),
           );
         }
-          Navigator.of(context).pushReplacementNamed(
-            VerifyEmailPage.routeName,
-            arguments: const VerifyEmailPageArgs(destinationRoute: '/'),
-          );
+        Navigator.of(context).pushReplacementNamed(
+          VerifyEmailPage.routeName,
+          arguments: const VerifyEmailPageArgs(destinationRoute: '/'),
+        );
         return;
       }
 
       // Always go through AuthGate so any new gates (phone verification, etc)
       // are applied consistently.
-      Navigator.of(context).pushNamedAndRemoveUntil(
-        '/',
-        (Route<dynamic> route) => false,
-      );
+      Navigator.of(
+        context,
+      ).pushNamedAndRemoveUntil('/', (Route<dynamic> route) => false);
     } on FirebaseAuthException catch (error) {
       messenger.showSnackBar(
         SnackBar(
@@ -209,9 +209,9 @@ class _LoginPageState extends State<LoginPage> {
                   keyboardType: TextInputType.emailAddress,
                   textInputAction: TextInputAction.done,
                   onSubmitted: (_) {
-                    Navigator.of(dialogContext).pop(
-                      emailController.text.trim(),
-                    );
+                    Navigator.of(
+                      dialogContext,
+                    ).pop(emailController.text.trim());
                   },
                   decoration: const InputDecoration(
                     labelText: 'Email',
@@ -715,7 +715,16 @@ class _LoginPageState extends State<LoginPage> {
                       child: TextButton.icon(
                         onPressed: _checkForUpdates,
                         icon: const Icon(Icons.system_update_alt, size: 18),
-                        label: const Text('Check for updates'),
+                        label: const Text(
+                          'Check for updates',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          softWrap: false,
+                        ),
+                        style: TextButton.styleFrom(
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          visualDensity: VisualDensity.compact,
+                        ),
                       ),
                     ),
                   if (_appVersionLabel != null)
@@ -741,27 +750,20 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Widget _buildPromoPanel(ThemeData theme) {
-    return ClipRRect(
+    return ClaySurface(
       borderRadius: BorderRadius.circular(28),
-      child: DecoratedBox(
-        decoration: BoxDecoration(color: Colors.white),
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(40),
-            child: Opacity(
-              opacity: 0.9,
-              child: Image.asset(
-                'assets/logo.png',
-                fit: BoxFit.contain,
-                errorBuilder:
-                    (
-                      BuildContext context,
-                      Object error,
-                      StackTrace? stackTrace,
-                    ) {
-                      return const SizedBox.shrink();
-                    },
-              ),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(40),
+          child: Opacity(
+            opacity: 0.9,
+            child: Image.asset(
+              'assets/logo.png',
+              fit: BoxFit.contain,
+              errorBuilder:
+                  (BuildContext context, Object error, StackTrace? stackTrace) {
+                    return const SizedBox.shrink();
+                  },
             ),
           ),
         ),

@@ -291,7 +291,9 @@ class FactsApp extends StatelessWidget {
             borderRadius: BorderRadius.circular(24),
             side: BorderSide(color: scheme.outline),
           ),
-          margin: const EdgeInsets.all(16),
+          // Avoid a global Card margin: many screens already add padding/margins,
+          // and a large default margin can cause cramped layouts/overflow.
+          margin: EdgeInsets.zero,
         ),
         dialogTheme: DialogThemeData(
           backgroundColor: claySurface,

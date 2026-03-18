@@ -13,6 +13,7 @@ import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'services/face_embedding_service.dart';
 import 'services/face_quality_exception.dart';
 import 'services/vps_embeddings_api_client.dart';
+import 'widgets/clay_surface.dart';
 
 List<double> _l2NormalizeVector(List<double> v) {
   if (v.isEmpty) return <double>[];
@@ -1780,7 +1781,17 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : Icon(primaryIcon),
-              label: Text(primaryLabel),
+              label: Text(
+                primaryLabel,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                softWrap: false,
+              ),
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                visualDensity: VisualDensity.compact,
+              ),
             ),
           ],
         ),
@@ -1788,13 +1799,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           children: <Widget>[
             _SessionHeader(config: config, rosterCount: _roster.length),
             Expanded(
-              child: Container(
+              child: ClaySurface(
                 margin: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(24),
-                  color: theme.colorScheme.surfaceContainerHighest,
-                ),
-                clipBehavior: Clip.antiAlias,
+                borderRadius: BorderRadius.circular(24),
                 child: Stack(
                   children: <Widget>[
                     Positioned.fill(child: preview),
@@ -1808,6 +1815,11 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                         decoration: BoxDecoration(
                           color: theme.colorScheme.surface.withOpacity(0.90),
                           borderRadius: BorderRadius.circular(16),
+                          border: Border.all(
+                            color: theme.colorScheme.outlineVariant.withValues(
+                              alpha: 0.35,
+                            ),
+                          ),
                         ),
                         child: Padding(
                           padding: const EdgeInsets.symmetric(
@@ -2045,59 +2057,59 @@ class _RecentCapturesList extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
-    return Container(
-      width: double.infinity,
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surface,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Text('Recognized faces', style: theme.textTheme.titleMedium),
-          SizedBox(
-            height: 160,
-            child: captures.isEmpty
-                ? const Center(
-                    child: Text(
-                      'No recognized faces yet. Position a student in front of the camera to begin.',
-                      textAlign: TextAlign.center,
-                    ),
-                  )
-                : Scrollbar(
-                    controller: controller,
-                    thumbVisibility: true,
-                    child: ListView.separated(
+    return ClaySurface(
+      margin: EdgeInsets.zero,
+      clipChild: false,
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text('Recognized faces', style: theme.textTheme.titleMedium),
+            SizedBox(
+              height: 160,
+              child: captures.isEmpty
+                  ? const Center(
+                      child: Text(
+                        'No recognized faces yet. Position a student in front of the camera to begin.',
+                        textAlign: TextAlign.center,
+                      ),
+                    )
+                  : Scrollbar(
                       controller: controller,
-                      itemCount: captures.length,
-                      separatorBuilder: (_, __) => const Divider(height: 1),
-                      itemBuilder: (BuildContext context, int index) {
-                        final _AttendanceCapture capture = captures[index];
-                        return ListTile(
-                          contentPadding: EdgeInsets.zero,
-                          leading: Icon(
-                            capture.matchDisplayName == null
-                                ? Icons.help_outline
-                                : Icons.verified_user_outlined,
-                          ),
-                          title: Text(
-                            capture.matchDisplayName ?? 'Unrecognized face',
-                          ),
-                          subtitle: Text(
-                            'Captured at ${TimeOfDay.fromDateTime(capture.timestamp).format(context)}',
-                          ),
-                          trailing: capture.confidence == null
-                              ? const Text('No match')
-                              : Text(
-                                  '${(capture.confidence! * 100).toStringAsFixed(1)}%',
-                                ),
-                        );
-                      },
+                      thumbVisibility: true,
+                      child: ListView.separated(
+                        controller: controller,
+                        itemCount: captures.length,
+                        separatorBuilder: (_, __) => const Divider(height: 1),
+                        itemBuilder: (BuildContext context, int index) {
+                          final _AttendanceCapture capture = captures[index];
+                          return ListTile(
+                            contentPadding: EdgeInsets.zero,
+                            leading: Icon(
+                              capture.matchDisplayName == null
+                                  ? Icons.help_outline
+                                  : Icons.verified_user_outlined,
+                            ),
+                            title: Text(
+                              capture.matchDisplayName ?? 'Unrecognized face',
+                            ),
+                            subtitle: Text(
+                              'Captured at ${TimeOfDay.fromDateTime(capture.timestamp).format(context)}',
+                            ),
+                            trailing: capture.confidence == null
+                                ? const Text('No match')
+                                : Text(
+                                    '${(capture.confidence! * 100).toStringAsFixed(1)}%',
+                                  ),
+                          );
+                        },
+                      ),
                     ),
-                  ),
-          ),
-        ],
+            ),
+          ],
+        ),
       ),
     );
   }

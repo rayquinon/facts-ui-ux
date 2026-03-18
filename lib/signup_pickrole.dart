@@ -7,6 +7,7 @@ import 'instructor_page.dart';
 import 'student_page.dart';
 import 'verify_email_page.dart';
 import 'services/user_role_service.dart';
+import 'widgets/clay_surface.dart';
 
 enum UserRole { instructor, student }
 
@@ -108,10 +109,15 @@ class _SignupPickRolePageState extends State<SignupPickRolePage> {
                     FilledButton.icon(
                       onPressed: _selectedRole == null ? null : _handleContinue,
                       icon: const Icon(Icons.arrow_forward_rounded),
-                      label: Text(
-                        _selectedRole == null
-                            ? 'Select a role to continue'
-                            : 'Continue as ${_selectedRole!.label}',
+                      label: Flexible(
+                        child: Text(
+                          _selectedRole == null
+                              ? 'Select a role to continue'
+                              : 'Continue as ${_selectedRole!.label}',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                        ),
                       ),
                       style: FilledButton.styleFrom(
                         minimumSize: const Size.fromHeight(52),
@@ -143,20 +149,25 @@ class _RoleSelectionCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
     final ColorScheme colors = theme.colorScheme;
+
+    final BoxDecoration baseDecoration = ClaySurface.decoration(
+      context,
+      borderRadius: BorderRadius.circular(24),
+      color: isSelected
+          ? colors.primaryContainer.withValues(alpha: 0.42)
+          : colors.surfaceContainerHighest.withValues(alpha: 0.40),
+    );
+
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(24),
       child: Ink(
         padding: const EdgeInsets.all(24),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(24),
+        decoration: baseDecoration.copyWith(
           border: Border.all(
             color: isSelected ? colors.primary : colors.outlineVariant,
             width: 2,
           ),
-          color: isSelected
-              ? colors.primaryContainer.withValues(alpha: 0.4)
-              : colors.surfaceContainerHighest.withValues(alpha: 0.4),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
