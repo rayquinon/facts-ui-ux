@@ -41,6 +41,22 @@
         "destination": "/app/index.html"
       },
       {
+        "source": "/__/auth/action",
+        "destination": "/app/index.html"
+      },
+      {
+        "source": "/__/auth/action/**",
+        "destination": "/app/index.html"
+      },
+      {
+        "source": "/_/auth/action",
+        "destination": "/app/index.html"
+      },
+      {
+        "source": "/_/auth/action/**",
+        "destination": "/app/index.html"
+      },
+      {
         "source": "/app",
         "destination": "/app/index.html"
       },

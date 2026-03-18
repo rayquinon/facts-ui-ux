@@ -344,6 +344,9 @@ class _AuthGateState extends State<AuthGate> {
   int _authRefreshKey = 0;
   bool _updateCheckedThisLaunch = false;
   StreamSubscription<Uri>? _appLinksSub;
+  String? _lastHandledDeepLink;
+  DateTime? _lastHandledDeepLinkAt;
+  static const Duration _deepLinkDedupeWindow = Duration(seconds: 2);
 
   void _triggerAuthRefresh() {
     setState(() => _authRefreshKey++);
@@ -384,6 +387,17 @@ class _AuthGateState extends State<AuthGate> {
   }
 
   void _handleIncomingLink(Uri uri) {
+    final DateTime now = DateTime.now();
+    final String rawIncoming = uri.toString();
+    final DateTime? lastAt = _lastHandledDeepLinkAt;
+    if (_lastHandledDeepLink == rawIncoming &&
+        lastAt != null &&
+        now.difference(lastAt) < _deepLinkDedupeWindow) {
+      return;
+    }
+    _lastHandledDeepLink = rawIncoming;
+    _lastHandledDeepLinkAt = now;
+
     Uri effectiveUri = uri;
     final String host = uri.host.toLowerCase();
 
@@ -414,20 +428,32 @@ class _AuthGateState extends State<AuthGate> {
         path.startsWith('/__/auth/action') || path.startsWith('/_/auth/action');
     if (!isResetPath && !isFirebaseActionPath) return;
 
-    final String code = (effectiveUri.queryParameters['oobCode'] ?? '').trim();
+    final String mode = (effectiveUri.queryParameters['mode'] ?? '').trim();
+    final String code =
+        (effectiveUri.queryParameters['oobCode'] ??
+                effectiveUri.queryParameters['oob'] ??
+                '')
+            .trim();
     if (code.isEmpty) return;
 
-    // Only route into password reset while signed out.
-    // Otherwise, Android may re-deliver the initial reset link on app restart,
-    // causing a confusing loop back to the reset screen after login.
-    final User? currentUser = FirebaseAuth.instance.currentUser;
-    if (currentUser != null) return;
-
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _rootNavigatorKey.currentState?.pushNamed(
-        ResetPasswordPage.routeName,
-        arguments: ResetPasswordPageArgs(oobCode: code),
-      );
+      // Only route into password reset while signed out.
+      // Otherwise, Android may re-deliver the initial reset link on app restart,
+      // causing a confusing loop back to the reset screen after login.
+      if (isResetPath || mode == 'resetPassword') {
+        final User? currentUser = FirebaseAuth.instance.currentUser;
+        if (currentUser != null) return;
+        _rootNavigatorKey.currentState?.pushNamed(
+          ResetPasswordPage.routeName,
+          arguments: ResetPasswordPageArgs(oobCode: code),
+        );
+        return;
+      }
+
+      // Let onGenerateRoute parse the full auth action URL.
+      if (isFirebaseActionPath) {
+        _rootNavigatorKey.currentState?.pushNamed(effectiveUri.toString());
+      }
     });
   }
 

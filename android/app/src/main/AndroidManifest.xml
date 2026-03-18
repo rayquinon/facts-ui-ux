@@ -60,6 +60,17 @@
                     android:pathPrefix="/__/auth/action" />
             </intent-filter>
 
+            <!-- Standard Firebase Auth email action handler (alternate path) -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="simple-distributed-database.web.app"
+                    android:pathPrefix="/_/auth/action" />
+            </intent-filter>
+
             <!-- App Links fallback: legacy firebaseapp.com domain -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
@@ -82,6 +93,17 @@
                     android:pathPrefix="/__/auth/action" />
             </intent-filter>
 
+            <!-- Standard Firebase Auth email action handler (alternate path) -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="simple-distributed-database.firebaseapp.com"
+                    android:pathPrefix="/_/auth/action" />
+            </intent-filter>
+
             <!-- Standard Firebase Auth email action handler (custom domain, if used) -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
@@ -91,6 +113,17 @@
                     android:scheme="https"
                     android:host="facts.shiro.codes"
                     android:pathPrefix="/__/auth/action" />
+            </intent-filter>
+
+            <!-- Standard Firebase Auth email action handler (alternate path, custom domain) -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="facts.shiro.codes"
+                    android:pathPrefix="/_/auth/action" />
             </intent-filter>
 
             <!-- Firebase Dynamic Links domain (required for handleCodeInApp) -->
