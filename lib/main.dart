@@ -282,7 +282,7 @@ class FactsApp extends StatelessWidget {
             fontWeight: FontWeight.w700,
           ),
         ),
-        cardTheme: CardTheme(
+        cardTheme: CardThemeData(
           color: claySurface,
           elevation: 0,
           shadowColor: Colors.transparent,
@@ -293,7 +293,7 @@ class FactsApp extends StatelessWidget {
           ),
           margin: const EdgeInsets.all(16),
         ),
-        dialogTheme: DialogTheme(
+        dialogTheme: DialogThemeData(
           backgroundColor: claySurface,
           surfaceTintColor: Colors.transparent,
           shape: RoundedRectangleBorder(
