@@ -1,5 +1,8 @@
 {
   "projects": {
-    "default": "simple-distributed-database"
-  }
+    "default": "simple-distributed-database",
+    "facts": "simple-distributed-database"
+  },
+  "targets": {},
+  "etags": {}
 }

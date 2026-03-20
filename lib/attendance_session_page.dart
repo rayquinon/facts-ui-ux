@@ -1363,6 +1363,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         .doc(classId)
         .collection('attendanceStats')
         .doc(studentId);
+
+    final int sessionMinutes = _computeSessionDurationMinutes();
     final Map<String, Object?> updateData = <String, Object?>{
       incrementField: FieldValue.increment(1),
       'lastStatus': newStatus,
@@ -1374,12 +1376,32 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     if (decrementField != null && decrementField != incrementField) {
       updateData[decrementField] = FieldValue.increment(-1);
     }
+
+    if (sessionMinutes > 0) {
+      if (newStatus == 'absent') {
+        updateData['absentMinutes'] = FieldValue.increment(sessionMinutes);
+      }
+      if (previousStatus == 'absent' && newStatus != 'absent') {
+        updateData['absentMinutes'] = FieldValue.increment(-sessionMinutes);
+      }
+    }
     try {
       await statsRef.set(updateData, SetOptions(merge: true));
       _recordedStatuses[studentId] = newStatus;
     } catch (error) {
       debugPrint('Failed to update attendance stats: $error');
     }
+  }
+
+  int _computeSessionDurationMinutes() {
+    final DateTime ref = DateTime(2000, 1, 1);
+    final DateTime start = _dateWithTime(ref, widget.config.start);
+    DateTime end = _dateWithTime(ref, widget.config.end);
+    if (!end.isAfter(start)) {
+      end = end.add(const Duration(days: 1));
+    }
+    final int minutes = end.difference(start).inMinutes;
+    return minutes > 0 ? minutes : 0;
   }
 
   String? _counterFieldForStatus(String status) {

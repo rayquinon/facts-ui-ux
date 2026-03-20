@@ -257,6 +257,29 @@ service cloud.firestore {
       allow update: if (isAdmin() || validOwnerUpdate()) && !touchesFaceEmbeddingFields();
 
       allow delete: if isAdmin();
+
+      match /notifications/{notificationId} {
+        allow read: if isOwner();
+        // Notifications are written by Cloud Functions (Admin SDK).
+        allow create, delete: if false;
+        // Allow the owner to mark notifications as read.
+        allow update: if isOwner() &&
+          request.resource.data.diff(resource.data).changedKeys().hasOnly(['readAt']) &&
+          (!("readAt" in request.resource.data) || request.resource.data.readAt is timestamp);
+      }
+
+      match /fcmTokens/{tokenId} {
+        allow read: if isOwner();
+        // Token docs are managed by the owner client.
+        allow create, update: if isOwner() &&
+          request.resource.data.keys().hasOnly(['token', 'platform', 'createdAt', 'updatedAt', 'lastSeenAt']) &&
+          request.resource.data.token == tokenId &&
+          optionalString(request.resource.data, 'platform') &&
+          optionalTimestamp(request.resource.data, 'createdAt') &&
+          optionalTimestamp(request.resource.data, 'updatedAt') &&
+          optionalTimestamp(request.resource.data, 'lastSeenAt');
+        allow delete: if isOwner();
+      }
     }
 
     match /departments/{deptId} {

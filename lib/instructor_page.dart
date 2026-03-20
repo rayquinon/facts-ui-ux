@@ -14,7 +14,9 @@ import 'services/excuse_request_service.dart';
 import 'services/open_external_url.dart';
 import 'services/offline_mode_service.dart';
 import 'services/offline_mode_service_types.dart';
+import 'services/push_notification_service.dart';
 import 'widgets/confirm_sign_out_dialog.dart';
+import 'notifications_page.dart';
 
 enum _InstructorSection {
   dashboard,
@@ -36,6 +38,7 @@ class _InstructorPageState extends State<InstructorPage> {
   bool _simulationEnabled = true;
   late DateTime _simulatedTime;
   _InstructorSection _section = _InstructorSection.dashboard;
+  bool _pushInitialized = false;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>?
   _profileSubscription;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>?
@@ -175,6 +178,16 @@ class _InstructorPageState extends State<InstructorPage> {
     super.initState();
     _simulatedTime = DateTime.now();
     _listenToApproval();
+    _ensurePushInitialized();
+  }
+
+  void _ensurePushInitialized() {
+    if (_pushInitialized) return;
+    final User? user = FirebaseAuth.instance.currentUser;
+    final String? uid = user?.uid;
+    if (uid == null || uid.trim().isEmpty) return;
+    _pushInitialized = true;
+    initPushNotifications(uid: uid, role: 'instructor');
   }
 
   @override
@@ -1151,6 +1164,55 @@ class _InstructorPageState extends State<InstructorPage> {
           ],
         ),
         actions: <Widget>[
+          Builder(
+            builder: (BuildContext context) {
+              final User? user = FirebaseAuth.instance.currentUser;
+              final String? uid = user?.uid;
+              if (uid == null || uid.isEmpty) {
+                return const SizedBox.shrink();
+              }
+              return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                stream: FirebaseFirestore.instance
+                    .collection('users')
+                    .doc(uid)
+                    .collection('notifications')
+                    .where('readAt', isNull: true)
+                    .limit(1)
+                    .snapshots(),
+                builder: (
+                  BuildContext context,
+                  AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot,
+                ) {
+                  final bool hasUnread =
+                      snapshot.hasData && snapshot.data!.docs.isNotEmpty;
+                  return IconButton(
+                    tooltip: 'Notifications',
+                    onPressed: () {
+                      Navigator.of(context).pushNamed(
+                        NotificationsPage.routeName,
+                      );
+                    },
+                    icon: Stack(
+                      clipBehavior: Clip.none,
+                      children: <Widget>[
+                        const Icon(Icons.notifications_outlined),
+                        if (hasUnread)
+                          Positioned(
+                            top: -1,
+                            right: -1,
+                            child: Icon(
+                              Icons.circle,
+                              size: 10,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                          ),
+                      ],
+                    ),
+                  );
+                },
+              );
+            },
+          ),
         ],
       ),
       drawer: Drawer(

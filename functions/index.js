@@ -1,6 +1,9 @@
 const { onCall, HttpsError } = require('firebase-functions/v2/https');
+const { onDocumentCreated, onDocumentWritten } = require('firebase-functions/v2/firestore');
+const { onSchedule } = require('firebase-functions/v2/scheduler');
 const { initializeApp } = require('firebase-admin/app');
 const { getAuth } = require('firebase-admin/auth');
+const { getMessaging } = require('firebase-admin/messaging');
 const { getFirestore, FieldValue, FieldPath } = require('firebase-admin/firestore');
 
 initializeApp();
@@ -236,6 +239,150 @@ function windowsOverlap(aStart, aEnd, bStart, bEnd) {
   return end > start;
 }
 
+function clampInt(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+}
+
+function normalizeTopicPart(raw) {
+  return String(raw || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9_\-]/g, '');
+}
+
+function userTopic(uid) {
+  return `user_${normalizeTopicPart(uid)}`;
+}
+
+function sectionTopic(section) {
+  return `section_${normalizeTopicPart(section)}`;
+}
+
+function manilaNowParts(now = new Date()) {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Manila',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  });
+  const parts = fmt.formatToParts(now);
+  const get = (type) => parts.find((p) => p.type === type)?.value;
+  const year = clampInt(get('year'));
+  const month = clampInt(get('month'));
+  const day = clampInt(get('day'));
+  const hour = clampInt(get('hour'));
+  const minute = clampInt(get('minute'));
+  const weekdayShort = String(get('weekday') || '').toLowerCase();
+  const weekdayMap = {
+    mon: 1,
+    tue: 2,
+    wed: 3,
+    thu: 4,
+    fri: 5,
+    sat: 6,
+    sun: 7,
+  };
+  const weekday = weekdayMap[weekdayShort] ?? null;
+  const dateKey = `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  return { dateKey, weekday, minutesOfDay: hour * 60 + minute };
+}
+
+function attendanceSessionDurationMinutes(sessionData) {
+  const startHour = clampInt(sessionData.startHour, 0);
+  const startMinute = clampInt(sessionData.startMinute, 0);
+  const endHour = clampInt(sessionData.endHour, 0);
+  const endMinute = clampInt(sessionData.endMinute, 0);
+  let start = startHour * 60 + startMinute;
+  let end = endHour * 60 + endMinute;
+  if (end <= start) end += 24 * 60;
+  const dur = end - start;
+  return dur > 0 ? dur : 0;
+}
+
+async function createUserNotification({ uid, type, title, body, data }) {
+  const db = getFirestore();
+  const ref = db.collection('users').doc(uid).collection('notifications').doc();
+  await ref.set({
+    type: String(type || 'generic'),
+    title: String(title || 'Notification'),
+    body: String(body || ''),
+    data: data && typeof data === 'object' ? data : {},
+    createdAt: FieldValue.serverTimestamp(),
+    readAt: null,
+  });
+  return ref.id;
+}
+
+async function pushToTopic({ topic, title, body, data }) {
+  if (!topic) return;
+  const payload = {
+    topic,
+    notification: {
+      title: String(title || 'FACTS'),
+      body: String(body || ''),
+    },
+    data: Object.fromEntries(
+      Object.entries(data && typeof data === 'object' ? data : {}).map(([k, v]) => [k, String(v)])
+    ),
+    android: {
+      priority: 'high',
+    },
+  };
+  try {
+    await getMessaging().send(payload);
+  } catch (e) {
+    // Best-effort.
+    console.warn('pushToTopic failed', e);
+  }
+}
+
+async function notifyUser({ uid, type, title, body, data }) {
+  await createUserNotification({ uid, type, title, body, data });
+  await pushToTopic({ topic: userTopic(uid), title, body, data: { type, ...(data || {}) } });
+}
+
+async function notifySection({ section, title, body, data }) {
+  await pushToTopic({ topic: sectionTopic(section), title, body, data });
+}
+
+async function listStudentsInSection(section) {
+  const db = getFirestore();
+  const snap = await db
+    .collection('users')
+    .where('role', '==', 'student')
+    .where('section', '==', section)
+    .get();
+  return snap.docs.map((d) => d.id);
+}
+
+async function fanoutInAppNotifications({ uids, type, title, body, data }) {
+  const db = getFirestore();
+  const now = FieldValue.serverTimestamp();
+  const chunks = [];
+  for (let i = 0; i < uids.length; i += 450) chunks.push(uids.slice(i, i + 450));
+  for (const chunk of chunks) {
+    const batch = db.batch();
+    for (const uid of chunk) {
+      const ref = db.collection('users').doc(uid).collection('notifications').doc();
+      batch.set(ref, {
+        type: String(type || 'generic'),
+        title: String(title || 'Notification'),
+        body: String(body || ''),
+        data: data && typeof data === 'object' ? data : {},
+        createdAt: now,
+        readAt: null,
+      });
+    }
+    await batch.commit();
+  }
+}
+
 async function requireExcuseApprover({ request, requestDoc }) {
   const uid = requireSignedIn(request);
   if (isAdminClaim(request) || (await hasAdminRole(uid))) {
@@ -458,6 +605,8 @@ exports.approveExcuseRequest = onCall({ cors: true, timeoutSeconds: 120 }, async
         .get();
 
       for (const sessionDoc of sessionsSnap.docs) {
+        const sessionData = sessionDoc.data() || {};
+        const sessionMinutes = attendanceSessionDurationMinutes(sessionData);
         const attendeeRef = sessionDoc.ref.collection('attendees').doc(studentId);
         const attendeeSnap = await attendeeRef.get();
 
@@ -500,6 +649,9 @@ exports.approveExcuseRequest = onCall({ cors: true, timeoutSeconds: 120 }, async
             update.lateCount = FieldValue.increment(-1);
           } else if (previousStatus === 'absent') {
             update.absentCount = FieldValue.increment(-1);
+            if (sessionMinutes > 0) {
+              update.absentMinutes = FieldValue.increment(-sessionMinutes);
+            }
           } else if (previousStatus === 'present') {
             // If already present, net-zero the present increment.
             update.presentCount = FieldValue.increment(0);
@@ -511,8 +663,208 @@ exports.approveExcuseRequest = onCall({ cors: true, timeoutSeconds: 120 }, async
   }
 
   await batch.commit();
+
+  // Best-effort: notify student that their request was approved.
+  try {
+    await notifyUser({
+      uid: studentId,
+      type: 'excuse_approved',
+      title: 'Excuse request approved',
+      body: 'Your excuse request was approved.',
+      data: { requestId },
+    });
+  } catch (_) {
+    // Best-effort.
+  }
+
   return { ok: true };
 });
+
+exports.onExcuseRequestCreated = onDocumentCreated('excuseRequests/{requestId}', async (event) => {
+  const snap = event.data;
+  if (!snap) return;
+  const data = snap.data() || {};
+  const instructorIds = Array.isArray(data.instructorIds) ? data.instructorIds.filter((x) => typeof x === 'string' && x.trim()) : [];
+  if (!instructorIds.length) return;
+  const studentName = typeof data.studentName === 'string' ? data.studentName : 'A student';
+  const section = typeof data.studentSection === 'string' ? data.studentSection : '';
+  const title = 'New excuse request';
+  const body = section ? `${studentName} submitted an excuse request (Section ${section}).` : `${studentName} submitted an excuse request.`;
+
+  // In-app + push per instructor.
+  await Promise.all(
+    instructorIds.map((uid) =>
+      notifyUser({
+        uid,
+        type: 'excuse_submitted',
+        title,
+        body,
+        data: { requestId: snap.id, studentId: String(data.studentId || ''), section },
+      })
+    )
+  );
+});
+
+exports.onAttendanceStatsWritten = onDocumentWritten('classes/{classId}/attendanceStats/{studentId}', async (event) => {
+  const after = event.data.after;
+  if (!after || !after.exists) return;
+
+  const classId = event.params.classId;
+  const studentId = event.params.studentId;
+  const afterData = after.data() || {};
+  const absentMinutes = clampInt(afterData.absentMinutes, 0);
+
+  const crossed10 = absentMinutes >= 10 * 60;
+  const crossed15 = absentMinutes >= 15 * 60;
+
+  const db = getFirestore();
+  const statsRef = db.collection('classes').doc(classId).collection('attendanceStats').doc(studentId);
+
+  // Load class meta for messages.
+  const classSnap = await db.collection('classes').doc(classId).get();
+  const classData = classSnap.exists ? classSnap.data() || {} : {};
+  const subjectCode = typeof classData.subjectCode === 'string' ? classData.subjectCode : 'Class';
+  const instructorId = typeof classData.instructorId === 'string' ? classData.instructorId : null;
+
+  async function handleThreshold({ minutes, field, label }) {
+    await db.runTransaction(async (tx) => {
+      const fresh = await tx.get(statsRef);
+      if (!fresh.exists) return;
+      const d = fresh.data() || {};
+      const currentMinutes = clampInt(d.absentMinutes, 0);
+      if (currentMinutes < minutes) return;
+      if (d[field]) return;
+      tx.set(statsRef, { [field]: FieldValue.serverTimestamp() }, { merge: true });
+    });
+
+    // Re-read quickly to ensure we only notify once (transaction wrote field).
+    const confirm = await statsRef.get();
+    const confirmData = confirm.exists ? confirm.data() || {} : {};
+    if (!confirmData[field]) return;
+
+    const hours = Math.floor(absentMinutes / 60);
+    const mins = absentMinutes % 60;
+    const human = mins ? `${hours}h ${mins}m` : `${hours}h`;
+    const title = 'Absence warning';
+    const body = `${subjectCode}: total absences reached ${human} (${label}).`;
+    await notifyUser({
+      uid: studentId,
+      type: 'absence_threshold',
+      title,
+      body,
+      data: { classId, thresholdMinutes: minutes, absentMinutes },
+    });
+    if (instructorId) {
+      await notifyUser({
+        uid: instructorId,
+        type: 'student_absence_threshold',
+        title: 'Student absence warning',
+        body: `${subjectCode}: a student reached ${human} absences (${label}).`,
+        data: { classId, studentId, thresholdMinutes: minutes, absentMinutes },
+      });
+    }
+  }
+
+  // Avoid doing extra work if nothing is crossed.
+  if (!crossed10 && !crossed15) return;
+
+  if (crossed10) {
+    await handleThreshold({ minutes: 10 * 60, field: 'absenceNotified10hAt', label: '10 hours' });
+  }
+  if (crossed15) {
+    await handleThreshold({ minutes: 15 * 60, field: 'absenceNotified15hAt', label: '15 hours' });
+  }
+});
+
+exports.sendNextClassReminders = onSchedule(
+  {
+    schedule: 'every 5 minutes',
+    timeZone: 'Asia/Manila',
+  },
+  async () => {
+    const db = getFirestore();
+    const { dateKey, weekday, minutesOfDay } = manilaNowParts();
+    if (!weekday || !isValidDateKey(dateKey)) return;
+
+    const target = minutesOfDay + 30;
+    const windowStart = target;
+    const windowEnd = target + 4; // runs every 5 minutes
+
+    const classesSnap = await db.collection('classes').get();
+    if (classesSnap.empty) return;
+
+    for (const classDoc of classesSnap.docs) {
+      const classData = classDoc.data() || {};
+      const section = typeof classData.section === 'string' ? classData.section : '';
+      const instructorId = typeof classData.instructorId === 'string' ? classData.instructorId : null;
+      const subjectCode = typeof classData.subjectCode === 'string' ? classData.subjectCode : 'Class';
+      const subjectName = typeof classData.subjectName === 'string' ? classData.subjectName : '';
+      const schedules = Array.isArray(classData.schedules) ? classData.schedules : [];
+
+      for (const raw of schedules) {
+        const win = scheduleEntryToWindowMinutes(raw);
+        if (!win) continue;
+        if (win.weekday !== weekday) continue;
+        if (win.startMin < windowStart || win.startMin > windowEnd) continue;
+
+        const dedupeId = `reminder_${classDoc.id}_${dateKey}_${win.startMin}`;
+        const dedupeRef = db.collection('notificationDedupes').doc(dedupeId);
+        const created = await db.runTransaction(async (tx) => {
+          const snap = await tx.get(dedupeRef);
+          if (snap.exists) return false;
+          tx.set(dedupeRef, { createdAt: FieldValue.serverTimestamp(), classId: classDoc.id, dateKey, startMin: win.startMin });
+          return true;
+        });
+        if (!created) continue;
+
+        const startH = Math.floor(win.startMin / 60);
+        const startM = String(win.startMin % 60).padStart(2, '0');
+        const title = 'Class starting soon';
+        const subtitle = subjectName ? `${subjectCode} • ${subjectName}` : subjectCode;
+        const body = `${subtitle} starts at ${startH}:${startM}.`;
+
+        // Push to all students in the section.
+        if (section) {
+          await notifySection({
+            section,
+            title,
+            body,
+            data: { type: 'next_class', classId: classDoc.id, section, dateKey, startMin: win.startMin },
+          });
+        }
+
+        // In-app fanout for students.
+        if (section) {
+          try {
+            const studentUids = await listStudentsInSection(section);
+            if (studentUids.length) {
+              await fanoutInAppNotifications({
+                uids: studentUids,
+                type: 'next_class',
+                title,
+                body,
+                data: { classId: classDoc.id, section, dateKey, startMin: win.startMin },
+              });
+            }
+          } catch (e) {
+            console.warn('fanout students failed', e);
+          }
+        }
+
+        // Instructor: in-app + push.
+        if (instructorId) {
+          await notifyUser({
+            uid: instructorId,
+            type: 'next_class',
+            title,
+            body,
+            data: { classId: classDoc.id, section, dateKey, startMin: win.startMin },
+          });
+        }
+      }
+    }
+  }
+);
 
 exports.disapproveExcuseRequest = onCall({ cors: true, timeoutSeconds: 120 }, async (request) => {
   const requestId = request.data && request.data.requestId ? String(request.data.requestId) : '';

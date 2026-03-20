@@ -27,6 +27,7 @@ import 'reset_password_page.dart';
 import 'verify_email_page.dart';
 import 'verify_phone_page.dart';
 import 'auth_action_page.dart';
+import 'notifications_page.dart';
 import 'widgets/confirm_sign_out_dialog.dart';
 import 'widgets/android_only_feature_page.dart';
 
@@ -431,6 +432,8 @@ class FactsApp extends StatelessWidget {
         LoginPage.routeName: (BuildContext context) => const LoginPage(),
         SignupPickRolePage.routeName: (BuildContext context) =>
             const SignupPickRolePage(),
+        NotificationsPage.routeName: (BuildContext context) =>
+            const NotificationsPage(),
         VerifyEmailPage.routeName: (BuildContext context) {
           final ModalRoute<dynamic>? route = ModalRoute.of(context);
           final VerifyEmailPageArgs? args =

@@ -8,9 +8,11 @@ import 'face_enrollment_page.dart';
 import 'widgets/android_only_feature_page.dart';
 import 'services/excuse_request_service.dart';
 import 'services/open_external_url.dart';
+import 'services/push_notification_service.dart';
 import 'widgets/confirm_sign_out_dialog.dart';
 import 'widgets/request_excuse_dialog.dart';
 import 'services/vps_embeddings_api_client.dart';
+import 'notifications_page.dart';
 
 enum _StudentSection { dashboard, requestExcuse, profile }
 
@@ -322,6 +324,34 @@ class _StudentHomeShell extends StatefulWidget {
 
 class _StudentHomeShellState extends State<_StudentHomeShell> {
   _StudentSection _section = _StudentSection.dashboard;
+  bool _pushInitialized = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _ensurePushInitialized();
+  }
+
+  @override
+  void didUpdateWidget(covariant _StudentHomeShell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.profile.userId != widget.profile.userId ||
+        oldWidget.profile.section != widget.profile.section) {
+      _pushInitialized = false;
+      _ensurePushInitialized();
+    }
+  }
+
+  void _ensurePushInitialized() {
+    if (_pushInitialized) return;
+    _pushInitialized = true;
+    // Best-effort; don't block UI.
+    initPushNotifications(
+      uid: widget.profile.userId,
+      role: 'student',
+      section: widget.profile.section,
+    );
+  }
 
   String _sectionTitle() {
     return switch (_section) {
@@ -361,6 +391,44 @@ class _StudentHomeShellState extends State<_StudentHomeShell> {
           ],
         ),
         actions: <Widget>[
+          StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+            stream: FirebaseFirestore.instance
+                .collection('users')
+                .doc(widget.profile.userId)
+                .collection('notifications')
+                .where('readAt', isNull: true)
+                .limit(1)
+                .snapshots(),
+            builder: (
+              BuildContext context,
+              AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot,
+            ) {
+              final bool hasUnread =
+                  snapshot.hasData && snapshot.data!.docs.isNotEmpty;
+              return IconButton(
+                tooltip: 'Notifications',
+                onPressed: () {
+                  Navigator.of(context).pushNamed(NotificationsPage.routeName);
+                },
+                icon: Stack(
+                  clipBehavior: Clip.none,
+                  children: <Widget>[
+                    const Icon(Icons.notifications_outlined),
+                    if (hasUnread)
+                      Positioned(
+                        top: -1,
+                        right: -1,
+                        child: Icon(
+                          Icons.circle,
+                          size: 10,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                      ),
+                  ],
+                ),
+              );
+            },
+          ),
         ],
       ),
       drawer: Drawer(
