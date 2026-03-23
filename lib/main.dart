@@ -677,6 +677,7 @@ class _AuthGateState extends State<AuthGate> {
     final String? role = await UserRoleService.fetchRoleByUid(
       user.uid,
       forceRefresh: forceRefresh,
+      attemptRepairIfMissing: true,
     );
     final bool isAdmin =
         token.claims != null &&

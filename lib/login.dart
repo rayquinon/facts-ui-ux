@@ -88,7 +88,10 @@ class _LoginPageState extends State<LoginPage> {
       if (isAdmin) {
         welcomeMessage = 'Signed in as Admin';
       } else {
-        final String? role = await UserRoleService.fetchRoleByUid(user.uid);
+        final String? role = await UserRoleService.fetchRoleByUid(
+          user.uid,
+          attemptRepairIfMissing: true,
+        );
         if (role == 'student') {
           welcomeMessage = 'Welcome back, student!';
         } else if (role == 'instructor') {
@@ -98,15 +101,9 @@ class _LoginPageState extends State<LoginPage> {
           // via the AuthGate. Allow login to proceed so the bootstrap view can run.
           welcomeMessage = 'Welcome back, admin!';
         } else {
-          messenger.showSnackBar(
-            const SnackBar(
-              content: Text(
-                'Your profile is missing a role assignment. Contact support.',
-              ),
-              behavior: SnackBarBehavior.floating,
-            ),
-          );
-          return;
+          // Don't block sign-in. AuthGate may be able to repair the role or
+          // show a clearer next step.
+          welcomeMessage = 'Welcome back!';
         }
       }
 

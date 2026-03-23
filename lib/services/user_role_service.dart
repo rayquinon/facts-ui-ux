@@ -8,9 +8,36 @@ class UserRoleService {
 
   static String normalizeStudentId(String raw) => raw.trim().toUpperCase();
 
+  static String? _inferRoleFromProfile(Map<String, dynamic>? data) {
+    if (data == null) return null;
+
+    final Object? section = data['section'];
+    if (section is String && section.trim().isNotEmpty) {
+      return 'student';
+    }
+
+    final Object? studentId = data['studentId'] ?? data['Student ID'];
+    if (studentId is String && studentId.trim().isNotEmpty) {
+      return 'student';
+    }
+
+    final Object? department = data['Department'];
+    if (department is String && department.trim().isNotEmpty) {
+      return 'instructor';
+    }
+
+    final Object? approved = data['approved'];
+    if (approved is bool) {
+      return 'instructor';
+    }
+
+    return null;
+  }
+
   static Future<String?> fetchRoleByUid(
     String? uid, {
     bool forceRefresh = false,
+    bool attemptRepairIfMissing = false,
   }) async {
     if (uid == null) return null;
 
@@ -18,14 +45,32 @@ class UserRoleService {
       return _roleCache[uid];
     }
 
-    final DocumentSnapshot<Map<String, dynamic>> snapshot =
-        await FirebaseFirestore.instance.collection('users').doc(uid).get();
+    final DocumentReference<Map<String, dynamic>> ref = FirebaseFirestore
+        .instance
+        .collection('users')
+        .doc(uid);
+    final DocumentSnapshot<Map<String, dynamic>> snapshot = await ref.get();
     final Map<String, dynamic>? data = snapshot.data();
     final Object? roleValue = data?['role'];
     if (roleValue is String) {
       final String role = roleValue.toLowerCase();
       _roleCache[uid] = role;
       return role;
+    }
+
+    if (attemptRepairIfMissing) {
+      final String? inferred = _inferRoleFromProfile(data);
+      if (inferred != null) {
+        try {
+          await ref.set(<String, dynamic>{
+            'role': inferred,
+          }, SetOptions(merge: true));
+          _roleCache[uid] = inferred;
+          return inferred;
+        } on FirebaseException {
+          // Best-effort: if rules disallow it, fall through.
+        }
+      }
     }
 
     _roleCache[uid] = null;

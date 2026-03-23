@@ -229,10 +229,17 @@ service cloud.firestore {
       }
 
       function validOwnerUpdate() {
+        let existingRole = roleFromData(resource.data);
+        let newRole = roleFromData(request.resource.data);
+        let changed = request.resource.data.diff(resource.data).changedKeys();
         return isOwner() &&
-          roleMatches(
-            roleFromData(request.resource.data),
-            roleFromData(resource.data) == null ? [] : [roleFromData(resource.data)]
+          (
+            // Normal case: role is already set; users cannot change it.
+            (existingRole != null && roleMatches(newRole, [existingRole])) ||
+            // Repair case: legacy users missing a role may set it once.
+            (existingRole == null &&
+              changed.hasOnly(['role']) &&
+              roleMatches(newRole, allowedUserRoleValues()))
           ) &&
           // Prevent self-approval / admin-only changes.
           unchanged('approved') &&
