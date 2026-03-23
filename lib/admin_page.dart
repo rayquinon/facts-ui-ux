@@ -2159,6 +2159,8 @@ class _ClassMaintenancePanelState extends State<_ClassMaintenancePanel> {
   bool _isLoadingInstructors = true;
   bool _isLoadingSubjects = true;
   bool _isDeletingClass = false;
+  final TextEditingController _classSearchController = TextEditingController();
+  String _classSearchQuery = '';
   List<_InstructorOption> _instructors = <_InstructorOption>[];
   List<_SubjectOption> _subjects = <_SubjectOption>[];
   Map<String, String> _instructorLookup = <String, String>{};
@@ -2176,6 +2178,52 @@ class _ClassMaintenancePanelState extends State<_ClassMaintenancePanel> {
     super.initState();
     _loadInstructors();
     _loadSubjects();
+  }
+
+  @override
+  void dispose() {
+    _classSearchController.dispose();
+    super.dispose();
+  }
+
+  String _normalizeSearch(String input) {
+    return input.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+  }
+
+  Iterable<String> _buildScheduleSummaries(Map<String, dynamic> classData) {
+    final List<dynamic> schedules =
+        (classData['schedules'] as List<dynamic>? ?? <dynamic>[]);
+    return schedules.map((dynamic entry) {
+      if (entry is! Map) return '';
+      final Map<String, dynamic> schedule = Map<String, dynamic>.from(entry);
+      final String type =
+          (schedule['type'] as String?)?.toUpperCase().trim() ?? '';
+      final String day = (schedule['day'] as String?)?.trim() ?? '';
+      final Map<String, dynamic>? start =
+          schedule['startTime'] as Map<String, dynamic>?;
+      final Map<String, dynamic>? end = schedule['endTime'] as Map<String, dynamic>?;
+
+      String formatTime(Map<String, dynamic>? time) {
+        if (time == null) return '';
+        final Object? hour = time['hour'];
+        final int? minute = time['minute'] as int?;
+        final String period = (time['period'] as String?)?.trim() ?? '';
+        final String hourText = hour == null ? '' : hour.toString();
+        final String minuteText =
+            minute == null ? '' : minute.toString().padLeft(2, '0');
+        final String base = [hourText, minuteText].where((s) => s.isNotEmpty).join(':');
+        return [base, period].where((s) => s.trim().isNotEmpty).join(' ');
+      }
+
+      final String formattedStart = formatTime(start);
+      final String formattedEnd = formatTime(end);
+
+      return [
+        type,
+        day,
+        [formattedStart, formattedEnd].where((s) => s.isNotEmpty).join(' - '),
+      ].where((s) => s.trim().isNotEmpty).join(' • ');
+    }).where((String summary) => summary.trim().isNotEmpty);
   }
 
   Future<void> _loadInstructors() async {
@@ -2406,6 +2454,27 @@ class _ClassMaintenancePanelState extends State<_ClassMaintenancePanel> {
                 ),
               ),
             const SizedBox(height: 16),
+            TextField(
+              controller: _classSearchController,
+              decoration: InputDecoration(
+                hintText: 'Search by section, subject, schedule, or instructor',
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: _classSearchQuery.trim().isEmpty
+                    ? null
+                    : IconButton(
+                        tooltip: 'Clear',
+                        icon: const Icon(Icons.close),
+                        onPressed: () {
+                          _classSearchController.clear();
+                          setState(() => _classSearchQuery = '');
+                        },
+                      ),
+              ),
+              onChanged: (String value) {
+                setState(() => _classSearchQuery = value);
+              },
+            ),
+            const SizedBox(height: 12),
             StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: _firestore
                   .collection('classes')
@@ -2427,14 +2496,62 @@ class _ClassMaintenancePanelState extends State<_ClassMaintenancePanel> {
                     }
                     final List<QueryDocumentSnapshot<Map<String, dynamic>>>
                     docs = snapshot.data!.docs;
+                    final String query = _normalizeSearch(_classSearchQuery);
+                    final List<QueryDocumentSnapshot<Map<String, dynamic>>>
+                    filteredDocs =
+                        query.isEmpty
+                            ? docs
+                            : docs.where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+                                final Map<String, dynamic> data = doc.data();
+                                final String subjectCode =
+                                    (data['subjectCode'] as String?) ?? '';
+                                final String subjectName =
+                                    (data['subjectName'] as String?) ?? '';
+                                final String section =
+                                    (data['section'] as String?) ?? '';
+                                final String term = (data['term'] as String?) ?? '';
+                                final String instructorId =
+                                    (data['instructorId'] as String?) ?? '';
+                                final String instructorLabel =
+                                    _instructorLookup[instructorId] ?? '';
+                                final String departmentName =
+                                    (data['departmentName'] as String?) ?? '';
+
+                                final Iterable<String> scheduleSummaries =
+                                    _buildScheduleSummaries(data);
+
+                                final String haystack = _normalizeSearch(
+                                  <String>[
+                                    subjectCode,
+                                    subjectName,
+                                    section,
+                                    term,
+                                    instructorLabel,
+                                    departmentName,
+                                    ...scheduleSummaries,
+                                  ].where((String value) => value.trim().isNotEmpty).join(' | '),
+                                );
+                                return haystack.contains(query);
+                              }).toList();
+
+                    if (filteredDocs.isEmpty) {
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 24),
+                        child: Text(
+                          query.isEmpty
+                              ? 'No classes configured yet.'
+                              : 'No classes match "${_classSearchQuery.trim()}".',
+                        ),
+                      );
+                    }
                     return ListView.separated(
                       shrinkWrap: true,
                       physics: const NeverScrollableScrollPhysics(),
-                      itemCount: docs.length,
+                      itemCount: filteredDocs.length,
                       separatorBuilder: (_, __) => const Divider(height: 1),
                       itemBuilder: (BuildContext context, int index) {
                         final QueryDocumentSnapshot<Map<String, dynamic>> doc =
-                            docs[index];
+                            filteredDocs[index];
                         final Map<String, dynamic> data = doc.data();
                         final String subjectCode =
                             (data['subjectCode'] as String?) ?? 'N/A';
@@ -2448,30 +2565,8 @@ class _ClassMaintenancePanelState extends State<_ClassMaintenancePanel> {
                             (data['instructorId'] as String?) ?? 'Unassigned';
                         final String departmentName =
                             (data['departmentName'] as String?) ?? '';
-                        final List<dynamic> schedules =
-                            (data['schedules'] as List<dynamic>? ??
-                            <dynamic>[]);
-                        final Iterable<String>
-                        scheduleSummaries = schedules.map((dynamic entry) {
-                          final Map<String, dynamic> schedule =
-                              entry as Map<String, dynamic>;
-                          final String type =
-                              (schedule['type'] as String?)?.toUpperCase() ??
-                              '';
-                          final String day =
-                              (schedule['day'] as String?) ?? 'Unspecified';
-                          final Map<String, dynamic>? start =
-                              schedule['startTime'] as Map<String, dynamic>?;
-                          final Map<String, dynamic>? end =
-                              schedule['endTime'] as Map<String, dynamic>?;
-                          final String formattedStart = start == null
-                              ? '--:--'
-                              : '${start['hour']}:${(start['minute'] as int?)?.toString().padLeft(2, '0') ?? '00'} ${start['period'] ?? ''}';
-                          final String formattedEnd = end == null
-                              ? '--:--'
-                              : '${end['hour']}:${(end['minute'] as int?)?.toString().padLeft(2, '0') ?? '00'} ${end['period'] ?? ''}';
-                          return '$type • $day • $formattedStart - $formattedEnd';
-                        });
+                        final Iterable<String> scheduleSummaries =
+                          _buildScheduleSummaries(data);
                         final String classLabel = '$subjectCode • $section';
                         return ListTile(
                           contentPadding: EdgeInsets.zero,
