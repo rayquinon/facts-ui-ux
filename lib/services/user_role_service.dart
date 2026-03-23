@@ -21,7 +21,13 @@ class UserRoleService {
       return 'student';
     }
 
-    final Object? department = data['Department'];
+    final Object? department =
+        data['Department'] ??
+        data['department'] ??
+        data['departmentName'] ??
+        data['Department Name'] ??
+        data['dept'] ??
+        data['Dept'];
     if (department is String && department.trim().isNotEmpty) {
       return 'instructor';
     }
@@ -41,8 +47,14 @@ class UserRoleService {
   }) async {
     if (uid == null) return null;
 
+    // Only trust cached *non-null* roles. A missing role can be repaired later
+    // (or set by an admin), and caching null would make that change invisible
+    // until callers explicitly force-refresh.
     if (!forceRefresh && _roleCache.containsKey(uid)) {
-      return _roleCache[uid];
+      final String? cached = _roleCache[uid];
+      if (cached != null) {
+        return cached;
+      }
     }
 
     final DocumentReference<Map<String, dynamic>> ref = FirebaseFirestore
@@ -73,7 +85,6 @@ class UserRoleService {
       }
     }
 
-    _roleCache[uid] = null;
     return null;
   }
 

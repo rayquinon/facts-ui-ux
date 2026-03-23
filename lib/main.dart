@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:app_links/app_links.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_functions/cloud_functions.dart';
@@ -679,10 +680,34 @@ class _AuthGateState extends State<AuthGate> {
       forceRefresh: forceRefresh,
       attemptRepairIfMissing: true,
     );
+
+    final Map<String, Object?> claims = token.claims == null
+        ? <String, Object?>{}
+        : token.claims!;
     final bool isAdmin =
-        token.claims != null &&
-        (token.claims!['admin'] == true || token.claims!['admin'] == 'true');
-    return <String, dynamic>{'isAdmin': isAdmin, 'role': role};
+        claims['admin'] == true || claims['admin']?.toString() == 'true';
+    final bool isInstructor =
+        claims['instructor'] == true ||
+        claims['instructor']?.toString() == 'true';
+
+    // If Firestore role is missing (common for legacy/mismatched profiles),
+    // fall back to custom claims so approved instructors can get in.
+    final String? resolvedRole = role ?? (isInstructor ? 'instructor' : null);
+
+    // Best-effort: write the resolved role back to Firestore so other parts
+    // of the app that query by `role` behave correctly.
+    if (role == null && resolvedRole != null) {
+      try {
+        await FirebaseFirestore.instance.collection('users').doc(user.uid).set(
+          <String, dynamic>{'role': resolvedRole},
+          SetOptions(merge: true),
+        );
+      } catch (_) {
+        // Best-effort; continue.
+      }
+    }
+
+    return <String, dynamic>{'isAdmin': isAdmin, 'role': resolvedRole};
   }
 
   @override
