@@ -65,6 +65,32 @@ function hasRole(claims, role) {
   return claims && claims[role] === true;
 }
 
+function isAllowedOrigin(origin) {
+  if (!origin || typeof origin !== 'string') return false;
+
+  // Production web origins.
+  if (origin === 'https://facts.shiro.codes') return true;
+  if (origin === 'https://simple-distributed-database.web.app') return true;
+  if (origin === 'https://simple-distributed-database.firebaseapp.com') return true;
+
+  // Local dev.
+  if (origin.startsWith('http://localhost:')) return true;
+  if (origin.startsWith('http://127.0.0.1:')) return true;
+
+  return false;
+}
+
+function applyCors(req, res) {
+  const origin = req.headers.origin;
+  if (!isAllowedOrigin(origin)) return;
+
+  res.setHeader('access-control-allow-origin', origin);
+  res.setHeader('vary', 'origin');
+  res.setHeader('access-control-allow-methods', 'GET,PUT,DELETE,OPTIONS,HEAD');
+  res.setHeader('access-control-allow-headers', 'authorization,content-type,accept');
+  res.setHeader('access-control-max-age', '86400');
+}
+
 async function requireAuth(req) {
   const token = getBearerToken(req);
   if (!token) {
@@ -91,6 +117,12 @@ const helmetMiddleware = helmet({
 const server = http.createServer(async (req, res) => {
   try {
     helmetMiddleware(req, res, () => undefined);
+
+    applyCors(req, res);
+    if (req.method === 'OPTIONS') {
+      res.statusCode = 204;
+      return res.end();
+    }
 
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
     const pathname = url.pathname;

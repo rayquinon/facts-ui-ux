@@ -1149,29 +1149,52 @@ class _EnrollmentCombinedChartCard extends StatelessWidget {
   final Map<String, int> studentsBySection;
   final Map<String, int> instructorsByDepartment;
 
+  static List<Color> _buildLightPalette({
+    required ThemeData theme,
+    required Color base,
+  }) {
+    final Color mixWith = theme.colorScheme.surfaceContainerHighest;
+    const List<double> blends = <double>[0.78, 0.70, 0.85, 0.63, 0.90, 0.74];
+    return blends
+        .map((double t) => Color.lerp(base, mixWith, t) ?? base)
+        .toList(growable: false);
+  }
+
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
     final Color studentsColor = theme.colorScheme.primary;
     final Color instructorsColor = theme.colorScheme.secondary;
 
+    final List<Color> studentPalette = _buildLightPalette(
+      theme: theme,
+      base: studentsColor,
+    );
+    final List<Color> instructorPalette = _buildLightPalette(
+      theme: theme,
+      base: instructorsColor,
+    );
+
+    final List<MapEntry<String, int>> studentEntries = studentsBySection.entries
+        .toList(growable: false);
+    final List<MapEntry<String, int>> instructorEntries =
+        instructorsByDepartment.entries.toList(growable: false);
+
     final List<_ChartBarEntry> bars = <_ChartBarEntry>[
-      ...studentsBySection.entries.map(
-        (MapEntry<String, int> e) => _ChartBarEntry(
-          label: e.key,
-          value: e.value,
+      for (int i = 0; i < studentEntries.length; i++)
+        _ChartBarEntry(
+          label: studentEntries[i].key,
+          value: studentEntries[i].value,
           series: 'Students (Section)',
-          barColor: studentsColor,
+          barColor: studentPalette[i % studentPalette.length],
         ),
-      ),
-      ...instructorsByDepartment.entries.map(
-        (MapEntry<String, int> e) => _ChartBarEntry(
-          label: e.key,
-          value: e.value,
+      for (int i = 0; i < instructorEntries.length; i++)
+        _ChartBarEntry(
+          label: instructorEntries[i].key,
+          value: instructorEntries[i].value,
           series: 'Instructors (Department)',
-          barColor: instructorsColor,
+          barColor: instructorPalette[i % instructorPalette.length],
         ),
-      ),
     ];
 
     final int maxValue = bars.isEmpty
