@@ -169,14 +169,6 @@ class _AdminPageState extends State<AdminPage> {
                     ),
                   ),
                   ListTile(
-                    leading: const Icon(Icons.verified_user_outlined),
-                    title: const Text('Approve Instructor Accounts'),
-                    onTap: () {
-                      setState(() => _selectedSection = _AdminSection.users);
-                      Navigator.of(context).pop();
-                    },
-                  ),
-                  ListTile(
                     leading: const Icon(Icons.description_outlined),
                     title: const Text('Edit Report Header Details'),
                     onTap: () async {
