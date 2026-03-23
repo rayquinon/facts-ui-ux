@@ -379,17 +379,6 @@ class _SignUpPageState extends State<SignUpPage> {
         : _studentIdController.text.trim();
     final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
     if (!isInstructor) {
-      final String? section = _selectedStudentSection;
-      if (section == null || section.isEmpty) {
-        messenger.showSnackBar(
-          const SnackBar(
-            content: Text('Select your section to continue.'),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-        return;
-      }
-
       if (!_studentPrivacyConsent) {
         messenger.showSnackBar(
           const SnackBar(
@@ -679,7 +668,7 @@ class _SignUpPageState extends State<SignUpPage> {
                 .toList(growable: false),
             builder:
                 (BuildContext context, MenuController controller, Widget? _) {
-                  return TextField(
+                  return TextFormField(
                     controller: _sectionSearchController,
                     enabled: !isDisabled,
                     decoration: InputDecoration(
@@ -721,6 +710,24 @@ class _SignUpPageState extends State<SignUpPage> {
                               ),
                             ),
                     ),
+                    validator: (String? value) {
+                      final String trimmed = (value ?? '').trim();
+                      if (trimmed.isEmpty) {
+                        return 'Please select your section';
+                      }
+                      // If sections haven't loaded, don't block with a
+                      // "must match" error.
+                      if (_availableSections.isEmpty) {
+                        return null;
+                      }
+                      final bool exactMatch = _availableSections.contains(
+                        trimmed,
+                      );
+                      if (!exactMatch) {
+                        return 'Please select a valid section';
+                      }
+                      return null;
+                    },
                     onTap: isDisabled
                         ? null
                         : () {
@@ -730,6 +737,10 @@ class _SignUpPageState extends State<SignUpPage> {
                           },
                     onChanged: (String value) {
                       setState(() {
+                        final String trimmed = value.trim();
+                        if (_availableSections.contains(trimmed)) {
+                          _selectedStudentSection = trimmed;
+                        }
                         if (_selectedStudentSection != null &&
                             value.trim() != _selectedStudentSection) {
                           _selectedStudentSection = null;
