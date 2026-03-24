@@ -133,6 +133,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   // We capture a few embeddings per pose and store one template per phase.
   static const int _capturesPerPhase = 3;
   static const int _storedEmbeddingsPerPhase = 3;
+  static const Duration _kPhaseCompleteHold = Duration(milliseconds: 650);
   static final List<_OrientationPhase> _phaseOrder = <_OrientationPhase>[
     _OrientationPhase.front,
     _OrientationPhase.left,
@@ -838,6 +839,16 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     // Phase complete.
     if (_currentPhaseIndex < _phaseOrder.length - 1) {
       final _OrientationPhase nextPhase = _phaseOrder[_currentPhaseIndex + 1];
+      setState(() {
+        _lastCaptureQuality = 'OK';
+        _statusMessage =
+            '${_phaseLabel(phase)} capture $captured/$_capturesPerPhase. Great!';
+      });
+
+      // Give the user a moment to see the final 3/3 feedback before moving on.
+      await Future<void>.delayed(_kPhaseCompleteHold);
+      if (!mounted) return;
+
       if (nextPhase != _OrientationPhase.front) {
         await _showPosePhaseOnboardingDialog(nextPhase);
         if (!mounted) return;
@@ -846,9 +857,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       setState(() {
         _currentPhaseIndex++;
         _lastCaptureAt = null;
-        _lastCaptureQuality = 'OK';
-        _statusMessage =
-            'Great! ${_phaseLabel(phase)} captures complete. ${_phaseInstruction(_currentPhase)}';
+        _statusMessage = _phaseInstruction(_currentPhase);
       });
       return;
     }
