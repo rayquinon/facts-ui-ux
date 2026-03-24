@@ -230,6 +230,19 @@ class FaceEmbeddingService {
       boundingBox.width.abs(),
       boundingBox.height.abs(),
     );
+
+    // If the face is too small in the source frame, the resized 112x112 crop
+    // lacks detail and tends to increase false positives.
+    final double minDim = math.min(
+      rgbImage.width.toDouble(),
+      rgbImage.height.toDouble(),
+    );
+    const double minFaceRatio = 0.14;
+    if (baseSize.isFinite && baseSize > 0 && minDim.isFinite && minDim > 0) {
+      if (baseSize < (minDim * minFaceRatio)) {
+        throw FaceQualityException('Move closer to the camera.');
+      }
+    }
     double cropSize = baseSize.isFinite && baseSize > 0 ? baseSize * 1.35 : 0;
 
     imglib.Image working = rgbImage;

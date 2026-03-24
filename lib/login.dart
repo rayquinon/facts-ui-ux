@@ -31,6 +31,7 @@ class _LoginPageState extends State<LoginPage> {
   bool _obscurePassword = true;
   bool _isSubmitting = false;
   String? _appVersionLabel;
+  bool _autoUpdatePromptShown = false;
 
   static final RegExp _emailRegex = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
 
@@ -38,6 +39,20 @@ class _LoginPageState extends State<LoginPage> {
   void initState() {
     super.initState();
     _loadAppVersionLabel();
+    _scheduleAutoUpdatePrompt();
+  }
+
+  void _scheduleAutoUpdatePrompt() {
+    // Only auto-prompt on Android. Web already has a reload prompt mechanism.
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
+      return;
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted || _autoUpdatePromptShown) return;
+      _autoUpdatePromptShown = true;
+      await _checkForUpdates(showUpToDateDialog: false);
+    });
   }
 
   Future<void> _loadAppVersionLabel() async {
@@ -305,7 +320,7 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
-  Future<void> _checkForUpdates() async {
+  Future<void> _checkForUpdates({bool showUpToDateDialog = true}) async {
     if (kIsWeb) {
       if (!mounted) return;
       final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
@@ -374,12 +389,14 @@ class _LoginPageState extends State<LoginPage> {
     if (!mounted) return;
 
     if (update == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Could not check for updates right now.'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      if (showUpToDateDialog) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not check for updates right now.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
       return;
     }
 
@@ -390,6 +407,7 @@ class _LoginPageState extends State<LoginPage> {
         : '${update.latestVersion}+${update.latestBuildNumber}';
 
     if (!update.updateAvailable) {
+      if (!showUpToDateDialog) return;
       await showDialog<void>(
         context: context,
         builder: (BuildContext dialogContext) {

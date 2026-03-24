@@ -2193,37 +2193,49 @@ class _ClassMaintenancePanelState extends State<_ClassMaintenancePanel> {
   Iterable<String> _buildScheduleSummaries(Map<String, dynamic> classData) {
     final List<dynamic> schedules =
         (classData['schedules'] as List<dynamic>? ?? <dynamic>[]);
-    return schedules.map((dynamic entry) {
-      if (entry is! Map) return '';
-      final Map<String, dynamic> schedule = Map<String, dynamic>.from(entry);
-      final String type =
-          (schedule['type'] as String?)?.toUpperCase().trim() ?? '';
-      final String day = (schedule['day'] as String?)?.trim() ?? '';
-      final Map<String, dynamic>? start =
-          schedule['startTime'] as Map<String, dynamic>?;
-      final Map<String, dynamic>? end = schedule['endTime'] as Map<String, dynamic>?;
+    return schedules
+        .map((dynamic entry) {
+          if (entry is! Map) return '';
+          final Map<String, dynamic> schedule = Map<String, dynamic>.from(
+            entry,
+          );
+          final String type =
+              (schedule['type'] as String?)?.toUpperCase().trim() ?? '';
+          final String day = (schedule['day'] as String?)?.trim() ?? '';
+          final Map<String, dynamic>? start =
+              schedule['startTime'] as Map<String, dynamic>?;
+          final Map<String, dynamic>? end =
+              schedule['endTime'] as Map<String, dynamic>?;
 
-      String formatTime(Map<String, dynamic>? time) {
-        if (time == null) return '';
-        final Object? hour = time['hour'];
-        final int? minute = time['minute'] as int?;
-        final String period = (time['period'] as String?)?.trim() ?? '';
-        final String hourText = hour == null ? '' : hour.toString();
-        final String minuteText =
-            minute == null ? '' : minute.toString().padLeft(2, '0');
-        final String base = [hourText, minuteText].where((s) => s.isNotEmpty).join(':');
-        return [base, period].where((s) => s.trim().isNotEmpty).join(' ');
-      }
+          String formatTime(Map<String, dynamic>? time) {
+            if (time == null) return '';
+            final Object? hour = time['hour'];
+            final int? minute = time['minute'] as int?;
+            final String period = (time['period'] as String?)?.trim() ?? '';
+            final String hourText = hour == null ? '' : hour.toString();
+            final String minuteText = minute == null
+                ? ''
+                : minute.toString().padLeft(2, '0');
+            final String base = [
+              hourText,
+              minuteText,
+            ].where((s) => s.isNotEmpty).join(':');
+            return [base, period].where((s) => s.trim().isNotEmpty).join(' ');
+          }
 
-      final String formattedStart = formatTime(start);
-      final String formattedEnd = formatTime(end);
+          final String formattedStart = formatTime(start);
+          final String formattedEnd = formatTime(end);
 
-      return [
-        type,
-        day,
-        [formattedStart, formattedEnd].where((s) => s.isNotEmpty).join(' - '),
-      ].where((s) => s.trim().isNotEmpty).join(' • ');
-    }).where((String summary) => summary.trim().isNotEmpty);
+          return [
+            type,
+            day,
+            [
+              formattedStart,
+              formattedEnd,
+            ].where((s) => s.isNotEmpty).join(' - '),
+          ].where((s) => s.trim().isNotEmpty).join(' • ');
+        })
+        .where((String summary) => summary.trim().isNotEmpty);
   }
 
   Future<void> _loadInstructors() async {
@@ -2498,30 +2510,31 @@ class _ClassMaintenancePanelState extends State<_ClassMaintenancePanel> {
                     docs = snapshot.data!.docs;
                     final String query = _normalizeSearch(_classSearchQuery);
                     final List<QueryDocumentSnapshot<Map<String, dynamic>>>
-                    filteredDocs =
-                        query.isEmpty
-                            ? docs
-                            : docs.where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-                                final Map<String, dynamic> data = doc.data();
-                                final String subjectCode =
-                                    (data['subjectCode'] as String?) ?? '';
-                                final String subjectName =
-                                    (data['subjectName'] as String?) ?? '';
-                                final String section =
-                                    (data['section'] as String?) ?? '';
-                                final String term = (data['term'] as String?) ?? '';
-                                final String instructorId =
-                                    (data['instructorId'] as String?) ?? '';
-                                final String instructorLabel =
-                                    _instructorLookup[instructorId] ?? '';
-                                final String departmentName =
-                                    (data['departmentName'] as String?) ?? '';
+                    filteredDocs = query.isEmpty
+                        ? docs
+                        : docs.where((
+                            QueryDocumentSnapshot<Map<String, dynamic>> doc,
+                          ) {
+                            final Map<String, dynamic> data = doc.data();
+                            final String subjectCode =
+                                (data['subjectCode'] as String?) ?? '';
+                            final String subjectName =
+                                (data['subjectName'] as String?) ?? '';
+                            final String section =
+                                (data['section'] as String?) ?? '';
+                            final String term = (data['term'] as String?) ?? '';
+                            final String instructorId =
+                                (data['instructorId'] as String?) ?? '';
+                            final String instructorLabel =
+                                _instructorLookup[instructorId] ?? '';
+                            final String departmentName =
+                                (data['departmentName'] as String?) ?? '';
 
-                                final Iterable<String> scheduleSummaries =
-                                    _buildScheduleSummaries(data);
+                            final Iterable<String> scheduleSummaries =
+                                _buildScheduleSummaries(data);
 
-                                final String haystack = _normalizeSearch(
-                                  <String>[
+                            final String haystack = _normalizeSearch(
+                              <String>[
                                     subjectCode,
                                     subjectName,
                                     section,
@@ -2529,10 +2542,14 @@ class _ClassMaintenancePanelState extends State<_ClassMaintenancePanel> {
                                     instructorLabel,
                                     departmentName,
                                     ...scheduleSummaries,
-                                  ].where((String value) => value.trim().isNotEmpty).join(' | '),
-                                );
-                                return haystack.contains(query);
-                              }).toList();
+                                  ]
+                                  .where(
+                                    (String value) => value.trim().isNotEmpty,
+                                  )
+                                  .join(' | '),
+                            );
+                            return haystack.contains(query);
+                          }).toList();
 
                     if (filteredDocs.isEmpty) {
                       return Padding(
@@ -2566,7 +2583,7 @@ class _ClassMaintenancePanelState extends State<_ClassMaintenancePanel> {
                         final String departmentName =
                             (data['departmentName'] as String?) ?? '';
                         final Iterable<String> scheduleSummaries =
-                          _buildScheduleSummaries(data);
+                            _buildScheduleSummaries(data);
                         final String classLabel = '$subjectCode • $section';
                         return ListTile(
                           contentPadding: EdgeInsets.zero,
@@ -3405,6 +3422,10 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
   _BulkProgressInfo? _bulkProgress;
   final Set<String> _selectedUserIds = <String>{};
 
+  static const List<int> _usersRowsPerPageOptions = <int>[10, 20, 30, 50, 100];
+  int _usersRowsPerPage = 20;
+  int _usersPageIndex = 0;
+
   Widget _buildBulkProgressBanner() {
     final _BulkProgressInfo? p = _bulkProgress;
     if (!_bulkActionRunning || p == null) return const SizedBox.shrink();
@@ -3439,13 +3460,79 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     );
   }
 
-  static const int _usersPageSize = 50;
+  static const int _usersFetchPageSize = 100;
+  static const int _selectAllFetchPageSize = 500;
+  static const int _selectAllHardCap = 5000;
   bool _loadingUsers = false;
   bool _loadingMore = false;
+  bool _selectingAll = false;
   bool _hasMoreUsers = true;
   QueryDocumentSnapshot<Map<String, dynamic>>? _lastUserDoc;
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _loadedUserDocs =
       <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+
+  void _scrollUsersListToTop() {
+    if (!_allUsersScrollController.hasClients) return;
+    _allUsersScrollController.jumpTo(0);
+  }
+
+  int _totalPagesFor(int totalRows) {
+    if (totalRows <= 0) return 1;
+    return ((totalRows + _usersRowsPerPage - 1) ~/ _usersRowsPerPage).clamp(
+      1,
+      1 << 30,
+    );
+  }
+
+  void _resetUsersPagination() {
+    _usersPageIndex = 0;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _scrollUsersListToTop();
+    });
+  }
+
+  void _goToPrevUsersPage() {
+    if (_usersPageIndex <= 0) return;
+    setState(() {
+      _usersPageIndex--;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _scrollUsersListToTop();
+    });
+  }
+
+  Future<void> _goToNextUsersPage() async {
+    if (_loadingUsers || _loadingMore) return;
+
+    final int totalRows = _filteredUserDocs().length;
+    final int totalPages = _totalPagesFor(totalRows);
+
+    if (_usersPageIndex < totalPages - 1) {
+      setState(() {
+        _usersPageIndex++;
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _scrollUsersListToTop();
+      });
+      return;
+    }
+
+    if (_hasMoreUsers) {
+      await _loadMoreUsers();
+      if (!mounted) return;
+
+      final int newTotalRows = _filteredUserDocs().length;
+      final int newTotalPages = _totalPagesFor(newTotalRows);
+      if (_usersPageIndex < newTotalPages - 1) {
+        setState(() {
+          _usersPageIndex++;
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _scrollUsersListToTop();
+        });
+      }
+    }
+  }
 
   final Map<String, Map<String, dynamic>> _userDocPatches =
       <String, Map<String, dynamic>>{};
@@ -4136,7 +4223,7 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     if (_lastUserDoc != null) {
       q = q.startAfterDocument(_lastUserDoc!);
     }
-    return q.limit(_usersPageSize);
+    return q.limit(_usersFetchPageSize);
   }
 
   Future<void> _refreshUsers() async {
@@ -4147,6 +4234,7 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
       _lastUserDoc = null;
       _loadedUserDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
       _selectedUserIds.clear();
+      _resetUsersPagination();
     });
 
     try {
@@ -4156,7 +4244,7 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
       setState(() {
         _loadedUserDocs = docs;
         _lastUserDoc = docs.isEmpty ? null : docs.last;
-        _hasMoreUsers = docs.length == _usersPageSize;
+        _hasMoreUsers = docs.length == _usersFetchPageSize;
       });
     } catch (error) {
       if (!mounted) return;
@@ -4183,7 +4271,7 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
           ...docs,
         ];
         _lastUserDoc = docs.isEmpty ? _lastUserDoc : docs.last;
-        _hasMoreUsers = docs.length == _usersPageSize;
+        _hasMoreUsers = docs.length == _usersFetchPageSize;
       });
     } catch (error) {
       if (!mounted) return;
@@ -4193,6 +4281,125 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     } finally {
       if (mounted) {
         setState(() => _loadingMore = false);
+      }
+    }
+  }
+
+  Query<Map<String, dynamic>> _buildSelectAllQuery({
+    required QueryDocumentSnapshot<Map<String, dynamic>>? startAfter,
+  }) {
+    Query<Map<String, dynamic>> q = _firestore
+        .collection('users')
+        .orderBy(FieldPath.documentId);
+
+    // Push role filtering into Firestore when possible to avoid scanning the
+    // entire users collection.
+    if (_showStudents && !_showInstructors) {
+      q = q.where('role', isEqualTo: 'student');
+    } else if (_showInstructors && !_showStudents) {
+      q = q.where('role', isEqualTo: 'instructor');
+    }
+
+    if (startAfter != null) {
+      q = q.startAfterDocument(startAfter);
+    }
+    return q.limit(_selectAllFetchPageSize);
+  }
+
+  bool _matchesCurrentUserFilters(
+    QueryDocumentSnapshot<Map<String, dynamic>> doc,
+  ) {
+    final Map<String, dynamic> data = _patchedUserData(doc);
+    if (_isAdminAccount(doc.id, data)) return false;
+
+    final String role = ((data['role'] as String?) ?? '').toLowerCase();
+    if (role == 'student' && !_showStudents) return false;
+    if (role == 'instructor' && !_showInstructors) return false;
+
+    final String q = _searchQuery;
+    if (q.isNotEmpty && !_buildSearchHaystack(data, doc.id).contains(q)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  Future<void> _selectAllMatchingUsers() async {
+    if (_selectingAll || _bulkActionRunning) return;
+    if (!_multiSelectEnabled) return;
+
+    setState(() => _selectingAll = true);
+    final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      const SnackBar(
+        content: Text('Selecting all matching users...'),
+        behavior: SnackBarBehavior.floating,
+        duration: Duration(seconds: 2),
+      ),
+    );
+
+    try {
+      final List<QueryDocumentSnapshot<Map<String, dynamic>>> allDocs =
+          <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+
+      QueryDocumentSnapshot<Map<String, dynamic>>? cursor;
+      while (mounted) {
+        if (allDocs.length >= _selectAllHardCap) {
+          break;
+        }
+
+        final QuerySnapshot<Map<String, dynamic>> snap =
+            await _buildSelectAllQuery(startAfter: cursor).get();
+        if (snap.docs.isEmpty) {
+          break;
+        }
+
+        allDocs.addAll(snap.docs);
+        cursor = snap.docs.last;
+        if (snap.docs.length < _selectAllFetchPageSize) {
+          break;
+        }
+      }
+
+      if (!mounted) return;
+
+      final List<QueryDocumentSnapshot<Map<String, dynamic>>> matching = allDocs
+          .where(_matchesCurrentUserFilters)
+          .toList(growable: false);
+
+      setState(() {
+        // Ensure the loaded list contains everything we just selected so bulk
+        // actions operate on the full set (not just the first loaded page).
+        _loadedUserDocs = allDocs;
+        _lastUserDoc = allDocs.isEmpty ? null : allDocs.last;
+        _hasMoreUsers = false;
+        _resetUsersPagination();
+        _selectedUserIds
+          ..clear()
+          ..addAll(matching.map((e) => e.id));
+      });
+
+      if (allDocs.length >= _selectAllHardCap) {
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Too many users to select at once. Narrow the filters and try again.',
+            ),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (error) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('Select all failed: $error'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _selectingAll = false);
       }
     }
   }
@@ -4864,7 +5071,8 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                     final bool canSelectAll =
                         _multiSelectEnabled &&
                         !_bulkActionRunning &&
-                        visibleDocs.isNotEmpty;
+                        visibleDocs.isNotEmpty &&
+                        !_selectingAll;
                     final String selectAllLabel = allVisibleSelected
                         ? 'Clear selection'
                         : 'Select all';
@@ -4876,17 +5084,11 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                             tooltip: selectAllLabel,
                             onPressed: canSelectAll
                                 ? () {
-                                    setState(() {
-                                      if (allVisibleSelected) {
-                                        _selectedUserIds.clear();
-                                      } else {
-                                        _selectedUserIds.addAll(
-                                          visibleDocs
-                                              .map((e) => e.id)
-                                              .toList(growable: false),
-                                        );
-                                      }
-                                    });
+                                    if (allVisibleSelected) {
+                                      setState(() => _selectedUserIds.clear());
+                                      return;
+                                    }
+                                    _selectAllMatchingUsers();
                                   }
                                 : null,
                             icon: Icon(selectAllIcon),
@@ -4894,17 +5096,11 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                         : TextButton.icon(
                             onPressed: canSelectAll
                                 ? () {
-                                    setState(() {
-                                      if (allVisibleSelected) {
-                                        _selectedUserIds.clear();
-                                      } else {
-                                        _selectedUserIds.addAll(
-                                          visibleDocs
-                                              .map((e) => e.id)
-                                              .toList(growable: false),
-                                        );
-                                      }
-                                    });
+                                    if (allVisibleSelected) {
+                                      setState(() => _selectedUserIds.clear());
+                                      return;
+                                    }
+                                    _selectAllMatchingUsers();
                                   }
                                 : null,
                             icon: Icon(selectAllIcon, size: 18),
@@ -5043,7 +5239,10 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                 TextField(
                   controller: _userSearchController,
                   onChanged: (String value) {
-                    setState(() => _searchQuery = value.trim().toLowerCase());
+                    setState(() {
+                      _searchQuery = value.trim().toLowerCase();
+                      _resetUsersPagination();
+                    });
                   },
                   decoration: InputDecoration(
                     prefixIcon: const Icon(Icons.search),
@@ -5054,7 +5253,10 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                             tooltip: 'Clear search',
                             onPressed: () {
                               _userSearchController.clear();
-                              setState(() => _searchQuery = '');
+                              setState(() {
+                                _searchQuery = '';
+                                _resetUsersPagination();
+                              });
                             },
                             icon: const Icon(Icons.clear),
                           ),
@@ -5069,14 +5271,20 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                       label: const Text('Students'),
                       selected: _showStudents,
                       onSelected: (bool value) {
-                        setState(() => _showStudents = value);
+                        setState(() {
+                          _showStudents = value;
+                          _resetUsersPagination();
+                        });
                       },
                     ),
                     FilterChip(
                       label: const Text('Instructors'),
                       selected: _showInstructors,
                       onSelected: (bool value) {
-                        setState(() => _showInstructors = value);
+                        setState(() {
+                          _showInstructors = value;
+                          _resetUsersPagination();
+                        });
                       },
                     ),
                   ],
@@ -5103,216 +5311,266 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                       return const Text('No users found.');
                     }
 
+                    final int totalRows = filteredDocs.length;
+                    final int totalPages = _totalPagesFor(totalRows);
+                    final int pageIndex = _usersPageIndex.clamp(
+                      0,
+                      totalPages - 1,
+                    );
+                    final int start = pageIndex * _usersRowsPerPage;
+                    final int end = (start + _usersRowsPerPage).clamp(
+                      0,
+                      totalRows,
+                    );
+                    final List<QueryDocumentSnapshot<Map<String, dynamic>>>
+                    pageDocs = filteredDocs.sublist(start, end);
+
+                    final bool canGoPrev = pageIndex > 0;
+                    final bool canGoNext =
+                        (pageIndex < totalPages - 1) || _hasMoreUsers;
+
                     final double listHeight =
                         (MediaQuery.sizeOf(context).height * 0.50)
                             .clamp(280.0, 520.0)
                             .toDouble();
 
-                    return SizedBox(
-                      height: listHeight,
-                      child: Scrollbar(
-                        controller: _allUsersScrollController,
-                        thumbVisibility: true,
-                        child: ListView.separated(
-                          controller: _allUsersScrollController,
-                          itemCount: filteredDocs.length + 1,
-                          separatorBuilder: (_, __) => const Divider(height: 1),
-                          itemBuilder: (BuildContext context, int index) {
-                            if (index >= filteredDocs.length) {
-                              if (_loadingMore) {
-                                return const Padding(
-                                  padding: EdgeInsets.symmetric(vertical: 12),
-                                  child: Center(
-                                    child: SizedBox(
-                                      width: 18,
-                                      height: 18,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                      ),
-                                    ),
-                                  ),
-                                );
-                              }
-                              if (!_hasMoreUsers) {
-                                return const Padding(
-                                  padding: EdgeInsets.symmetric(vertical: 12),
-                                  child: Center(child: Text('End of list.')),
-                                );
-                              }
-                              return Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  vertical: 8,
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: <Widget>[
+                        Wrap(
+                          spacing: 12,
+                          runSpacing: 8,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: <Widget>[
+                            SizedBox(
+                              width: 210,
+                              child: DropdownButtonFormField<int>(
+                                initialValue: _usersRowsPerPage,
+                                decoration: const InputDecoration(
+                                  labelText: 'Rows per page',
                                 ),
-                                child: Center(
-                                  child: OutlinedButton.icon(
-                                    onPressed: _loadMoreUsers,
-                                    icon: const Icon(Icons.expand_more),
-                                    label: const Text('Load more'),
-                                  ),
-                                ),
-                              );
-                            }
-
-                            final QueryDocumentSnapshot<Map<String, dynamic>>
-                            doc = filteredDocs[index];
-                            final Map<String, dynamic> data = _patchedUserData(
-                              doc,
-                            );
-                            final String name = _resolveDisplayName(
-                              data,
-                              doc.id,
-                            );
-                            final String role = (data['role'] as String?) ?? '';
-                            final String normalizedRole = role
-                                .trim()
-                                .toLowerCase();
-                            if (normalizedRole == 'student' ||
-                                normalizedRole.contains('student')) {
-                              unawaited(_ensureVpsEnrollmentCached(doc.id));
-                            }
-
-                            final bool hasEnrollment = _hasFaceEnrollment(
-                              doc.id,
-                              data,
-                            );
-                            final bool hasLegacyEnrollment =
-                                _hasLegacyFaceEnrollment(data);
-                            final bool approved = data['approved'] == true;
-                            final bool selected = _selectedUserIds.contains(
-                              doc.id,
-                            );
-
-                            final ThemeData theme = Theme.of(context);
-                            final Widget menuIcon = hasEnrollment
-                                ? Stack(
-                                    clipBehavior: Clip.none,
-                                    children: <Widget>[
-                                      const Icon(Icons.more_vert),
-                                      Positioned(
-                                        right: -2,
-                                        top: -2,
-                                        child: Container(
-                                          width: 14,
-                                          height: 14,
-                                          decoration: BoxDecoration(
-                                            color: theme.colorScheme.tertiary,
-                                            shape: BoxShape.circle,
-                                            border: Border.all(
-                                              color: theme.colorScheme.surface,
-                                              width: 1.5,
-                                            ),
-                                          ),
-                                          child: Icon(
-                                            Icons.face,
-                                            size: 10,
-                                            color: theme.colorScheme.onTertiary,
-                                          ),
-                                        ),
+                                items: _usersRowsPerPageOptions
+                                    .map(
+                                      (int value) => DropdownMenuItem<int>(
+                                        value: value,
+                                        child: Text(value.toString()),
                                       ),
-                                    ],
-                                  )
-                                : const Icon(Icons.more_vert);
-
-                            return ListTile(
-                              contentPadding: EdgeInsets.zero,
-                              onTap: _multiSelectEnabled
-                                  ? () => _toggleUserSelected(doc.id)
-                                  : null,
-                              leading: _multiSelectEnabled
-                                  ? Checkbox(
-                                      value: selected,
-                                      onChanged: (bool? value) {
-                                        _toggleUserSelected(doc.id);
-                                      },
                                     )
-                                  : null,
-                              title: Text(name),
-                              subtitle: Text(
-                                role.isEmpty
-                                    ? 'No role'
-                                    : (role.toLowerCase() == 'instructor'
-                                          ? (approved
-                                                ? 'Instructor (approved)'
-                                                : 'Instructor (pending)')
-                                          : role),
+                                    .toList(growable: false),
+                                onChanged: (int? value) {
+                                  if (value == null) return;
+                                  setState(() {
+                                    _usersRowsPerPage = value;
+                                    _resetUsersPagination();
+                                  });
+                                },
                               ),
-                              trailing: _multiSelectEnabled
-                                  ? (selected
-                                        ? const Icon(Icons.check_circle)
-                                        : const Icon(
-                                            Icons.radio_button_unchecked,
-                                          ))
-                                  : PopupMenuButton<String>(
-                                      icon: menuIcon,
-                                      onSelected: (String action) {
-                                        switch (action) {
-                                          case 'edit':
-                                            _editUserProfile(doc);
-                                            break;
-                                          case 'approve':
-                                            _approveInstructor(doc.id);
-                                            break;
-                                          case 'migrateEnrollment':
-                                            _migrateFaceEnrollmentFormat(
-                                              doc.id,
-                                            );
-                                            break;
-                                          case 'migrateToVps':
-                                            _migrateFaceEnrollmentToVps(doc.id);
-                                            break;
-                                          case 'clearEnrollment':
-                                            _clearFaceEnrollment(doc.id);
-                                            break;
-                                          case 'delete':
-                                            _deleteUser(doc.id, name);
-                                            break;
-                                        }
-                                      },
-                                      itemBuilder: (BuildContext context) {
-                                        return <PopupMenuEntry<String>>[
-                                          const PopupMenuItem<String>(
-                                            value: 'edit',
-                                            child: Text('Edit profile'),
-                                          ),
-                                          if (role.toLowerCase() ==
-                                                  'instructor' &&
-                                              !approved)
-                                            const PopupMenuItem<String>(
-                                              value: 'approve',
-                                              child: Text('Approve instructor'),
-                                            ),
-                                          if (hasLegacyEnrollment)
-                                            const PopupMenuItem<String>(
-                                              value: 'migrateEnrollment',
-                                              child: Text(
-                                                'Fix face enrollment format',
-                                              ),
-                                            ),
-                                          if (hasLegacyEnrollment)
-                                            const PopupMenuItem<String>(
-                                              value: 'migrateToVps',
-                                              child: Text(
-                                                'Migrate face enrollment to VPS',
-                                              ),
-                                            ),
-                                          const PopupMenuItem<String>(
-                                            value: 'clearEnrollment',
-                                            child: Text(
-                                              'Clear face enrollment',
-                                            ),
-                                          ),
-                                          const PopupMenuDivider(),
-                                          const PopupMenuItem<String>(
-                                            value: 'delete',
-                                            child: Text('Delete user'),
-                                          ),
-                                        ];
-                                      },
-                                    ),
-                            );
-                          },
+                            ),
+                            if (_loadingMore)
+                              const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              ),
+                            Text('Page ${pageIndex + 1} / $totalPages'),
+                            IconButton(
+                              tooltip: 'Previous page',
+                              onPressed: canGoPrev ? _goToPrevUsersPage : null,
+                              icon: const Icon(Icons.chevron_left),
+                            ),
+                            IconButton(
+                              tooltip: 'Next page',
+                              onPressed: canGoNext ? _goToNextUsersPage : null,
+                              icon: const Icon(Icons.chevron_right),
+                            ),
+                          ],
                         ),
-                      ),
+                        const SizedBox(height: 8),
+                        SizedBox(
+                          height: listHeight,
+                          child: Scrollbar(
+                            controller: _allUsersScrollController,
+                            thumbVisibility: true,
+                            child: ListView.separated(
+                              controller: _allUsersScrollController,
+                              itemCount: pageDocs.length,
+                              separatorBuilder: (_, __) =>
+                                  const Divider(height: 1),
+                              itemBuilder: (BuildContext context, int index) {
+                                final QueryDocumentSnapshot<
+                                  Map<String, dynamic>
+                                >
+                                doc = pageDocs[index];
+                                final Map<String, dynamic> data =
+                                    _patchedUserData(doc);
+                                final String name = _resolveDisplayName(
+                                  data,
+                                  doc.id,
+                                );
+                                final String role =
+                                    (data['role'] as String?) ?? '';
+                                final String normalizedRole = role
+                                    .trim()
+                                    .toLowerCase();
+                                if (normalizedRole == 'student' ||
+                                    normalizedRole.contains('student')) {
+                                  unawaited(_ensureVpsEnrollmentCached(doc.id));
+                                }
+
+                                final bool hasEnrollment = _hasFaceEnrollment(
+                                  doc.id,
+                                  data,
+                                );
+                                final bool hasLegacyEnrollment =
+                                    _hasLegacyFaceEnrollment(data);
+                                final bool approved = data['approved'] == true;
+                                final bool selected = _selectedUserIds.contains(
+                                  doc.id,
+                                );
+
+                                final ThemeData theme = Theme.of(context);
+                                final Widget menuIcon = hasEnrollment
+                                    ? Stack(
+                                        clipBehavior: Clip.none,
+                                        children: <Widget>[
+                                          const Icon(Icons.more_vert),
+                                          Positioned(
+                                            right: -2,
+                                            top: -2,
+                                            child: Container(
+                                              width: 14,
+                                              height: 14,
+                                              decoration: BoxDecoration(
+                                                color:
+                                                    theme.colorScheme.tertiary,
+                                                shape: BoxShape.circle,
+                                                border: Border.all(
+                                                  color:
+                                                      theme.colorScheme.surface,
+                                                  width: 1.5,
+                                                ),
+                                              ),
+                                              child: Icon(
+                                                Icons.face,
+                                                size: 10,
+                                                color: theme
+                                                    .colorScheme
+                                                    .onTertiary,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      )
+                                    : const Icon(Icons.more_vert);
+
+                                return ListTile(
+                                  contentPadding: EdgeInsets.zero,
+                                  onTap: _multiSelectEnabled
+                                      ? () => _toggleUserSelected(doc.id)
+                                      : null,
+                                  leading: _multiSelectEnabled
+                                      ? Checkbox(
+                                          value: selected,
+                                          onChanged: (bool? value) {
+                                            _toggleUserSelected(doc.id);
+                                          },
+                                        )
+                                      : null,
+                                  title: Text(name),
+                                  subtitle: Text(
+                                    role.isEmpty
+                                        ? 'No role'
+                                        : (role.toLowerCase() == 'instructor'
+                                              ? (approved
+                                                    ? 'Instructor (approved)'
+                                                    : 'Instructor (pending)')
+                                              : role),
+                                  ),
+                                  trailing: _multiSelectEnabled
+                                      ? (selected
+                                            ? const Icon(Icons.check_circle)
+                                            : const Icon(
+                                                Icons.radio_button_unchecked,
+                                              ))
+                                      : PopupMenuButton<String>(
+                                          icon: menuIcon,
+                                          onSelected: (String action) {
+                                            switch (action) {
+                                              case 'edit':
+                                                _editUserProfile(doc);
+                                                break;
+                                              case 'approve':
+                                                _approveInstructor(doc.id);
+                                                break;
+                                              case 'migrateEnrollment':
+                                                _migrateFaceEnrollmentFormat(
+                                                  doc.id,
+                                                );
+                                                break;
+                                              case 'migrateToVps':
+                                                _migrateFaceEnrollmentToVps(
+                                                  doc.id,
+                                                );
+                                                break;
+                                              case 'clearEnrollment':
+                                                _clearFaceEnrollment(doc.id);
+                                                break;
+                                              case 'delete':
+                                                _deleteUser(doc.id, name);
+                                                break;
+                                            }
+                                          },
+                                          itemBuilder: (BuildContext context) {
+                                            return <PopupMenuEntry<String>>[
+                                              const PopupMenuItem<String>(
+                                                value: 'edit',
+                                                child: Text('Edit profile'),
+                                              ),
+                                              if (role.toLowerCase() ==
+                                                      'instructor' &&
+                                                  !approved)
+                                                const PopupMenuItem<String>(
+                                                  value: 'approve',
+                                                  child: Text(
+                                                    'Approve instructor',
+                                                  ),
+                                                ),
+                                              if (hasLegacyEnrollment)
+                                                const PopupMenuItem<String>(
+                                                  value: 'migrateEnrollment',
+                                                  child: Text(
+                                                    'Fix face enrollment format',
+                                                  ),
+                                                ),
+                                              if (hasLegacyEnrollment)
+                                                const PopupMenuItem<String>(
+                                                  value: 'migrateToVps',
+                                                  child: Text(
+                                                    'Migrate face enrollment to VPS',
+                                                  ),
+                                                ),
+                                              const PopupMenuItem<String>(
+                                                value: 'clearEnrollment',
+                                                child: Text(
+                                                  'Clear face enrollment',
+                                                ),
+                                              ),
+                                              const PopupMenuDivider(),
+                                              const PopupMenuItem<String>(
+                                                value: 'delete',
+                                                child: Text('Delete user'),
+                                              ),
+                                            ];
+                                          },
+                                        ),
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                      ],
                     );
                   },
                 ),

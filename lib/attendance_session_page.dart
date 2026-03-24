@@ -81,7 +81,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   static const Duration _ambiguousConfirmationWindow = Duration(seconds: 7);
   static const int _ambiguousConfirmationsRequired = 2;
   static const Duration _confirmationWindow = Duration(seconds: 6);
-  static const int _confirmationsRequired = 2;
+  static const int _confirmationsRequired = 1;
   static const Duration _maxConfirmationDuration = Duration(seconds: 12);
   static const Duration _autoEndAfterClassStart = Duration(minutes: 30);
 
@@ -864,21 +864,17 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           rawHeight: image.height.toDouble(),
         );
 
-        // If we can't see both eyes clearly, alignment is unreliable and can
-        // increase false positives.
-        if (leftEye == null || rightEye == null) {
-          _lastCaptureTime = _now();
-          _updateStatus('Hold still and face the camera.');
-          return;
-        }
-
-        final List<double> embedding = await _embeddingService
-            .generateEmbeddingAligned(
-              image,
-              bbox,
-              leftEye: leftEye,
-              rightEye: rightEye,
-            );
+        // Prefer aligned embeddings when both eyes are available.
+        // If landmarks are missing, fall back to a standard bbox crop so we
+        // don't get stuck waiting for perfect landmark detection.
+        final List<double> embedding = (leftEye != null && rightEye != null)
+            ? await _embeddingService.generateEmbeddingAligned(
+                image,
+                bbox,
+                leftEye: leftEye,
+                rightEye: rightEye,
+              )
+            : await _embeddingService.generateEmbedding(image, bbox);
         _lastCaptureTime = _now();
         await _handleEmbeddingCapture(embedding);
       }

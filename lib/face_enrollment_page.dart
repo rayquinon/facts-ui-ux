@@ -161,6 +161,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   int _lastRotationCompensation = 0;
   List<double>? _latestEmbedding;
   String? _statusMessage;
+  String? _lastCaptureQuality;
   int _currentPhaseIndex = 0;
   bool _autoSaveTriggered = false;
   _GuideMatch _uiGuideMatch = _GuideMatch.ok;
@@ -324,6 +325,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       }
       _currentPhaseIndex = 0;
       _latestEmbedding = null;
+      _lastCaptureQuality = null;
       _statusMessage = _phaseInstruction(_currentPhase);
     });
   }
@@ -518,6 +520,19 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
               rawWidth: image.width.toDouble(),
               rawHeight: image.height.toDouble(),
             );
+
+            // Enrollment templates should be consistently aligned. If we can't
+            // see both eyes clearly, skip this capture.
+            if (leftEye == null || rightEye == null) {
+              _lastCaptureAt = now;
+              if (mounted) {
+                setState(() {
+                  _statusMessage = 'Hold still and face the camera.';
+                  _lastCaptureQuality = 'Eyes not detected';
+                });
+              }
+              return;
+            }
             final List<double> embedding = await _embeddingService
                 .generateEmbeddingAligned(
                   image,
@@ -532,7 +547,10 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       }
     } on FaceQualityException catch (error) {
       if (!mounted) return;
-      setState(() => _statusMessage = error.message);
+      setState(() {
+        _statusMessage = error.message;
+        _lastCaptureQuality = error.message;
+      });
     } catch (error) {
       debugPrint('Face processing error: $error');
     } finally {
@@ -649,7 +667,11 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     // tall portrait phones where the CameraPreview is letterboxed.
     final Rect guideRect = _computeGuideRect(containerSize);
 
-    return _evaluateGuideMatchRects(bboxScreen, guideRect, phase: _currentPhase);
+    return _evaluateGuideMatchRects(
+      bboxScreen,
+      guideRect,
+      phase: _currentPhase,
+    );
   }
 
   void _updateNoFaceStatus() {
@@ -661,7 +683,10 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     });
   }
 
-  void _updateGuideStatus(_GuideMatch match, {required _OrientationPhase phase}) {
+  void _updateGuideStatus(
+    _GuideMatch match, {
+    required _OrientationPhase phase,
+  }) {
     if (!mounted) return;
     setState(() {
       _latestEmbedding = null;
@@ -803,6 +828,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       if (!mounted) return;
       setState(() {
         final int remaining = _capturesPerPhase - captured;
+        _lastCaptureQuality = 'OK';
         _statusMessage =
             '${_phaseLabel(phase)} capture $captured/$_capturesPerPhase. Hold steady for $remaining more.';
       });
@@ -820,6 +846,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       setState(() {
         _currentPhaseIndex++;
         _lastCaptureAt = null;
+        _lastCaptureQuality = 'OK';
         _statusMessage =
             'Great! ${_phaseLabel(phase)} captures complete. ${_phaseInstruction(_currentPhase)}';
       });
@@ -830,6 +857,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     if (!mounted) return;
     setState(() {
       _latestEmbedding = _averageAllEmbeddings();
+      _lastCaptureQuality = 'OK';
       _statusMessage = 'Captures complete. Saving your profile...';
       _stopStreams();
 
@@ -856,13 +884,13 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
 
     final String instruction = switch (phase) {
       _OrientationPhase.left =>
-          'Turn your head slightly to the LEFT while keeping your face inside the oval.',
+        'Turn your head slightly to the LEFT while keeping your face inside the oval.',
       _OrientationPhase.right =>
-          'Turn your head slightly to the RIGHT while keeping your face inside the oval.',
+        'Turn your head slightly to the RIGHT while keeping your face inside the oval.',
       _OrientationPhase.up =>
-          'Tilt your chin slightly UP (look a bit higher) while keeping your face inside the oval.',
+        'Tilt your chin slightly UP (look a bit higher) while keeping your face inside the oval.',
       _OrientationPhase.down =>
-          'Tilt your chin slightly DOWN (look a bit lower) while keeping your face inside the oval.',
+        'Tilt your chin slightly DOWN (look a bit lower) while keeping your face inside the oval.',
       _OrientationPhase.far =>
         'Step back a bit so your face looks smaller inside the oval. Hold still for 3 quick captures.',
       _OrientationPhase.near =>
@@ -1191,8 +1219,8 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     try {
       final Map<_OrientationPhase, List<List<double>>> selectedByPhase =
           _selectRepresentativeEmbeddingsByPhase(
-        perPhase: _storedEmbeddingsPerPhase,
-      );
+            perPhase: _storedEmbeddingsPerPhase,
+          );
 
       final List<List<double>> templates = <List<double>>[];
       for (final _OrientationPhase phase in _phaseOrder) {
@@ -1201,8 +1229,9 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
         if (vectors.isEmpty) continue;
         final List<double> averaged = _averageVectors(vectors);
         final List<double> normalized = _l2NormalizeVector(averaged);
-        final List<double> template =
-            normalized.isNotEmpty ? normalized : averaged;
+        final List<double> template = normalized.isNotEmpty
+            ? normalized
+            : averaged;
         if (template.isNotEmpty) {
           templates.add(template);
         }
@@ -1213,8 +1242,9 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
           : <List<double>>[_l2NormalizeVector(embedding)];
       final List<double> averagedAll = _averageVectors(vectorsToCombine);
       final List<double> normalizedAll = _l2NormalizeVector(averagedAll);
-      final List<double> payloadSingle =
-          normalizedAll.isNotEmpty ? normalizedAll : averagedAll;
+      final List<double> payloadSingle = normalizedAll.isNotEmpty
+          ? normalizedAll
+          : averagedAll;
 
       if (templates.isNotEmpty) {
         await _vpsClient.putEmbeddingsForUid(
@@ -1249,9 +1279,8 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     }
   }
 
-  Map<_OrientationPhase, List<List<double>>> _selectRepresentativeEmbeddingsByPhase({
-    required int perPhase,
-  }) {
+  Map<_OrientationPhase, List<List<double>>>
+  _selectRepresentativeEmbeddingsByPhase({required int perPhase}) {
     final Map<_OrientationPhase, List<List<double>>> selected =
         <_OrientationPhase, List<List<double>>>{};
 
@@ -1318,6 +1347,9 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
         ? Center(child: Text(_statusMessage ?? 'Preparing camera...'))
         : CameraPreview(controller);
     final bool hasLivePreview = controller != null;
+
+    final int capturedThisPose = _phaseEmbeddings[_currentPhase]?.length ?? 0;
+    final bool showEnrollmentInfo = _enrollmentStarted;
     return Scaffold(
       appBar: AppBar(title: const Text('Enroll your face')),
       body: Column(
@@ -1355,14 +1387,34 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
               },
             ),
           ),
-          if (_statusMessage != null)
+          if (_statusMessage != null || showEnrollmentInfo)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
               child: Card(
                 elevation: 4,
                 child: Padding(
                   padding: const EdgeInsets.all(16),
-                  child: Text(_statusMessage!, textAlign: TextAlign.center),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      if (_statusMessage != null)
+                        Text(_statusMessage!, textAlign: TextAlign.center),
+                      if (showEnrollmentInfo) ...<Widget>[
+                        if (_statusMessage != null) const SizedBox(height: 12),
+                        Text(
+                          'Captured: $capturedThisPose/$_capturesPerPhase',
+                          style: Theme.of(context).textTheme.bodySmall,
+                          textAlign: TextAlign.center,
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Last capture quality: ${_lastCaptureQuality ?? '—'}',
+                          style: Theme.of(context).textTheme.bodySmall,
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                    ],
+                  ),
                 ),
               ),
             ),
