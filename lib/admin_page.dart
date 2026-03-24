@@ -3675,6 +3675,7 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
   }
 
   void _applyClearedEnrollmentPatch(String uid) {
+    _vpsEnrollmentCache[uid] = false;
     _userDocPatches[uid] = <String, dynamic>{_kVpsEnrollmentOverrideKey: false};
   }
 
@@ -5551,12 +5552,14 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                                     'Migrate face enrollment to VPS',
                                                   ),
                                                 ),
-                                              const PopupMenuItem<String>(
-                                                value: 'clearEnrollment',
-                                                child: Text(
-                                                  'Clear face enrollment',
+                                              if (hasEnrollment ||
+                                                  hasLegacyEnrollment)
+                                                const PopupMenuItem<String>(
+                                                  value: 'clearEnrollment',
+                                                  child: Text(
+                                                    'Clear face enrollment',
+                                                  ),
                                                 ),
-                                              ),
                                               const PopupMenuDivider(),
                                               const PopupMenuItem<String>(
                                                 value: 'delete',
