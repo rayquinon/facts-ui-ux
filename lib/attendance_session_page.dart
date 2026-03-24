@@ -26,6 +26,22 @@ List<double> _l2NormalizeVector(List<double> v) {
   return v.map((double x) => x * inv).toList(growable: false);
 }
 
+List<double> _averageVectors(List<List<double>> vectors) {
+  if (vectors.isEmpty) return <double>[];
+  final int length = vectors.first.length;
+  if (length <= 0) return <double>[];
+  final List<double> sums = List<double>.filled(length, 0);
+  for (final List<double> v in vectors) {
+    if (v.length != length) continue;
+    for (int i = 0; i < length; i++) {
+      sums[i] += v[i];
+    }
+  }
+  final double divisor = vectors.length.toDouble();
+  if (divisor <= 0) return <double>[];
+  return sums.map((double value) => value / divisor).toList(growable: false);
+}
+
 class AttendanceSessionConfig {
   const AttendanceSessionConfig({
     required this.classId,
@@ -77,7 +93,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     milliseconds: 300,
   );
   static const Duration _duplicateCaptureCooldown = Duration(seconds: 10);
-  static const Duration _unrecognizedCooldown = Duration(seconds: 4);
+  static const Duration _unrecognizedCooldown = Duration(milliseconds: 1200);
   static const Duration _ambiguousConfirmationWindow = Duration(seconds: 7);
   static const int _ambiguousConfirmationsRequired = 2;
   static const Duration _confirmationWindow = Duration(seconds: 6);
@@ -90,6 +106,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   static const Duration _confirmingFrameProcessingInterval = Duration(
     milliseconds: 120,
   );
+
+  static const int _centroidPrefilterTopK = 12;
 
   final FaceEmbeddingService _embeddingService = FaceEmbeddingService.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -614,6 +632,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
             if (templates.isEmpty) {
               return const _SingleEmbeddingFetchOutcome.failed();
             }
+            final List<double> centroidUnit = _l2NormalizeVector(
+              _averageVectors(templates),
+            );
             final String displayName = _RecognizedStudent._resolveDisplayName(
               doc.data(),
               doc.id,
@@ -623,6 +644,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                 userId: doc.id,
                 displayName: displayName,
                 embeddings: templates,
+                centroidUnit: centroidUnit,
               ),
             );
           } on TimeoutException {
@@ -691,6 +713,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
             failed++;
             continue;
           }
+          final List<double> centroidUnit = _l2NormalizeVector(
+            _averageVectors(templates),
+          );
           final String displayName = _RecognizedStudent._resolveDisplayName(
             doc.data(),
             doc.id,
@@ -700,6 +725,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
               userId: doc.id,
               displayName: displayName,
               embeddings: templates,
+              centroidUnit: centroidUnit,
             ),
           );
         } on VpsEmbeddingsApiException catch (e) {
@@ -864,17 +890,23 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           rawHeight: image.height.toDouble(),
         );
 
-        // Prefer aligned embeddings when both eyes are available.
-        // If landmarks are missing, fall back to a standard bbox crop so we
-        // don't get stuck waiting for perfect landmark detection.
-        final List<double> embedding = (leftEye != null && rightEye != null)
-            ? await _embeddingService.generateEmbeddingAligned(
-                image,
-                bbox,
-                leftEye: leftEye,
-                rightEye: rightEye,
-              )
-            : await _embeddingService.generateEmbedding(image, bbox);
+        // Attendance matching is tuned for consistently aligned embeddings.
+        // If we can't see both eyes clearly, skip this capture to avoid
+        // low-quality probes that tend to cause "no match" loops or
+        // occasional false positives.
+        if (leftEye == null || rightEye == null) {
+          _lastCaptureTime = _now();
+          _updateStatus('Hold still and look at the camera.');
+          return;
+        }
+
+        final List<double> embedding = await _embeddingService
+            .generateEmbeddingAligned(
+              image,
+              bbox,
+              leftEye: leftEye,
+              rightEye: rightEye,
+            );
         _lastCaptureTime = _now();
         await _handleEmbeddingCapture(embedding);
       }
@@ -1129,35 +1161,53 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       return _MatchResult(embedding: embedding, similarity: -1);
     }
 
+    final Iterable<_RecognizedStudent> searchSpace;
+    if (_roster.length <= _centroidPrefilterTopK) {
+      searchSpace = _roster;
+    } else {
+      // Speed: prefilter by centroid similarity so we only do full template
+      // scoring on the most likely candidates.
+      final List<(_RecognizedStudent, double)> scored =
+          <(_RecognizedStudent, double)>[];
+      for (final _RecognizedStudent student in _roster) {
+        if (student.embeddings.isEmpty) continue;
+        if (student.centroidUnit.isEmpty) continue;
+        final double sim = _cosineSimilarityNormalized(
+          probe,
+          student.centroidUnit,
+        );
+        scored.add((student, sim));
+      }
+      scored.sort((a, b) => b.$2.compareTo(a.$2));
+      searchSpace = scored.take(_centroidPrefilterTopK).map((e) => e.$1);
+    }
+
     _RecognizedStudent? bestCandidate;
     double bestScore = -1;
     double secondBestScore = -1;
     double bestCandidateBestTemplate = -1;
     int bestCandidateHitCount = 0;
 
-    // Compare on a per-student basis. To reduce false positives, we:
-    // - score each student by the average of their top-2 template similarities
-    //   (or top-1 if only 1 template)
-    // - keep a count of templates that strongly match the probe
-    for (final _RecognizedStudent student in _roster) {
+    // Compare on a per-student basis.
+    // Important: enrollment stores templates from multiple poses; using an
+    // average of top-2 similarities can unfairly penalize correct matches.
+    // We instead score by the best-matching template, and then use template-hit
+    // count + margin to reduce false positives.
+    for (final _RecognizedStudent student in searchSpace) {
       if (student.embeddings.isEmpty) continue;
-      final List<double> sims = <double>[];
+      double bestTemplate = -1;
       int hitCount = 0;
       for (final List<double> candidate in student.embeddings) {
         final double similarity = _cosineSimilarityNormalized(probe, candidate);
-        sims.add(similarity);
+        if (similarity > bestTemplate) {
+          bestTemplate = similarity;
+        }
         if (similarity >= _templateHitThreshold) {
           hitCount++;
         }
       }
 
-      sims.sort((double a, double b) => b.compareTo(a));
-      final double bestTemplate = sims.first;
-      final double secondTemplate = sims.length > 1 ? sims[1] : -1;
-      final double score = sims.length > 1
-          ? ((bestTemplate + secondTemplate) / 2.0)
-          : bestTemplate;
-
+      final double score = bestTemplate;
       if (score > bestScore) {
         secondBestScore = bestScore;
         bestScore = score;
@@ -2208,11 +2258,13 @@ class _RecognizedStudent {
     required this.userId,
     required this.displayName,
     required this.embeddings,
+    required this.centroidUnit,
   });
 
   final String userId;
   final String displayName;
   final List<List<double>> embeddings;
+  final List<double> centroidUnit;
 
   static String _resolveDisplayName(Map<String, dynamic> data, String docId) {
     const List<String> candidateKeys = <String>[
