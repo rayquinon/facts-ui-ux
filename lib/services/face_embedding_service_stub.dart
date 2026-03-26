@@ -55,6 +55,16 @@ class FaceEmbeddingService {
     return generateEmbedding(image, boundingBox);
   }
 
+  Future<List<double>> generateEmbeddingAlignedLegacy(
+    CameraImage image,
+    Rect boundingBox, {
+    Offset? leftEye,
+    Offset? rightEye,
+  }) async {
+    // Web builds do not use real face alignment/ONNX.
+    return generateEmbedding(image, boundingBox);
+  }
+
   Future<List<double>> generateEmbeddingFromImage(
     imglib.Image rgbImage,
     Rect boundingBox,

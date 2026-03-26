@@ -3417,6 +3417,11 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
   bool _showInstructors = true;
   String _searchQuery = '';
 
+  List<String> _availableSections = <String>[];
+  bool _loadingSections = false;
+  String? _sectionsError;
+  String? _selectedStudentSectionFilter;
+
   bool _multiSelectEnabled = false;
   bool _bulkActionRunning = false;
   _BulkProgressInfo? _bulkProgress;
@@ -3631,6 +3636,7 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     }
 
     final String q = _searchQuery;
+    final String? sectionFilter = _selectedStudentSectionFilter;
 
     final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
         _loadedUserDocs
@@ -3649,6 +3655,15 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                 return _showInstructors;
               }
               return true;
+            })
+            .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+              if (sectionFilter == null || sectionFilter.isEmpty) return true;
+              final Map<String, dynamic> data = _patchedUserData(doc);
+              final String role = ((data['role'] as String?) ?? '')
+                  .toLowerCase();
+              if (role != 'student') return true;
+              final String section = _resolveStudentSection(data);
+              return section == sectionFilter;
             })
             .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
               if (q.isEmpty) return true;
@@ -3788,6 +3803,60 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
   void initState() {
     super.initState();
     _refreshUsers();
+    _loadSectionsForUserFilter();
+  }
+
+  Future<void> _loadSectionsForUserFilter() async {
+    setState(() {
+      _loadingSections = true;
+      _sectionsError = null;
+    });
+
+    try {
+      final QuerySnapshot<Map<String, dynamic>> snapshot =
+          await _firestore.collection('subjects').get();
+      final Set<String> uniqueSections = <String>{};
+      for (final QueryDocumentSnapshot<Map<String, dynamic>> doc
+          in snapshot.docs) {
+        final List<dynamic> sections =
+            (doc.data()['sections'] as List<dynamic>? ?? <dynamic>[]);
+        for (final dynamic entry in sections) {
+          final String normalized = entry.toString().trim();
+          if (normalized.isNotEmpty) {
+            uniqueSections.add(normalized);
+          }
+        }
+      }
+
+      final List<String> sorted = uniqueSections.toList()..sort();
+      if (!mounted) return;
+      setState(() {
+        _availableSections = sorted;
+        if (_selectedStudentSectionFilter != null &&
+            !_availableSections.contains(_selectedStudentSectionFilter)) {
+          _selectedStudentSectionFilter = null;
+        }
+        if (_availableSections.isEmpty) {
+          _sectionsError =
+              'No sections found. Add sections to subjects first.';
+        }
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _sectionsError = 'Failed to load sections. $error');
+    } finally {
+      if (mounted) {
+        setState(() => _loadingSections = false);
+      }
+    }
+  }
+
+  String _resolveStudentSection(Map<String, dynamic> data) {
+    final String direct = (data['section'] as String?)?.trim() ?? '';
+    if (direct.isNotEmpty) return direct;
+    final String legacy = (data['studentSection'] as String?)?.trim() ?? '';
+    if (legacy.isNotEmpty) return legacy;
+    return '';
   }
 
   void _toggleMultiSelect() {
@@ -4221,6 +4290,18 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     Query<Map<String, dynamic>> q = _firestore
         .collection('users')
         .orderBy(FieldPath.documentId);
+
+    // Push role/section filtering into Firestore when possible.
+    if (_showStudents && !_showInstructors) {
+      q = q.where('role', isEqualTo: 'student');
+      final String? sectionFilter = _selectedStudentSectionFilter;
+      if (sectionFilter != null && sectionFilter.isNotEmpty) {
+        q = q.where('section', isEqualTo: sectionFilter);
+      }
+    } else if (_showInstructors && !_showStudents) {
+      q = q.where('role', isEqualTo: 'instructor');
+    }
+
     if (_lastUserDoc != null) {
       q = q.startAfterDocument(_lastUserDoc!);
     }
@@ -4301,6 +4382,14 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
       q = q.where('role', isEqualTo: 'instructor');
     }
 
+    final String? sectionFilter = _selectedStudentSectionFilter;
+    if (sectionFilter != null &&
+        sectionFilter.isNotEmpty &&
+        _showStudents &&
+        !_showInstructors) {
+      q = q.where('section', isEqualTo: sectionFilter);
+    }
+
     if (startAfter != null) {
       q = q.startAfterDocument(startAfter);
     }
@@ -4316,6 +4405,12 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     final String role = ((data['role'] as String?) ?? '').toLowerCase();
     if (role == 'student' && !_showStudents) return false;
     if (role == 'instructor' && !_showInstructors) return false;
+
+    final String? sectionFilter = _selectedStudentSectionFilter;
+    if (sectionFilter != null && sectionFilter.isNotEmpty && role == 'student') {
+      final String section = _resolveStudentSection(data);
+      if (section != sectionFilter) return false;
+    }
 
     final String q = _searchQuery;
     if (q.isNotEmpty && !_buildSearchHaystack(data, doc.id).contains(q)) {
@@ -5289,6 +5384,55 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                       },
                     ),
                   ],
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: 320,
+                  child: DropdownButtonFormField<String?>(
+                    key: ValueKey<String?>(_selectedStudentSectionFilter),
+                    initialValue: _selectedStudentSectionFilter,
+                    decoration: InputDecoration(
+                      labelText: 'Section (students)',
+                      helperText: _sectionsError,
+                      suffixIcon: _loadingSections
+                          ? const Padding(
+                              padding: EdgeInsets.all(12),
+                              child: SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              ),
+                            )
+                          : null,
+                    ),
+                    items: <DropdownMenuItem<String?>>[
+                      const DropdownMenuItem<String?>(
+                        value: null,
+                        child: Text('All sections'),
+                      ),
+                      ..._availableSections.map(
+                        (String section) => DropdownMenuItem<String?>(
+                          value: section,
+                          child: Text(
+                            section,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ),
+                    ],
+                    onChanged:
+                        (_loadingSections || _availableSections.isEmpty)
+                            ? null
+                            : (String? value) {
+                                setState(() {
+                                  _selectedStudentSectionFilter = value;
+                                  _resetUsersPagination();
+                                });
+                                _refreshUsers();
+                              },
+                  ),
                 ),
                 const SizedBox(height: 8),
                 Builder(

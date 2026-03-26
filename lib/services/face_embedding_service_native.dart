@@ -20,6 +20,7 @@ class FaceEmbeddingService {
       ImageNormalizationService();
 
   OrtSession? _session;
+  String _sessionProvider = 'cpu';
   late String _inputName;
   late List<int> _inputShape;
   late List<int> _outputShape;
@@ -27,21 +28,34 @@ class FaceEmbeddingService {
   int? _inputSize;
   int? _embeddingLength;
 
+  int _debugInferenceCount = 0;
+
+  static const bool _enableOrtGraphOptimizations = true;
+  static const bool _enableOrtExecutionProviders = true;
+
   /// Initializes the ONNX Runtime session lazily.
   Future<void> initialize() async {
     if (_session != null) return;
-
-    OrtSessionOptions? sessionOptions;
     try {
       OrtEnv.instance.init();
-      sessionOptions = OrtSessionOptions()
-        ..setIntraOpNumThreads(2)
-        ..setInterOpNumThreads(2);
+
       final File modelFile = await ModelManager.instance.getModelFile(
         'face_embedding.onnx',
       );
       final Uint8List rawBytes = await modelFile.readAsBytes();
-      _session = OrtSession.fromBuffer(rawBytes, sessionOptions);
+
+      final Stopwatch initWatch = Stopwatch()..start();
+      final ({OrtSession session, String provider}) result =
+          _createOptimizedSession(rawBytes);
+      _session = result.session;
+      _sessionProvider = result.provider;
+      initWatch.stop();
+      if (kDebugMode) {
+        debugPrint(
+          'ORT session init ($_sessionProvider) took ${initWatch.elapsedMilliseconds}ms',
+        );
+      }
+
       _inputName = _session!.inputNames.first;
       // Use the known face-embedding model tensor shapes. This avoids relying
       // on package-private onnxruntime bindings (lib/src) just to read shapes.
@@ -54,9 +68,8 @@ class FaceEmbeddingService {
       debugPrint('Failed to initialize ONNX model: $error\n$stackTrace');
       _session?.release();
       _session = null;
+      _sessionProvider = 'cpu';
       rethrow;
-    } finally {
-      sessionOptions?.release();
     }
   }
 
@@ -97,6 +110,31 @@ class FaceEmbeddingService {
     return _runModel(inputBuffer);
   }
 
+  /// Legacy-compat embedding path.
+  ///
+  /// This reproduces the older YUV_420_888 UV plane indexing behavior that
+  /// incorrectly assumed U/V share the same row/pixel stride. Some previously
+  /// enrolled templates may have been produced on affected devices and can
+  /// match better against this legacy conversion.
+  Future<List<double>> generateEmbeddingAlignedLegacy(
+    CameraImage image,
+    Rect boundingBox, {
+    Offset? leftEye,
+    Offset? rightEye,
+  }) async {
+    if (_session == null) {
+      await initialize();
+    }
+    final Float32List inputBuffer = _preprocessCameraImageAligned(
+      image,
+      boundingBox,
+      leftEye: leftEye,
+      rightEye: rightEye,
+      legacyUvIndexing: true,
+    );
+    return _runModel(inputBuffer);
+  }
+
   /// Generates a face embedding from an RGB [imglib.Image] and bounding box.
   Future<List<double>> generateEmbeddingFromImage(
     imglib.Image rgbImage,
@@ -110,15 +148,19 @@ class FaceEmbeddingService {
   }
 
   Future<List<double>> _runModel(Float32List inputBuffer) async {
+    final Stopwatch? runWatch = kDebugMode ? (Stopwatch()..start()) : null;
     final OrtValueTensor inputTensor = OrtValueTensor.createTensorWithDataList(
       inputBuffer,
       _inputShape,
     );
     final OrtRunOptions runOptions = OrtRunOptions();
+    Stopwatch? ortWatch;
     try {
+      ortWatch = kDebugMode ? (Stopwatch()..start()) : null;
       final List<OrtValue?> outputs = _session!.run(runOptions, {
         _inputName: inputTensor,
       });
+      ortWatch?.stop();
       try {
         final dynamic rawOutput = outputs.first?.value;
         final List<double> embedding = _flattenToDoubleList(
@@ -133,6 +175,95 @@ class FaceEmbeddingService {
     } finally {
       inputTensor.release();
       runOptions.release();
+      runWatch?.stop();
+
+      if (kDebugMode) {
+        _debugInferenceCount++;
+        if (_debugInferenceCount == 1 || _debugInferenceCount % 25 == 0) {
+          debugPrint(
+            'ORT run ($_sessionProvider) ort ${ortWatch?.elapsedMilliseconds ?? 0}ms total ${runWatch?.elapsedMilliseconds ?? 0}ms',
+          );
+        }
+      }
+    }
+  }
+
+  ({OrtSession session, String provider}) _createOptimizedSession(
+    Uint8List modelBytes,
+  ) {
+    if (!_enableOrtExecutionProviders) {
+      return (session: _createCpuSession(modelBytes), provider: 'cpu');
+    }
+
+    if (Platform.isAndroid) {
+      final List<({String name, OrtSession Function() create})> attempts =
+          <({String name, OrtSession Function() create})>[
+            (
+              name: 'nnapi',
+              create: () => _createSessionWithOptions(
+                modelBytes,
+                providerSetup: (options) {
+                  options.appendNnapiProvider(NnapiFlags.useNone);
+                },
+              ),
+            ),
+            (
+              name: 'xnnpack',
+              create: () => _createSessionWithOptions(
+                modelBytes,
+                providerSetup: (options) {
+                  options.appendXnnpackProvider();
+                },
+              ),
+            ),
+          ];
+
+      for (final attempt in attempts) {
+        try {
+          final OrtSession session = attempt.create();
+          return (session: session, provider: attempt.name);
+        } catch (error, stackTrace) {
+          if (kDebugMode) {
+            debugPrint(
+              'ORT provider init failed (${attempt.name}); falling back. $error\n$stackTrace',
+            );
+          }
+        }
+      }
+    }
+
+    return (session: _createCpuSession(modelBytes), provider: 'cpu');
+  }
+
+  OrtSession _createCpuSession(Uint8List modelBytes) {
+    return _createSessionWithOptions(
+      modelBytes,
+      providerSetup: (options) {
+        // Default is CPU; we keep this explicit (arena allocator) to avoid
+        // surprises when providers are disabled.
+        options.appendCPUProvider(CPUFlags.useArena);
+      },
+    );
+  }
+
+  OrtSession _createSessionWithOptions(
+    Uint8List modelBytes, {
+    required void Function(OrtSessionOptions options) providerSetup,
+  }) {
+    OrtSessionOptions? sessionOptions;
+    try {
+      sessionOptions = OrtSessionOptions()
+        ..setIntraOpNumThreads(2)
+        ..setInterOpNumThreads(2);
+      if (_enableOrtGraphOptimizations) {
+        sessionOptions.setSessionGraphOptimizationLevel(
+          GraphOptimizationLevel.ortEnableAll,
+        );
+      }
+      providerSetup(sessionOptions);
+      return OrtSession.fromBuffer(modelBytes, sessionOptions);
+    } finally {
+      sessionOptions?.release();
     }
   }
 
@@ -143,8 +274,19 @@ class FaceEmbeddingService {
     if (_inputSize == null) {
       throw StateError('Embedding model is not initialized.');
     }
-    final imglib.Image rgbImage = _convertYUV420ToImage(cameraImage);
-    return _preprocessRgbImage(rgbImage, boundingBox);
+
+    // Performance: convert only the face ROI from YUV -> RGB, instead of the
+    // full camera frame.
+    final math.Rectangle<int> cropRect = _boundingBoxToRect(
+      boundingBox,
+      imageWidth: cameraImage.width,
+      imageHeight: cameraImage.height,
+    );
+    final imglib.Image croppedRgb = _convertYuv420ToImageRegion(
+      cameraImage,
+      cropRect,
+    );
+    return _preprocessCroppedRgbImage(croppedRgb);
   }
 
   Float32List _preprocessCameraImageAligned(
@@ -152,16 +294,49 @@ class FaceEmbeddingService {
     Rect boundingBox, {
     required Offset? leftEye,
     required Offset? rightEye,
+    bool legacyUvIndexing = false,
   }) {
     if (_inputSize == null) {
       throw StateError('Embedding model is not initialized.');
     }
-    final imglib.Image rgbImage = _convertYUV420ToImage(cameraImage);
-    return _preprocessRgbImageAligned(
-      rgbImage,
+
+    // Performance: convert only a region around the face/eyes.
+    // Behavior: preserve the original face-size gating based on the full frame
+    // dimensions.
+    final math.Rectangle<int> roiRect = _alignmentRoiFromFrame(
       boundingBox,
       leftEye: leftEye,
       rightEye: rightEye,
+      imageWidth: cameraImage.width,
+      imageHeight: cameraImage.height,
+    );
+    final imglib.Image roiRgb = _convertYuv420ToImageRegion(
+      cameraImage,
+      roiRect,
+      legacyUvIndexing: legacyUvIndexing,
+    );
+
+    final Rect shiftedBbox = boundingBox.shift(
+      Offset(-roiRect.left.toDouble(), -roiRect.top.toDouble()),
+    );
+    final Offset? shiftedLeftEye = leftEye?.translate(
+      -roiRect.left.toDouble(),
+      -roiRect.top.toDouble(),
+    );
+    final Offset? shiftedRightEye = rightEye?.translate(
+      -roiRect.left.toDouble(),
+      -roiRect.top.toDouble(),
+    );
+
+    return _preprocessRgbImageAligned(
+      roiRgb,
+      shiftedBbox,
+      leftEye: shiftedLeftEye,
+      rightEye: shiftedRightEye,
+      sourceMinDimOverride: math.min(
+        cameraImage.width.toDouble(),
+        cameraImage.height.toDouble(),
+      ),
     );
   }
 
@@ -178,44 +353,7 @@ class FaceEmbeddingService {
       width: cropRect.width,
       height: cropRect.height,
     );
-    final imglib.Image resized = imglib.copyResize(
-      cropped,
-      width: _inputSize!,
-      height: _inputSize!,
-      interpolation: imglib.Interpolation.cubic,
-    );
-    final imglib.Image processed = _imageNormalizer.normalize(resized);
-
-    final int planeSize = _inputSize! * _inputSize!;
-    final Float32List buffer = Float32List(planeSize * 3);
-    if (_channelsFirst) {
-      final int gOffset = planeSize;
-      final int bOffset = planeSize * 2;
-      for (int y = 0; y < _inputSize!; y++) {
-        for (int x = 0; x < _inputSize!; x++) {
-          final int idx = y * _inputSize! + x;
-          final _NormalizedPixel pixel = _normalizePixel(
-            processed.getPixel(x, y),
-          );
-          buffer[idx] = pixel.r;
-          buffer[gOffset + idx] = pixel.g;
-          buffer[bOffset + idx] = pixel.b;
-        }
-      }
-    } else {
-      int offset = 0;
-      for (int y = 0; y < _inputSize!; y++) {
-        for (int x = 0; x < _inputSize!; x++) {
-          final _NormalizedPixel pixel = _normalizePixel(
-            processed.getPixel(x, y),
-          );
-          buffer[offset++] = pixel.r;
-          buffer[offset++] = pixel.g;
-          buffer[offset++] = pixel.b;
-        }
-      }
-    }
-    return buffer;
+    return _preprocessCroppedRgbImage(cropped);
   }
 
   Float32List _preprocessRgbImageAligned(
@@ -223,6 +361,7 @@ class FaceEmbeddingService {
     Rect boundingBox, {
     required Offset? leftEye,
     required Offset? rightEye,
+    double? sourceMinDimOverride,
   }) {
     // Default: bbox crop with a small margin.
     final Offset faceCenter = boundingBox.center;
@@ -233,10 +372,9 @@ class FaceEmbeddingService {
 
     // If the face is too small in the source frame, the resized 112x112 crop
     // lacks detail and tends to increase false positives.
-    final double minDim = math.min(
-      rgbImage.width.toDouble(),
-      rgbImage.height.toDouble(),
-    );
+    final double minDim =
+        sourceMinDimOverride ??
+        math.min(rgbImage.width.toDouble(), rgbImage.height.toDouble());
     const double minFaceRatio = 0.14;
     if (baseSize.isFinite && baseSize > 0 && minDim.isFinite && minDim > 0) {
       if (baseSize < (minDim * minFaceRatio)) {
@@ -254,39 +392,44 @@ class FaceEmbeddingService {
       final double eyeDist = math.sqrt(dx * dx + dy * dy);
 
       if (eyeDist.isFinite && eyeDist > 2) {
-        final double angle = math.atan2(dy, dx);
-        final double angleDeg = -angle * 180.0 / math.pi;
-        final Offset eyeMid = Offset(
-          (leftEye.dx + rightEye.dx) / 2.0,
-          (leftEye.dy + rightEye.dy) / 2.0,
-        );
-
-        // Translate so eye midpoint is at canvas center, rotate, then crop.
-        final int w = rgbImage.width;
-        final int h = rgbImage.height;
-        final Offset canvasCenter = Offset(w / 2.0, h / 2.0);
-        final int shiftX = (canvasCenter.dx - eyeMid.dx).round();
-        final int shiftY = (canvasCenter.dy - eyeMid.dy).round();
-        final imglib.Image canvas = imglib.Image(width: w, height: h);
-        imglib.compositeImage(canvas, rgbImage, dstX: shiftX, dstY: shiftY);
-        working = imglib.copyRotate(
-          canvas,
-          angle: angleDeg,
-          interpolation: imglib.Interpolation.cubic,
-        );
-
-        // Rotate the face-center offset about the eye midpoint.
-        final Offset offsetToFaceCenter = faceCenter - eyeMid;
-        final double cosA = math.cos(-angle);
-        final double sinA = math.sin(-angle);
-        final Offset rotatedOffset = Offset(
-          offsetToFaceCenter.dx * cosA - offsetToFaceCenter.dy * sinA,
-          offsetToFaceCenter.dx * sinA + offsetToFaceCenter.dy * cosA,
-        );
-        cropCenter = canvasCenter + rotatedOffset;
-
         // Use eye distance as a stabilizer for crop size.
         cropSize = math.max(cropSize, eyeDist * 2.6);
+
+        // Only pay the cost of a rotate when the face is noticeably tilted.
+        // This keeps UI smooth on mid/low-end devices.
+        final double angle = math.atan2(dy, dx);
+        final double angleDeg = -angle * 180.0 / math.pi;
+        const double minTiltForRotationDeg = 7.0;
+        if (angleDeg.abs() >= minTiltForRotationDeg) {
+          final Offset eyeMid = Offset(
+            (leftEye.dx + rightEye.dx) / 2.0,
+            (leftEye.dy + rightEye.dy) / 2.0,
+          );
+
+          // Translate so eye midpoint is at canvas center, rotate, then crop.
+          final int w = rgbImage.width;
+          final int h = rgbImage.height;
+          final Offset canvasCenter = Offset(w / 2.0, h / 2.0);
+          final int shiftX = (canvasCenter.dx - eyeMid.dx).round();
+          final int shiftY = (canvasCenter.dy - eyeMid.dy).round();
+          final imglib.Image canvas = imglib.Image(width: w, height: h);
+          imglib.compositeImage(canvas, rgbImage, dstX: shiftX, dstY: shiftY);
+          working = imglib.copyRotate(
+            canvas,
+            angle: angleDeg,
+            interpolation: imglib.Interpolation.linear,
+          );
+
+          // Rotate the face-center offset about the eye midpoint.
+          final Offset offsetToFaceCenter = faceCenter - eyeMid;
+          final double cosA = math.cos(-angle);
+          final double sinA = math.sin(-angle);
+          final Offset rotatedOffset = Offset(
+            offsetToFaceCenter.dx * cosA - offsetToFaceCenter.dy * sinA,
+            offsetToFaceCenter.dx * sinA + offsetToFaceCenter.dy * cosA,
+          );
+          cropCenter = canvasCenter + rotatedOffset;
+        }
       }
     }
 
@@ -316,12 +459,26 @@ class FaceEmbeddingService {
       cropped,
       width: _inputSize!,
       height: _inputSize!,
-      interpolation: imglib.Interpolation.cubic,
+      interpolation: imglib.Interpolation.linear,
     );
 
     _throwIfLowQuality(resized);
 
-    final imglib.Image processed = _imageNormalizer.normalize(resized);
+    return _preprocessFace112Rgb(resized);
+  }
+
+  Float32List _preprocessCroppedRgbImage(imglib.Image croppedRgb) {
+    final imglib.Image resized = imglib.copyResize(
+      croppedRgb,
+      width: _inputSize!,
+      height: _inputSize!,
+      interpolation: imglib.Interpolation.linear,
+    );
+    return _preprocessFace112Rgb(resized);
+  }
+
+  Float32List _preprocessFace112Rgb(imglib.Image face112) {
+    final imglib.Image processed = _imageNormalizer.normalize(face112);
 
     final int planeSize = _inputSize! * _inputSize!;
     final Float32List buffer = Float32List(planeSize * 3);
@@ -468,23 +625,49 @@ class FaceEmbeddingService {
     );
   }
 
-  static imglib.Image _convertYUV420ToImage(CameraImage image) {
-    final int width = image.width;
-    final int height = image.height;
+  static imglib.Image _convertYuv420ToImageRegion(
+    CameraImage image,
+    math.Rectangle<int> region, {
+    bool legacyUvIndexing = false,
+  }) {
+    final int imageWidth = image.width;
+    final int imageHeight = image.height;
+
+    final int left = region.left.clamp(0, imageWidth);
+    final int top = region.top.clamp(0, imageHeight);
+    final int right = (region.left + region.width).clamp(0, imageWidth);
+    final int bottom = (region.top + region.height).clamp(0, imageHeight);
+    final int width = math.max(right - left, 1);
+    final int height = math.max(bottom - top, 1);
+
     final imglib.Image converted = imglib.Image(width: width, height: height);
     final Plane yPlane = image.planes[0];
     final Plane uPlane = image.planes[1];
     final Plane vPlane = image.planes[2];
-    final int uvRowStride = uPlane.bytesPerRow;
-    final int uvPixelStride = uPlane.bytesPerPixel ?? 1;
+    final int yRowStride = yPlane.bytesPerRow;
+    final int uRowStride = uPlane.bytesPerRow;
+    final int vRowStride = vPlane.bytesPerRow;
+    final int uPixelStride = uPlane.bytesPerPixel ?? 1;
+    final int vPixelStride = vPlane.bytesPerPixel ?? 1;
 
     for (int y = 0; y < height; y++) {
-      final int uvRow = uvRowStride * (y >> 1);
+      final int srcY = top + y;
+      final int uRow = uRowStride * (srcY >> 1);
+      final int vRow =
+          (legacyUvIndexing ? uRowStride : vRowStride) * (srcY >> 1);
+      final int yRow = yRowStride * srcY;
       for (int x = 0; x < width; x++) {
-        final int uvIndex = uvRow + (x >> 1) * uvPixelStride;
-        final int yValue = yPlane.bytes[y * yPlane.bytesPerRow + x];
-        final int uValue = uPlane.bytes[uvIndex];
-        final int vValue = vPlane.bytes[uvIndex];
+        final int srcX = left + x;
+        final int uIndex = uRow + (srcX >> 1) * uPixelStride;
+        final int vIndex =
+            vRow +
+            (srcX >> 1) * (legacyUvIndexing ? uPixelStride : vPixelStride);
+        final int yValue = yPlane.bytes[yRow + srcX];
+        final int uValue = uPlane.bytes[uIndex];
+        final int vValue = vIndex >= 0 && vIndex < vPlane.bytes.length
+            ? vPlane.bytes[vIndex]
+            : vPlane.bytes[(vRowStride * (srcY >> 1)) +
+                  (srcX >> 1) * vPixelStride];
         final int r = (yValue + 1.402 * (vValue - 128)).round().clamp(0, 255);
         final int g =
             (yValue - 0.344136 * (uValue - 128) - 0.714136 * (vValue - 128))
@@ -495,6 +678,48 @@ class FaceEmbeddingService {
       }
     }
     return converted;
+  }
+
+  static math.Rectangle<int> _alignmentRoiFromFrame(
+    Rect bbox, {
+    required Offset? leftEye,
+    required Offset? rightEye,
+    required int imageWidth,
+    required int imageHeight,
+  }) {
+    final double baseSize = math.max(bbox.width.abs(), bbox.height.abs());
+    final double margin = baseSize.isFinite && baseSize > 0
+        ? baseSize * 0.9
+        : 0;
+
+    double minX = bbox.left;
+    double minY = bbox.top;
+    double maxX = bbox.right;
+    double maxY = bbox.bottom;
+    if (leftEye != null) {
+      minX = math.min(minX, leftEye.dx);
+      minY = math.min(minY, leftEye.dy);
+      maxX = math.max(maxX, leftEye.dx);
+      maxY = math.max(maxY, leftEye.dy);
+    }
+    if (rightEye != null) {
+      minX = math.min(minX, rightEye.dx);
+      minY = math.min(minY, rightEye.dy);
+      maxX = math.max(maxX, rightEye.dx);
+      maxY = math.max(maxY, rightEye.dy);
+    }
+
+    final Rect expanded = Rect.fromLTRB(
+      minX - margin,
+      minY - margin,
+      maxX + margin,
+      maxY + margin,
+    );
+    return _boundingBoxToRect(
+      expanded,
+      imageWidth: imageWidth,
+      imageHeight: imageHeight,
+    );
   }
 
   static List<double> _flattenToDoubleList(dynamic value) {

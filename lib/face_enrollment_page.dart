@@ -20,7 +20,11 @@ const double _kGuideAspectRatio = 0.78;
 const double _kGuideCenterToleranceFactor =
     1.05; // strictness factor (smaller = stricter)
 
-const Duration _kMinCaptureInterval = Duration(milliseconds: 700);
+// Enrollment pacing (tap-to-capture): give students time to prepare per step,
+// then capture a short burst of embeddings while holding still.
+const Duration _kPhasePrepDelay = Duration(seconds: 2);
+const Duration _kBurstCaptureInterval = Duration(milliseconds: 1300);
+const Duration _kStabilityRequiredBeforeCapture = Duration(milliseconds: 650);
 
 // MLKit's Face bounding box typically covers the face region (not full head),
 // so size gating must be fairly tolerant to avoid breaking capture when the
@@ -129,11 +133,11 @@ class FaceEnrollmentPage extends StatefulWidget {
 class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   static const VpsEmbeddingsApiClient _vpsClient = VpsEmbeddingsApiClient();
 
-  // Keep enrollment fast while still storing multiple templates for matching.
-  // We capture a few embeddings per pose and store one template per phase.
+  // Capture multiple embeddings per pose and store them all as templates
+  // (3 per phase × 7 phases = 21 templates) to improve coverage.
   static const int _capturesPerPhase = 3;
   static const int _storedEmbeddingsPerPhase = 3;
-  static const Duration _kPhaseCompleteHold = Duration(milliseconds: 650);
+  static const Duration _kPhaseCompleteHold = Duration(milliseconds: 1200);
   static final List<_OrientationPhase> _phaseOrder = <_OrientationPhase>[
     _OrientationPhase.front,
     _OrientationPhase.left,
@@ -157,7 +161,10 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   bool _faceReadyForEnrollment = false;
   bool _enrollmentLocked = false;
   bool _enrollmentLockChecked = false;
-  DateTime? _lastCaptureAt;
+  DateTime? _phaseStartedAt;
+  DateTime? _faceInGuideSince;
+  DateTime? _lastBurstCaptureAt;
+  bool _captureBurstActive = false;
   Size? _lastPreviewContainerSize;
   int _lastRotationCompensation = 0;
   List<double>? _latestEmbedding;
@@ -320,7 +327,10 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
 
     setState(() {
       _enrollmentStarted = true;
-      _lastCaptureAt = null;
+      _phaseStartedAt = DateTime.now();
+      _faceInGuideSince = null;
+      _lastBurstCaptureAt = null;
+      _captureBurstActive = false;
       for (final List<List<double>> bucket in _phaseEmbeddings.values) {
         bucket.clear();
       }
@@ -328,6 +338,35 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       _latestEmbedding = null;
       _lastCaptureQuality = null;
       _statusMessage = _phaseInstruction(_currentPhase);
+    });
+  }
+
+  void _requestCaptureBurst() {
+    if (!_enrollmentStarted || _isSaving || !_cameraReady) return;
+    if (_captureBurstActive) return;
+
+    final List<List<double>> bucket =
+        _phaseEmbeddings[_currentPhase] ?? <List<double>>[];
+    if (bucket.length >= _capturesPerPhase) return;
+
+    final DateTime now = DateTime.now();
+    final DateTime? phaseStartedAt = _phaseStartedAt;
+    if (phaseStartedAt != null &&
+        now.difference(phaseStartedAt) < _kPhasePrepDelay) {
+      _setStatus('Get ready... then tap Capture.');
+      return;
+    }
+
+    if (!_faceReadyForEnrollment) {
+      _setStatus('Align your face inside the oval, then tap Capture.');
+      return;
+    }
+
+    setState(() {
+      _captureBurstActive = true;
+      _lastBurstCaptureAt = null;
+      _lastCaptureQuality = null;
+      _statusMessage = 'Capturing... 0/$_capturesPerPhase';
     });
   }
 
@@ -450,6 +489,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       if (faces.isEmpty) {
         _updateGuideUiMatch(_GuideMatch.ok);
         _updateFaceReadyState(false);
+        _faceInGuideSince = null;
         if (_enrollmentStarted) {
           _updateNoFaceStatus();
         } else {
@@ -484,6 +524,11 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
 
         if (_enrollmentStarted) {
           _updateFaceReadyState(withinGuideForCapture);
+          if (withinGuideForCapture) {
+            _faceInGuideSince ??= DateTime.now();
+          } else {
+            _faceInGuideSince = null;
+          }
         } else {
           _updateFaceReadyState(readyToStart);
           if (guideMatch != _GuideMatch.ok) {
@@ -495,55 +540,85 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
           }
         }
         if (_enrollmentStarted) {
-          if (!withinGuideForCapture) {
-            _updateGuideStatus(guideMatch, phase: _currentPhase);
-          } else if (_embeddingService.isReady) {
-            final DateTime now = DateTime.now();
-            final DateTime? last = _lastCaptureAt;
-            if (last != null && now.difference(last) < _kMinCaptureInterval) {
-              return;
-            }
-            final Rect embeddingBbox = _mapMlKitBboxToRaw(
-              bbox,
-              rotationCompensation: _lastRotationCompensation,
-              rawWidth: image.width.toDouble(),
-              rawHeight: image.height.toDouble(),
-            );
-            final Offset? leftEye = _mapMlKitLandmarkToRaw(
-              face.landmarks[FaceLandmarkType.leftEye],
-              rotationCompensation: _lastRotationCompensation,
-              rawWidth: image.width.toDouble(),
-              rawHeight: image.height.toDouble(),
-            );
-            final Offset? rightEye = _mapMlKitLandmarkToRaw(
-              face.landmarks[FaceLandmarkType.rightEye],
-              rotationCompensation: _lastRotationCompensation,
-              rawWidth: image.width.toDouble(),
-              rawHeight: image.height.toDouble(),
-            );
+          final DateTime now = DateTime.now();
+          final DateTime? phaseStartedAt = _phaseStartedAt;
+          final bool prepDone = phaseStartedAt == null
+              ? true
+              : now.difference(phaseStartedAt) >= _kPhasePrepDelay;
 
-            // Enrollment templates should be consistently aligned. If we can't
-            // see both eyes clearly, skip this capture.
-            if (leftEye == null || rightEye == null) {
-              _lastCaptureAt = now;
-              if (mounted) {
-                setState(() {
-                  _statusMessage = 'Hold still and face the camera.';
-                  _lastCaptureQuality = 'Eyes not detected';
-                });
-              }
-              return;
+          if (!_captureBurstActive) {
+            if (!withinGuideForCapture) {
+              _updateGuideStatus(guideMatch, phase: _currentPhase);
+            } else if (!prepDone) {
+              _setStatus('Get ready... then tap Capture.');
+            } else {
+              _setStatus('Ready. Tap Capture when you are set.');
             }
-            final List<double> embedding = await _embeddingService
-                .generateEmbeddingAligned(
-                  image,
-                  embeddingBbox,
-                  leftEye: leftEye,
-                  rightEye: rightEye,
-                );
-            await _recordEmbedding(embedding);
-            _lastCaptureAt = now;
+            return;
           }
+
+          // Burst capture in progress.
+          if (!withinGuideForCapture) {
+            _setStatus('Keep your face inside the oval to continue capturing.');
+            return;
+          }
+          if (!_embeddingService.isReady) {
+            _setStatus('Preparing model...');
+            return;
+          }
+
+          final DateTime? inGuideSince = _faceInGuideSince;
+          if (inGuideSince == null ||
+              now.difference(inGuideSince) < _kStabilityRequiredBeforeCapture) {
+            _setStatus('Hold still...');
+            return;
+          }
+
+          final DateTime? lastBurst = _lastBurstCaptureAt;
+          if (lastBurst != null &&
+              now.difference(lastBurst) < _kBurstCaptureInterval) {
+            return;
+          }
+
+          final Rect embeddingBbox = _mapMlKitBboxToRaw(
+            bbox,
+            rotationCompensation: _lastRotationCompensation,
+            rawWidth: image.width.toDouble(),
+            rawHeight: image.height.toDouble(),
+          );
+          final Offset? leftEye = _mapMlKitLandmarkToRaw(
+            face.landmarks[FaceLandmarkType.leftEye],
+            rotationCompensation: _lastRotationCompensation,
+            rawWidth: image.width.toDouble(),
+            rawHeight: image.height.toDouble(),
+          );
+          final Offset? rightEye = _mapMlKitLandmarkToRaw(
+            face.landmarks[FaceLandmarkType.rightEye],
+            rotationCompensation: _lastRotationCompensation,
+            rawWidth: image.width.toDouble(),
+            rawHeight: image.height.toDouble(),
+          );
+
+          // Enrollment templates should be consistently aligned. If we can't
+          // see both eyes clearly, skip this capture (but rate-limit attempts).
+          if (leftEye == null || rightEye == null) {
+            _lastBurstCaptureAt = now;
+            _setStatus(
+              'Hold still and face the camera.',
+              quality: 'Eyes not detected',
+            );
+            return;
+          }
+
+          final List<double> embedding = await _embeddingService
+              .generateEmbeddingAligned(
+                image,
+                embeddingBbox,
+                leftEye: leftEye,
+                rightEye: rightEye,
+              );
+          _lastBurstCaptureAt = now;
+          await _recordEmbedding(embedding);
         }
       }
     } on FaceQualityException catch (error) {
@@ -831,7 +906,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
         final int remaining = _capturesPerPhase - captured;
         _lastCaptureQuality = 'OK';
         _statusMessage =
-            '${_phaseLabel(phase)} capture $captured/$_capturesPerPhase. Hold steady for $remaining more.';
+            'Captured $captured/$_capturesPerPhase. Hold steady for $remaining more...';
       });
       return;
     }
@@ -841,8 +916,8 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       final _OrientationPhase nextPhase = _phaseOrder[_currentPhaseIndex + 1];
       setState(() {
         _lastCaptureQuality = 'OK';
-        _statusMessage =
-            '${_phaseLabel(phase)} capture $captured/$_capturesPerPhase. Great!';
+        _statusMessage = 'Captured $captured/$_capturesPerPhase. Great!';
+        _captureBurstActive = false;
       });
 
       // Give the user a moment to see the final 3/3 feedback before moving on.
@@ -856,7 +931,9 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
 
       setState(() {
         _currentPhaseIndex++;
-        _lastCaptureAt = null;
+        _phaseStartedAt = DateTime.now();
+        _faceInGuideSince = null;
+        _lastBurstCaptureAt = null;
         _statusMessage = _phaseInstruction(_currentPhase);
       });
       return;
@@ -868,6 +945,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       _latestEmbedding = _averageAllEmbeddings();
       _lastCaptureQuality = 'OK';
       _statusMessage = 'Captures complete. Saving your profile...';
+      _captureBurstActive = false;
       _stopStreams();
 
       if (!_autoSaveTriggered) {
@@ -901,9 +979,9 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       _OrientationPhase.down =>
         'Tilt your chin slightly DOWN (look a bit lower) while keeping your face inside the oval.',
       _OrientationPhase.far =>
-        'Step back a bit so your face looks smaller inside the oval. Hold still for 3 quick captures.',
+        'Step back a bit so your face looks smaller inside the oval. When ready, tap Capture and hold still for 3 shots.',
       _OrientationPhase.near =>
-        'Move closer so your face fills more of the oval. Hold still for 3 quick captures.',
+        'Move closer so your face fills more of the oval. When ready, tap Capture and hold still for 3 shots.',
       _OrientationPhase.front => 'Face forward and stay centered in the oval.',
     };
 
@@ -923,7 +1001,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
               const SizedBox(height: 8),
               const Text('• Keep eyes on the camera'),
               const SizedBox(height: 4),
-              const Text('• Hold still for 3 quick captures'),
+              const Text('• Tap Capture, then hold still for 3 shots'),
               const SizedBox(height: 4),
               const Text('• Avoid strong backlight'),
             ],
@@ -959,12 +1037,6 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
 
   _OrientationPhase get _currentPhase => _phaseOrder[_currentPhaseIndex];
 
-  bool get _isReadyToSave =>
-      _phaseEmbeddings.values.every(
-        (List<List<double>> bucket) => bucket.length >= _capturesPerPhase,
-      ) &&
-      (_latestEmbedding?.isNotEmpty ?? false);
-
   String _phaseLabel(_OrientationPhase phase) {
     switch (phase) {
       case _OrientationPhase.front:
@@ -987,7 +1059,21 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   String _phaseInstruction(_OrientationPhase phase) {
     final int step = _phaseOrder.indexOf(phase) + 1;
     final String label = _phaseLabel(phase);
-    return 'Step $step/${_phaseOrder.length}: $label and hold still while we capture $_capturesPerPhase images.';
+    return 'Step $step/${_phaseOrder.length}: $label. Get ready, then tap Capture — we will take $_capturesPerPhase shots.';
+  }
+
+  void _setStatus(String message, {String? quality}) {
+    if (!mounted) return;
+    if (_statusMessage == message &&
+        (quality == null || _lastCaptureQuality == quality)) {
+      return;
+    }
+    setState(() {
+      _statusMessage = message;
+      if (quality != null) {
+        _lastCaptureQuality = quality;
+      }
+    });
   }
 
   void _stopStreams() {
@@ -1236,13 +1322,16 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
         final List<List<double>> vectors =
             selectedByPhase[phase] ?? <List<double>>[];
         if (vectors.isEmpty) continue;
-        final List<double> averaged = _averageVectors(vectors);
-        final List<double> normalized = _l2NormalizeVector(averaged);
-        final List<double> template = normalized.isNotEmpty
-            ? normalized
-            : averaged;
-        if (template.isNotEmpty) {
-          templates.add(template);
+
+        // Store multiple templates per phase (typically 3) instead of averaging
+        // down to a single template. This improves coverage and reduces
+        // ambiguity during recognition.
+        for (final List<double> v in vectors) {
+          final List<double> normalized = _l2NormalizeVector(v);
+          final List<double> template = normalized.isNotEmpty ? normalized : v;
+          if (template.isNotEmpty) {
+            templates.add(template);
+          }
         }
       }
 
@@ -1479,18 +1568,60 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
         label: Text(canStart ? 'Start Enrollment' : 'Align face to start'),
       );
     }
+
+    final int capturedThisPose = _phaseEmbeddings[_currentPhase]?.length ?? 0;
+    final bool phaseDone = capturedThisPose >= _capturesPerPhase;
+    final DateTime now = DateTime.now();
+    final DateTime? phaseStartedAt = _phaseStartedAt;
+    final bool prepDone = phaseStartedAt == null
+        ? true
+        : now.difference(phaseStartedAt) >= _kPhasePrepDelay;
+
+    if (_isSaving || _autoSaveTriggered) {
+      return FilledButton.icon(
+        onPressed: null,
+        icon: const SizedBox(
+          height: 16,
+          width: 16,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+        label: const Text('Saving...'),
+      );
+    }
+
+    if (_captureBurstActive) {
+      return FilledButton.icon(
+        onPressed: null,
+        icon: const SizedBox(
+          height: 16,
+          width: 16,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+        label: const Text('Capturing...'),
+      );
+    }
+
+    if (phaseDone) {
+      return FilledButton.icon(
+        onPressed: null,
+        icon: const Icon(Icons.check_circle_outline),
+        label: const Text('Step complete'),
+      );
+    }
+
+    if (!prepDone) {
+      return FilledButton.icon(
+        onPressed: null,
+        icon: const Icon(Icons.timer_outlined),
+        label: const Text('Get ready...'),
+      );
+    }
+
+    final bool canCapture = _faceReadyForEnrollment;
     return FilledButton.icon(
-      onPressed: _isSaving || !_isReadyToSave
-          ? null
-          : () => _handleSaveEmbedding(),
-      icon: _isSaving
-          ? const SizedBox(
-              height: 16,
-              width: 16,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          : const Icon(Icons.save_alt),
-      label: Text(_isSaving ? 'Saving...' : 'Save & Continue'),
+      onPressed: canCapture ? _requestCaptureBurst : null,
+      icon: const Icon(Icons.camera_alt_outlined),
+      label: Text(canCapture ? 'Tap to Capture' : 'Align face to capture'),
     );
   }
 }

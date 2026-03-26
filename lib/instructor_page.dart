@@ -62,6 +62,56 @@ class _InstructorPageState extends State<InstructorPage> {
   DateTime get _activeTime =>
       _simulationEnabled ? _simulatedTime : DateTime.now();
 
+  static const String _kSessionPointerCollection = 'attendanceSessionPointers';
+
+  String _dateKey(DateTime dt) {
+    final String y = dt.year.toString().padLeft(4, '0');
+    final String m = dt.month.toString().padLeft(2, '0');
+    final String d = dt.day.toString().padLeft(2, '0');
+    return '$y-$m-$d';
+  }
+
+  String? _pointerIdForSchedule({
+    required _InstructorSchedule schedule,
+    required DateTime activeTime,
+  }) {
+    final String? uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null || uid.isEmpty) return null;
+    final String classId = schedule.classId.trim();
+    if (classId.isEmpty) return null;
+    return '${uid}_${classId}_${_dateKey(activeTime)}';
+  }
+
+  Future<void> _completeExpiredSessionBestEffort({
+    required String sessionId,
+    required String pointerId,
+  }) async {
+    try {
+      await FirebaseFirestore.instance
+          .collection('attendanceSessions')
+          .doc(sessionId)
+          .update(<String, dynamic>{
+            'status': 'completed',
+            'endedAt': FieldValue.serverTimestamp(),
+          });
+    } catch (_) {
+      // Best-effort.
+    }
+
+    try {
+      await FirebaseFirestore.instance
+          .collection(_kSessionPointerCollection)
+          .doc(pointerId)
+          .set(<String, dynamic>{
+            'status': 'completed',
+            'endedAt': FieldValue.serverTimestamp(),
+            'updatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+    } catch (_) {
+      // Best-effort.
+    }
+  }
+
   String _sectionTitle() {
     return switch (_section) {
       _InstructorSection.dashboard => 'Dashboard',
@@ -125,6 +175,7 @@ class _InstructorPageState extends State<InstructorPage> {
           const SizedBox(height: 24),
           _buildSessionControlCard(
             context,
+            activeTime,
             activeSchedule,
             showLoadingState,
             _assignmentError,
@@ -982,7 +1033,10 @@ class _InstructorPageState extends State<InstructorPage> {
     return nearest;
   }
 
-  Future<void> _startRecognitionSession(_InstructorSchedule schedule) async {
+  Future<void> _startRecognitionSession(
+    _InstructorSchedule schedule, {
+    String? resumeSessionId,
+  }) async {
     if (!isAndroidFaceScanningSupported()) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1009,6 +1063,7 @@ class _InstructorPageState extends State<InstructorPage> {
       start: schedule.start,
       end: schedule.end,
       simulatedClockOffset: simulatedClockOffset,
+      resumeSessionId: resumeSessionId,
     );
     try {
       final bool? completed = await Navigator.of(context).push<bool?>(
@@ -1562,6 +1617,7 @@ class _InstructorPageState extends State<InstructorPage> {
 
   Widget _buildSessionControlCard(
     BuildContext context,
+    DateTime activeTime,
     _InstructorSchedule? activeSchedule,
     bool showLoadingState,
     String? errorMessage,
@@ -1609,22 +1665,102 @@ class _InstructorPageState extends State<InstructorPage> {
                 ],
               ),
               const SizedBox(height: 20),
-              FilledButton.icon(
-                onPressed: _isLaunchingSession
-                    ? null
-                    : () => _startRecognitionSession(activeSchedule),
-                icon: _isLaunchingSession
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.play_arrow_rounded),
-                label: Text(
-                  _isLaunchingSession
-                      ? 'Launching...'
-                      : 'Start recognition session',
-                ),
+              Builder(
+                builder: (BuildContext context) {
+                  final String? pointerId = _pointerIdForSchedule(
+                    schedule: activeSchedule,
+                    activeTime: activeTime,
+                  );
+                  if (pointerId == null) {
+                    return FilledButton.icon(
+                      onPressed: _isLaunchingSession
+                          ? null
+                          : () => _startRecognitionSession(activeSchedule),
+                      icon: _isLaunchingSession
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.play_arrow_rounded),
+                      label: Text(
+                        _isLaunchingSession
+                            ? 'Launching...'
+                            : 'Start recognition session',
+                      ),
+                    );
+                  }
+
+                  return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                    stream: FirebaseFirestore.instance
+                        .collection(_kSessionPointerCollection)
+                        .doc(pointerId)
+                        .snapshots(),
+                    builder: (
+                      BuildContext context,
+                      AsyncSnapshot<DocumentSnapshot<Map<String, dynamic>>>
+                          snapshot,
+                    ) {
+                      final Map<String, dynamic>? data = snapshot.data?.data();
+                      final String status =
+                          (data?['status'] as String?)?.toLowerCase() ?? '';
+                      final String sessionId =
+                          (data?['sessionId'] as String?)?.trim() ?? '';
+                      final Timestamp? scheduledEndTs =
+                          data?['scheduledEndAt'] as Timestamp?;
+                      final DateTime? scheduledEnd = scheduledEndTs?.toDate();
+
+                      final bool expired =
+                          scheduledEnd != null &&
+                          (activeTime.isAfter(scheduledEnd) ||
+                              activeTime.isAtSameMomentAs(scheduledEnd));
+                      final bool resumable =
+                          sessionId.isNotEmpty &&
+                          (status == 'active' || status == 'paused') &&
+                          !expired;
+
+                      if (expired &&
+                          sessionId.isNotEmpty &&
+                          status.isNotEmpty &&
+                          status != 'completed') {
+                        Future<void>.microtask(() async {
+                          await _completeExpiredSessionBestEffort(
+                            sessionId: sessionId,
+                            pointerId: pointerId,
+                          );
+                        });
+                      }
+
+                      final String buttonLabel = _isLaunchingSession
+                          ? 'Launching...'
+                          : (resumable
+                            ? 'Continue Session'
+                              : 'Start recognition session');
+
+                      return FilledButton.icon(
+                        onPressed: _isLaunchingSession
+                            ? null
+                            : () => _startRecognitionSession(
+                                  activeSchedule,
+                                  resumeSessionId: resumable ? sessionId : null,
+                                ),
+                        icon: _isLaunchingSession
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : Icon(
+                                resumable
+                                    ? Icons.play_circle_outline
+                                    : Icons.play_arrow_rounded,
+                              ),
+                        label: Text(buttonLabel),
+                      );
+                    },
+                  );
+                },
               ),
               const SizedBox(height: 8),
               OutlinedButton.icon(
