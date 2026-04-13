@@ -402,9 +402,7 @@ class _LoginPageState extends State<LoginPage> {
 
     final String currentLabel =
         '${update.currentVersion}+${update.currentBuildNumber}';
-    final String latestLabel = update.latestVersion.isEmpty
-        ? 'build ${update.latestBuildNumber}'
-        : '${update.latestVersion}+${update.latestBuildNumber}';
+    final String latestLabel = update.effectiveLatestLabel;
 
     if (!update.updateAvailable) {
       if (!showUpToDateDialog) return;

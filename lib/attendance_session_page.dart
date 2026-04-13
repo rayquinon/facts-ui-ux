@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:camera/camera.dart';
@@ -12,6 +13,7 @@ import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 
 import 'services/face_embedding_service.dart';
 import 'services/face_quality_exception.dart';
+import 'services/roster_embeddings_cache.dart';
 import 'services/vps_embeddings_api_client.dart';
 import 'widgets/clay_surface.dart';
 
@@ -80,6 +82,8 @@ class AttendanceSessionPage extends StatefulWidget {
   @override
   State<AttendanceSessionPage> createState() => _AttendanceSessionPageState();
 }
+
+enum _AttendanceSessionViewMode { roster, verify }
 
 class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   // Recognition is strictly gated to minimize false positives.
@@ -187,11 +191,17 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
   List<_RecognizedStudent> _roster = <_RecognizedStudent>[];
+  final RosterEmbeddingsCache _rosterCache = getRosterEmbeddingsCache();
+  DateTime? _rosterCacheUpdatedAtUtc;
   final List<_AttendanceCapture> _recentCaptures = <_AttendanceCapture>[];
   final Map<String, String> _recordedStatuses = <String, String>{};
   final Map<String, DateTime> _lastStudentCaptureTimes = <String, DateTime>{};
   final Set<String> _capturedStudentIds = <String>{};
   final ScrollController _captureListController = ScrollController();
+
+  _AttendanceSessionViewMode _viewMode = _AttendanceSessionViewMode.roster;
+  _RecognizedStudent? _selectedStudent;
+  bool _openingCamera = false;
 
   String? _pendingAmbiguousStudentId;
   int _pendingAmbiguousConfirmations = 0;
@@ -227,6 +237,29 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     });
 
     _initializeSession();
+  }
+
+  void _showSnack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
+  void _resetProbeAndPendingState() {
+    _probeHistoryUnit.clear();
+    _lastProbeSampleAt = null;
+
+    _pendingAmbiguousStudentId = null;
+    _pendingAmbiguousConfirmations = 0;
+    _pendingAmbiguousExpiresAt = null;
+    _pendingAmbiguousStartedAt = null;
+
+    _pendingStudentId = null;
+    _pendingStudentName = null;
+    _pendingConfirmations = 0;
+    _pendingExpiresAt = null;
+    _pendingStartedAt = null;
   }
 
   DateTime _now() {
@@ -280,7 +313,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     _scheduledEndAt ??= _computeScheduledEnd(_sessionStartedAt!);
     setState(() {
       _initializing = true;
-      _statusMessage = 'Preparing attendance session...';
+      _statusMessage = 'Loading roster...';
     });
 
     try {
@@ -292,10 +325,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
       // Best-effort: creating the session document can fail offline.
       final Future<void> sessionDocInit = _ensureSessionDocumentBestEffort();
-
-      setState(() {
-        _statusMessage = 'Opening camera...';
-      });
 
       if (!_recognitionSupported) {
         // Attendance recognition is not supported on web because the web build
@@ -319,22 +348,30 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         return;
       }
 
-      await _initializeDeviceCamera();
-
+      // Camera is initialized lazily after the instructor selects a student.
+      await Future.wait(<Future<void>>[rosterInit, sessionDocInit]);
       if (!mounted) return;
       setState(() {
         _initializing = false;
-        _statusMessage = 'Camera ready. Loading recognition...';
+        _statusMessage = _embeddingService.isReady
+            ? 'Select a student from the roster to begin face verification.'
+            : 'Loading recognition model... You can browse the roster while it loads.';
       });
 
-      // Continue the remaining initialization steps.
-      await Future.wait(<Future<void>>[modelInit, rosterInit, sessionDocInit]);
-
-      if (!mounted) return;
-      setState(() {
-        _statusMessage =
-            'Session live. Keep students centered for best recognition results.';
-      });
+      unawaited(() async {
+        try {
+          await modelInit;
+        } catch (_) {
+          // Best-effort only.
+        }
+        if (!mounted) return;
+        if (_viewMode != _AttendanceSessionViewMode.roster) return;
+        if (_initializing) return;
+        setState(() {
+          _statusMessage =
+              'Select a student from the roster to begin face verification.';
+        });
+      }());
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -446,6 +483,10 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   }
 
   Future<void> _loadRosterEmbeddings() async {
+    // Try to load a cached roster first so offline sessions can still run.
+    // This is best-effort and will be replaced by fresh VPS data when online.
+    await _loadRosterEmbeddingsFromCacheBestEffort();
+
     final CollectionReference<Map<String, dynamic>> usersCollection = _firestore
         .collection('users');
     final Query<Map<String, dynamic>> baseQuery = usersCollection.where(
@@ -560,6 +601,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           await _fetchRosterEmbeddingsFromVps(rosterDocs);
       final List<_RecognizedStudent> roster = outcome.roster;
 
+      await _saveRosterEmbeddingsToCacheBestEffort(roster);
+
       if (mounted) {
         setState(() {
           _roster = roster;
@@ -618,11 +661,134 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     } catch (error, stackTrace) {
       debugPrint('Roster load failed: $error\n$stackTrace');
       if (mounted) {
-        setState(() {
-          _roster = <_RecognizedStudent>[];
-        });
-        _updateStatus('Failed to load roster for recognition.');
+        // If we have a cached roster, keep it; otherwise fall back to empty.
+        if (_roster.isEmpty) {
+          setState(() {
+            _roster = <_RecognizedStudent>[];
+          });
+        }
+        final DateTime? cachedAt = _rosterCacheUpdatedAtUtc;
+        final String cachedLine = cachedAt == null
+            ? ''
+            : ' Using cached roster (saved ${cachedAt.toLocal()}).';
+        _updateStatus('Failed to refresh roster for recognition.$cachedLine');
       }
+    }
+  }
+
+  String _buildRosterCacheKey() {
+    final String classId = widget.config.classId.trim();
+    final String section = (widget.config.section ?? '').trim();
+    final String normalizedSection = section.isEmpty
+        ? 'all'
+        : section.toLowerCase().replaceAll(RegExp(r'\s+'), '-');
+    return 'roster_${classId}_$normalizedSection';
+  }
+
+  List<_RecognizedStudent> _parseRosterFromJson(Object? payload) {
+    if (payload is! Map) return <_RecognizedStudent>[];
+    final Object? rosterObj = payload['roster'];
+    if (rosterObj is! List) return <_RecognizedStudent>[];
+
+    final List<_RecognizedStudent> roster = <_RecognizedStudent>[];
+    for (final Object? item in rosterObj) {
+      if (item is! Map) continue;
+      final String userId = (item['userId'] ?? '').toString().trim();
+      final String displayName = (item['displayName'] ?? '').toString().trim();
+      if (userId.isEmpty || displayName.isEmpty) continue;
+
+      final Object? embObj = item['embeddings'];
+      final Object? centroidObj = item['centroidUnit'];
+      if (embObj is! List || centroidObj is! List) continue;
+
+      final List<List<double>> embeddings = <List<double>>[];
+      for (final Object? e in embObj) {
+        if (e is! List) continue;
+        final List<double> vec = e
+            .whereType<num>()
+            .map((num n) => n.toDouble())
+            .toList(growable: false);
+        if (vec.isNotEmpty) embeddings.add(vec);
+      }
+      final List<double> centroidUnit = centroidObj
+          .whereType<num>()
+          .map((num n) => n.toDouble())
+          .toList(growable: false);
+      if (embeddings.isEmpty || centroidUnit.isEmpty) continue;
+
+      roster.add(
+        _RecognizedStudent(
+          userId: userId,
+          displayName: displayName,
+          embeddings: embeddings,
+          centroidUnit: centroidUnit,
+        ),
+      );
+    }
+
+    roster.sort(
+      (a, b) => a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase()),
+    );
+    return roster;
+  }
+
+  Future<void> _loadRosterEmbeddingsFromCacheBestEffort() async {
+    try {
+      final String key = _buildRosterCacheKey();
+      final String? jsonString = await _rosterCache.readJson(key: key);
+      if (jsonString == null || jsonString.trim().isEmpty) return;
+      final Object? decoded = jsonDecode(jsonString);
+      if (decoded is! Map) return;
+
+      final Object? cachedAt = decoded['cachedAtUtc'];
+      DateTime? cachedAtUtc;
+      if (cachedAt is String) {
+        cachedAtUtc = DateTime.tryParse(cachedAt);
+      }
+
+      final List<_RecognizedStudent> roster = _parseRosterFromJson(decoded);
+      if (roster.isEmpty) return;
+
+      if (!mounted) return;
+      setState(() {
+        _roster = roster;
+        _rosterCacheUpdatedAtUtc = cachedAtUtc;
+      });
+
+      final String when = cachedAtUtc == null
+          ? ''
+          : ' (saved ${cachedAtUtc.toLocal()})';
+      _updateStatus(
+        'Loaded cached roster$when. Will refresh when online.',
+      );
+    } catch (_) {
+      // Best-effort only.
+    }
+  }
+
+  Future<void> _saveRosterEmbeddingsToCacheBestEffort(
+    List<_RecognizedStudent> roster,
+  ) async {
+    if (roster.isEmpty) return;
+    try {
+      final String key = _buildRosterCacheKey();
+      final Map<String, Object?> payload = <String, Object?>{
+        'cachedAtUtc': DateTime.now().toUtc().toIso8601String(),
+        'roster': roster
+            .map(
+              (s) => <String, Object?>{
+                'userId': s.userId,
+                'displayName': s.displayName,
+                'embeddings': s.embeddings,
+                'centroidUnit': s.centroidUnit,
+              },
+            )
+            .toList(growable: false),
+      };
+      await _rosterCache.writeJson(key: key, json: jsonEncode(payload));
+      _rosterCacheUpdatedAtUtc = DateTime.now().toUtc();
+    } catch (_) {
+      // Best-effort only.
     }
   }
 
@@ -907,6 +1073,85 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     setState(() => _cameraController = controller);
   }
 
+  Future<void> _disposeCameraBestEffort() async {
+    final CameraController? controller = _cameraController;
+    _cameraController = null;
+    if (controller == null) return;
+    try {
+      await controller.stopImageStream();
+    } catch (_) {
+      // Best-effort only.
+    }
+    try {
+      await controller.dispose();
+    } catch (_) {
+      // Best-effort only.
+    }
+  }
+
+  Future<void> _enterVerifyMode(_RecognizedStudent student) async {
+    if (_initializing || _isEndingSession) return;
+    if (_shouldEndSessionNow()) {
+      _showSnack('Session has reached the scheduled end time.');
+      return;
+    }
+    if (!_captureEnabled) {
+      _showSnack('Session is paused. Tap Continue session to resume.');
+      return;
+    }
+    if (!_embeddingService.isReady) {
+      _showSnack('Recognition model is still loading. Please wait a moment.');
+      return;
+    }
+    if (_capturedStudentIds.contains(student.userId)) {
+      _showSnack('Already recorded ${student.displayName}.');
+      return;
+    }
+
+    setState(() {
+      _viewMode = _AttendanceSessionViewMode.verify;
+      _selectedStudent = student;
+      _openingCamera = true;
+      _statusMessage = 'Opening camera for ${student.displayName}...';
+    });
+
+    _resetProbeAndPendingState();
+
+    try {
+      if (_cameraController == null ||
+          !(_cameraController?.value.isInitialized ?? false)) {
+        await _initializeDeviceCamera();
+      }
+      if (!mounted) return;
+      setState(() {
+        _openingCamera = false;
+        _statusMessage =
+            'Verifying ${student.displayName}. Keep their face centered.';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      await _disposeCameraBestEffort();
+      setState(() {
+        _openingCamera = false;
+        _viewMode = _AttendanceSessionViewMode.roster;
+        _selectedStudent = null;
+        _statusMessage = 'Failed to open camera: $e';
+      });
+    }
+  }
+
+  Future<void> _exitVerifyMode({String? statusMessage}) async {
+    await _disposeCameraBestEffort();
+    if (!mounted) return;
+    setState(() {
+      _viewMode = _AttendanceSessionViewMode.roster;
+      _selectedStudent = null;
+      _statusMessage =
+          statusMessage ?? 'Select a student from the roster to continue.';
+    });
+    _resetProbeAndPendingState();
+  }
+
   Future<void> _processCameraImage(CameraImage image) async {
     if (!_captureEnabled || _isProcessingFrame || !_embeddingService.isReady) {
       return;
@@ -1037,14 +1282,30 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
               rightEye: rightEye,
             );
         _lastCaptureTime = _now();
-        await _handleEmbeddingCapture(
-          embedding,
-          tuning,
-          sourceImage: image,
-          sourceBbox: bbox,
-          sourceLeftEye: leftEye,
-          sourceRightEye: rightEye,
-        );
+        final _RecognizedStudent? selected = _selectedStudent;
+        if (_viewMode == _AttendanceSessionViewMode.verify &&
+            selected != null) {
+          await _handleSelectedStudentEmbeddingCapture(
+            selected,
+            embedding,
+            tuning,
+            sourceImage: image,
+            sourceBbox: bbox,
+            sourceLeftEye: leftEye,
+            sourceRightEye: rightEye,
+          );
+        } else {
+          // Safety fallback: if camera is running without a selected student,
+          // run the legacy 1:N matcher.
+          await _handleEmbeddingCapture(
+            embedding,
+            tuning,
+            sourceImage: image,
+            sourceBbox: bbox,
+            sourceLeftEye: leftEye,
+            sourceRightEye: rightEye,
+          );
+        }
       }
     } on FaceQualityException catch (error) {
       _lastCaptureTime = _now();
@@ -1413,6 +1674,248 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       }
       return;
     }
+  }
+
+  _MatchResult _matchEmbeddingAgainstStudent(
+    List<double> embedding,
+    _RecognizedStudent selected,
+    _DistanceTuning tuning,
+  ) {
+    final List<double> probe = _l2NormalizeVector(embedding);
+    if (probe.isEmpty) {
+      return _MatchResult(embedding: embedding, similarity: -1);
+    }
+    if (selected.embeddings.isEmpty) {
+      return _MatchResult(embedding: embedding);
+    }
+
+    double bestTemplate = -1;
+    int hitCount = 0;
+    for (final List<double> candidate in selected.embeddings) {
+      final double similarity = _cosineSimilarityNormalized(probe, candidate);
+      if (similarity > bestTemplate) {
+        bestTemplate = similarity;
+      }
+      if (similarity >= _templateHitThreshold) {
+        hitCount++;
+      }
+    }
+
+    if (bestTemplate < tuning.similarityThreshold) {
+      return _MatchResult(
+        embedding: embedding,
+        similarity: bestTemplate,
+        rejectionReason: 'below-threshold',
+      );
+    }
+
+    final int templateCount = selected.embeddings.length;
+    if (templateCount <= 1) {
+      if (bestTemplate < tuning.singleTemplateThreshold) {
+        return _MatchResult(
+          embedding: embedding,
+          similarity: bestTemplate,
+          rejectionReason: 'single-template-too-weak',
+        );
+      }
+    } else {
+      final int requiredHits = math.min(
+        templateCount,
+        templateCount >= 6
+            ? math.max(2, tuning.minTemplateHits)
+            : tuning.minTemplateHits,
+      );
+      if (hitCount < requiredHits) {
+        return _MatchResult(
+          embedding: embedding,
+          similarity: bestTemplate,
+          rejectionReason: 'insufficient-template-agreement ($hitCount/$requiredHits)',
+        );
+      }
+    }
+
+    final double confidence = _similarityToDisplayConfidence(bestTemplate);
+    return _MatchResult(
+      embedding: embedding,
+      student: selected,
+      similarity: bestTemplate,
+      confidence: confidence,
+    );
+  }
+
+  Future<void> _handleSelectedStudentEmbeddingCapture(
+    _RecognizedStudent selected,
+    List<double> embedding,
+    _DistanceTuning tuning, {
+    CameraImage? sourceImage,
+    Rect? sourceBbox,
+    Offset? sourceLeftEye,
+    Offset? sourceRightEye,
+  }) async {
+    final DateTime captureTime = _now();
+
+    // Keep a short rolling average of unit embeddings (same as 1:N flow).
+    final DateTime? lastSampleAt = _lastProbeSampleAt;
+    if (lastSampleAt == null ||
+        captureTime.difference(lastSampleAt) > _probeSmoothingResetAfter) {
+      _probeHistoryUnit.clear();
+    }
+    _lastProbeSampleAt = captureTime;
+
+    final List<double> unit = _l2NormalizeVector(embedding);
+    if (unit.isNotEmpty) {
+      _probeHistoryUnit.add(unit);
+      if (_probeHistoryUnit.length > _probeSmoothingWindow) {
+        _probeHistoryUnit.removeAt(0);
+      }
+    }
+
+    final List<double> smoothed = _probeHistoryUnit.isEmpty
+        ? embedding
+        : _averageVectors(_probeHistoryUnit);
+
+    _MatchResult result = _matchEmbeddingAgainstStudent(smoothed, selected, tuning);
+    List<double> embeddingUsed = smoothed;
+    bool usedLegacy = false;
+    String? legacyDebug;
+
+    if (sourceImage != null &&
+        sourceBbox != null &&
+        sourceLeftEye != null &&
+        sourceRightEye != null &&
+        _shouldTryLegacyFallback(result, tuning)) {
+      try {
+        final List<double> legacyEmbedding = await _embeddingService
+            .generateEmbeddingAlignedLegacy(
+              sourceImage,
+              sourceBbox,
+              leftEye: sourceLeftEye,
+              rightEye: sourceRightEye,
+            );
+        final _MatchResult legacyResult = _matchEmbeddingAgainstStudent(
+          legacyEmbedding,
+          selected,
+          tuning,
+        );
+        final double? lb = legacyResult.similarity;
+        if (lb != null && !lb.isNaN) {
+          legacyDebug = 'Legacy(best ${lb.toStringAsFixed(2)})';
+        }
+
+        // Prefer normal if both accept; otherwise pick the one that accepts.
+        if (legacyResult.student != null && result.student == null) {
+          result = legacyResult;
+          embeddingUsed = legacyEmbedding;
+          usedLegacy = true;
+        }
+      } catch (_) {
+        // Best-effort only.
+      }
+    }
+
+    // If we are no longer verifying the same selected student, ignore.
+    if (_viewMode != _AttendanceSessionViewMode.verify ||
+        _selectedStudent?.userId != selected.userId) {
+      return;
+    }
+
+    if (result.student == null) {
+      // Clear pending confirmation for a mismatch.
+      _pendingStudentId = null;
+      _pendingStudentName = null;
+      _pendingConfirmations = 0;
+      _pendingExpiresAt = null;
+      _pendingStartedAt = null;
+
+      final double best = result.similarity ?? double.nan;
+      final String mode = usedLegacy ? ' (legacy)' : '';
+      final String extra = legacyDebug == null ? '' : '\n$legacyDebug';
+      if (best.isFinite) {
+        _updateStatus(
+          'Face detected but does not match ${selected.displayName}.$mode\n'
+          '(best similarity ${best.toStringAsFixed(2)}, '
+          'threshold ${tuning.similarityThreshold.toStringAsFixed(2)})$extra',
+        );
+      } else {
+        _updateStatus('Face detected but does not match ${selected.displayName}.');
+      }
+      return;
+    }
+
+    // Require a short confirmation window before persisting.
+    final DateTime? expiresAt = _pendingExpiresAt;
+    if (expiresAt != null && captureTime.isAfter(expiresAt)) {
+      _pendingStudentId = null;
+      _pendingStudentName = null;
+      _pendingConfirmations = 0;
+      _pendingExpiresAt = null;
+      _pendingStartedAt = null;
+    }
+
+    final String candidateId = selected.userId;
+    final String candidateName = selected.displayName;
+    if (_pendingStudentId == candidateId) {
+      _pendingConfirmations++;
+    } else {
+      _pendingStudentId = candidateId;
+      _pendingStudentName = candidateName;
+      _pendingConfirmations = 1;
+      _pendingStartedAt = captureTime;
+    }
+    _pendingExpiresAt = captureTime.add(_confirmationWindow);
+
+    final DateTime? startedAt = _pendingStartedAt;
+    if (startedAt != null &&
+        captureTime.difference(startedAt) > _maxConfirmationDuration) {
+      _pendingStudentId = null;
+      _pendingStudentName = null;
+      _pendingConfirmations = 0;
+      _pendingExpiresAt = null;
+      _pendingStartedAt = null;
+      _updateStatus(
+        'Could not confirm ${selected.displayName}. Try again (hold still, better lighting).',
+      );
+      return;
+    }
+
+    final int requiredConfirmations = _requiredConfirmationsFor(result, tuning);
+    if (_pendingConfirmations < requiredConfirmations) {
+      final int remaining = requiredConfirmations - _pendingConfirmations;
+      _updateStatus(
+        'Hold still. Confirming ${selected.displayName}... ($remaining left)',
+      );
+      return;
+    }
+
+    _pendingStudentId = null;
+    _pendingStudentName = null;
+    _pendingConfirmations = 0;
+    _pendingExpiresAt = null;
+    _pendingStartedAt = null;
+
+    // Only recognize/persist a student once per session.
+    if (_capturedStudentIds.contains(candidateId)) {
+      _updateStatus('Already recorded ${selected.displayName} for this session.');
+      await _exitVerifyMode(statusMessage: 'Already recorded ${selected.displayName}.');
+      return;
+    }
+
+    if (_shouldThrottleStudentCapture(candidateId, captureTime)) {
+      _updateStatus('Already recorded ${selected.displayName} recently.');
+      return;
+    }
+
+    _recordLocalCapture(result, captureTime);
+    _capturedStudentIds.add(candidateId);
+    try {
+      await _persistCapture(result, embeddingUsed, captureTime);
+    } catch (_) {
+      _capturedStudentIds.remove(candidateId);
+      rethrow;
+    }
+
+    _showSnack('Recorded ${selected.displayName}.');
+    await _exitVerifyMode(statusMessage: 'Recorded ${selected.displayName}.');
   }
 
   int _requiredConfirmationsFor(_MatchResult result, _DistanceTuning tuning) {
@@ -2175,8 +2678,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
   @override
   void dispose() {
-    _cameraController?.stopImageStream();
-    _cameraController?.dispose();
+    unawaited(_disposeCameraBestEffort());
     _sessionUiTimer?.cancel();
     _faceDetector?.close();
     _captureListController.dispose();
@@ -2247,9 +2749,11 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       );
     }
 
+    final bool inVerify = _viewMode == _AttendanceSessionViewMode.verify;
+    final _RecognizedStudent? selected = _selectedStudent;
     final Widget preview = _buildPreviewPlaceholder();
-    final bool showOvalGuide =
-        !kIsWeb && (_cameraController?.value.isInitialized ?? false);
+    final bool showOvalGuide = !kIsWeb && inVerify &&
+      (_cameraController?.value.isInitialized ?? false);
     final bool endNow = _shouldEndSessionNow();
     final bool canToggleCapture = _recognitionSupported;
     final bool primaryEnabled =
@@ -2266,10 +2770,31 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
               : 'Web not supported');
 
     return PopScope(
-      canPop: true,
+      canPop: !inVerify,
+      onPopInvokedWithResult: (bool didPop, Object? result) {
+        if (didPop) return;
+        if (inVerify) {
+          unawaited(_exitVerifyMode());
+        }
+      },
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('Recognition session'),
+          leading: inVerify
+              ? IconButton(
+                  tooltip: 'Back to roster',
+                  icon: const Icon(Icons.arrow_back),
+                  onPressed: () => _exitVerifyMode(),
+                )
+              : null,
+          title: Text(
+            inVerify
+                ? (selected == null
+                      ? 'Verify student'
+                      : 'Verify ${selected.displayName}')
+                : 'Select student',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
           actions: <Widget>[
             IconButton(
               tooltip: 'Recognized faces',
@@ -2303,52 +2828,142 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           children: <Widget>[
             _SessionHeader(config: config, rosterCount: _roster.length),
             Expanded(
-              child: ClaySurface(
-                margin: const EdgeInsets.all(8),
-                borderRadius: BorderRadius.circular(24),
-                child: Stack(
-                  children: <Widget>[
-                    Positioned.fill(child: preview),
-                    if (showOvalGuide)
-                      const Positioned.fill(child: _OvalFaceGuideOverlay()),
-                    Positioned(
-                      left: 12,
-                      right: 12,
-                      bottom: 12,
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          color: theme.colorScheme.surface.withValues(
-                            alpha: 0.90,
-                          ),
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(
-                            color: theme.colorScheme.outlineVariant.withValues(
-                              alpha: 0.35,
+              child: inVerify
+                  ? ClaySurface(
+                      margin: const EdgeInsets.all(8),
+                      borderRadius: BorderRadius.circular(24),
+                      child: Stack(
+                        children: <Widget>[
+                          Positioned.fill(child: preview),
+                          if (showOvalGuide)
+                            const Positioned.fill(
+                              child: _OvalFaceGuideOverlay(),
                             ),
-                          ),
-                        ),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 10,
-                          ),
-                          child: ConstrainedBox(
-                            constraints: const BoxConstraints(maxHeight: 132),
-                            child: SingleChildScrollView(
-                              child: Text(
-                                _statusMessage ??
-                                    'Initializing session... hold on.',
-                                style: theme.textTheme.bodyMedium,
-                                softWrap: true,
+                          if (_openingCamera)
+                            const Positioned.fill(
+                              child: IgnorePointer(
+                                child: Center(
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 3,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          Positioned(
+                            left: 12,
+                            right: 12,
+                            bottom: 12,
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                color: theme.colorScheme.surface.withValues(
+                                  alpha: 0.90,
+                                ),
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(
+                                  color: theme.colorScheme.outlineVariant
+                                      .withValues(
+                                    alpha: 0.35,
+                                  ),
+                                ),
+                              ),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 10,
+                                ),
+                                child: ConstrainedBox(
+                                  constraints:
+                                      const BoxConstraints(maxHeight: 132),
+                                  child: SingleChildScrollView(
+                                    child: Text(
+                                      _statusMessage ??
+                                          'Align the student in front of the camera.',
+                                      style: theme.textTheme.bodyMedium,
+                                      softWrap: true,
+                                    ),
+                                  ),
+                                ),
                               ),
                             ),
                           ),
+                        ],
+                      ),
+                    )
+                  : ClaySurface(
+                      margin: const EdgeInsets.all(8),
+                      borderRadius: BorderRadius.circular(24),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: <Widget>[
+                            Text(
+                              _statusMessage ??
+                                  'Select a student to start verification.',
+                              style: theme.textTheme.bodyMedium,
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 12),
+                            Expanded(
+                              child: Builder(
+                                builder: (BuildContext context) {
+                                  final List<_RecognizedStudent> roster =
+                                      List<_RecognizedStudent>.from(_roster)
+                                        ..sort(
+                                          (a, b) => a.displayName
+                                              .toLowerCase()
+                                              .compareTo(
+                                                b.displayName.toLowerCase(),
+                                              ),
+                                        );
+                                  if (roster.isEmpty) {
+                                    return const Center(
+                                      child: Text(
+                                        'No students available in roster.',
+                                        textAlign: TextAlign.center,
+                                      ),
+                                    );
+                                  }
+
+                                  return ListView.separated(
+                                    itemCount: roster.length,
+                                    separatorBuilder: (_, __) =>
+                                        const Divider(height: 1),
+                                    itemBuilder:
+                                        (BuildContext context, int index) {
+                                      final _RecognizedStudent student =
+                                          roster[index];
+                                      final bool recorded =
+                                          _capturedStudentIds
+                                              .contains(student.userId);
+
+                                      return ListTile(
+                                        title: Text(student.displayName),
+                                        trailing: recorded
+                                            ? Icon(
+                                                Icons.check_circle,
+                                                color:
+                                                    theme.colorScheme.primary,
+                                              )
+                                            : const Icon(
+                                                Icons.chevron_right,
+                                              ),
+                                        enabled: !recorded &&
+                                            !_initializing &&
+                                            !_isEndingSession,
+                                        onTap: recorded
+                                            ? null
+                                            : () => _enterVerifyMode(student),
+                                      );
+                                    },
+                                  );
+                                },
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ),
-                  ],
-                ),
-              ),
             ),
           ],
         ),

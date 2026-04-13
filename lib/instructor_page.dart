@@ -11,6 +11,7 @@ import 'widgets/android_only_feature_page.dart';
 import 'offline_mode_checklist_page.dart';
 import 'reports/generate_report_page.dart';
 import 'services/excuse_request_service.dart';
+import 'services/attendance_calendar_service.dart';
 import 'services/open_external_url.dart';
 import 'services/offline_mode_service.dart';
 import 'services/offline_mode_service_types.dart';
@@ -53,6 +54,7 @@ class _InstructorPageState extends State<InstructorPage> {
   bool _isLaunchingSession = false;
   bool _isApprovingExcuse = false;
   final ExcuseRequestService _excuseService = ExcuseRequestService();
+  final AttendanceCalendarService _calendar = AttendanceCalendarService();
 
   final OfflineModeService _offlineModeService = OfflineModeService();
   OfflineModeStatus? _offlineModeStatus;
@@ -1037,9 +1039,29 @@ class _InstructorPageState extends State<InstructorPage> {
     _InstructorSchedule schedule, {
     String? resumeSessionId,
   }) async {
+    final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+    final NavigatorState navigator = Navigator.of(context);
+
+    final DateTime effectiveNow = _simulationEnabled
+        ? _simulatedTime
+        : DateTime.now();
+    final AttendanceCalendarDay? override = await _calendar.fetchDayBestEffort(
+      day: effectiveNow,
+    );
+    if (override != null) {
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            'Attendance disabled today: ${override.label} (${override.code}).',
+          ),
+        ),
+      );
+      return;
+    }
     if (!isAndroidFaceScanningSupported()) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
+      messenger.showSnackBar(
         const SnackBar(
           content: Text('Face scanning is available only in the Android app.'),
         ),
@@ -1066,7 +1088,7 @@ class _InstructorPageState extends State<InstructorPage> {
       resumeSessionId: resumeSessionId,
     );
     try {
-      final bool? completed = await Navigator.of(context).push<bool?>(
+      final bool? completed = await navigator.push<bool?>(
         MaterialPageRoute<bool?>(
           builder: (BuildContext context) =>
               AttendanceSessionPage(config: config),
@@ -1078,7 +1100,7 @@ class _InstructorPageState extends State<InstructorPage> {
       );
       if (!mounted) return;
       if (completed == true) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        messenger.showSnackBar(
           const SnackBar(content: Text('Recognition session ended and saved.')),
         );
       }
@@ -1234,37 +1256,39 @@ class _InstructorPageState extends State<InstructorPage> {
                     .where('readAt', isNull: true)
                     .limit(1)
                     .snapshots(),
-                builder: (
-                  BuildContext context,
-                  AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot,
-                ) {
-                  final bool hasUnread =
-                      snapshot.hasData && snapshot.data!.docs.isNotEmpty;
-                  return IconButton(
-                    tooltip: 'Notifications',
-                    onPressed: () {
-                      Navigator.of(context).pushNamed(
-                        NotificationsPage.routeName,
+                builder:
+                    (
+                      BuildContext context,
+                      AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>>
+                      snapshot,
+                    ) {
+                      final bool hasUnread =
+                          snapshot.hasData && snapshot.data!.docs.isNotEmpty;
+                      return IconButton(
+                        tooltip: 'Notifications',
+                        onPressed: () {
+                          Navigator.of(
+                            context,
+                          ).pushNamed(NotificationsPage.routeName);
+                        },
+                        icon: Stack(
+                          clipBehavior: Clip.none,
+                          children: <Widget>[
+                            const Icon(Icons.notifications_outlined),
+                            if (hasUnread)
+                              Positioned(
+                                top: -1,
+                                right: -1,
+                                child: Icon(
+                                  Icons.circle,
+                                  size: 10,
+                                  color: Theme.of(context).colorScheme.primary,
+                                ),
+                              ),
+                          ],
+                        ),
                       );
                     },
-                    icon: Stack(
-                      clipBehavior: Clip.none,
-                      children: <Widget>[
-                        const Icon(Icons.notifications_outlined),
-                        if (hasUnread)
-                          Positioned(
-                            top: -1,
-                            right: -1,
-                            child: Icon(
-                              Icons.circle,
-                              size: 10,
-                              color: Theme.of(context).colorScheme.primary,
-                            ),
-                          ),
-                      ],
-                    ),
-                  );
-                },
               );
             },
           ),
@@ -1696,69 +1720,75 @@ class _InstructorPageState extends State<InstructorPage> {
                         .collection(_kSessionPointerCollection)
                         .doc(pointerId)
                         .snapshots(),
-                    builder: (
-                      BuildContext context,
-                      AsyncSnapshot<DocumentSnapshot<Map<String, dynamic>>>
+                    builder:
+                        (
+                          BuildContext context,
+                          AsyncSnapshot<DocumentSnapshot<Map<String, dynamic>>>
                           snapshot,
-                    ) {
-                      final Map<String, dynamic>? data = snapshot.data?.data();
-                      final String status =
-                          (data?['status'] as String?)?.toLowerCase() ?? '';
-                      final String sessionId =
-                          (data?['sessionId'] as String?)?.trim() ?? '';
-                      final Timestamp? scheduledEndTs =
-                          data?['scheduledEndAt'] as Timestamp?;
-                      final DateTime? scheduledEnd = scheduledEndTs?.toDate();
+                        ) {
+                          final Map<String, dynamic>? data = snapshot.data
+                              ?.data();
+                          final String status =
+                              (data?['status'] as String?)?.toLowerCase() ?? '';
+                          final String sessionId =
+                              (data?['sessionId'] as String?)?.trim() ?? '';
+                          final Timestamp? scheduledEndTs =
+                              data?['scheduledEndAt'] as Timestamp?;
+                          final DateTime? scheduledEnd = scheduledEndTs
+                              ?.toDate();
 
-                      final bool expired =
-                          scheduledEnd != null &&
-                          (activeTime.isAfter(scheduledEnd) ||
-                              activeTime.isAtSameMomentAs(scheduledEnd));
-                      final bool resumable =
-                          sessionId.isNotEmpty &&
-                          (status == 'active' || status == 'paused') &&
-                          !expired;
+                          final bool expired =
+                              scheduledEnd != null &&
+                              (activeTime.isAfter(scheduledEnd) ||
+                                  activeTime.isAtSameMomentAs(scheduledEnd));
+                          final bool resumable =
+                              sessionId.isNotEmpty &&
+                              (status == 'active' || status == 'paused') &&
+                              !expired;
 
-                      if (expired &&
-                          sessionId.isNotEmpty &&
-                          status.isNotEmpty &&
-                          status != 'completed') {
-                        Future<void>.microtask(() async {
-                          await _completeExpiredSessionBestEffort(
-                            sessionId: sessionId,
-                            pointerId: pointerId,
+                          if (expired &&
+                              sessionId.isNotEmpty &&
+                              status.isNotEmpty &&
+                              status != 'completed') {
+                            Future<void>.microtask(() async {
+                              await _completeExpiredSessionBestEffort(
+                                sessionId: sessionId,
+                                pointerId: pointerId,
+                              );
+                            });
+                          }
+
+                          final String buttonLabel = _isLaunchingSession
+                              ? 'Launching...'
+                              : (resumable
+                                    ? 'Continue Session'
+                                    : 'Start recognition session');
+
+                          return FilledButton.icon(
+                            onPressed: _isLaunchingSession
+                                ? null
+                                : () => _startRecognitionSession(
+                                    activeSchedule,
+                                    resumeSessionId: resumable
+                                        ? sessionId
+                                        : null,
+                                  ),
+                            icon: _isLaunchingSession
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : Icon(
+                                    resumable
+                                        ? Icons.play_circle_outline
+                                        : Icons.play_arrow_rounded,
+                                  ),
+                            label: Text(buttonLabel),
                           );
-                        });
-                      }
-
-                      final String buttonLabel = _isLaunchingSession
-                          ? 'Launching...'
-                          : (resumable
-                            ? 'Continue Session'
-                              : 'Start recognition session');
-
-                      return FilledButton.icon(
-                        onPressed: _isLaunchingSession
-                            ? null
-                            : () => _startRecognitionSession(
-                                  activeSchedule,
-                                  resumeSessionId: resumable ? sessionId : null,
-                                ),
-                        icon: _isLaunchingSession
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : Icon(
-                                resumable
-                                    ? Icons.play_circle_outline
-                                    : Icons.play_arrow_rounded,
-                              ),
-                        label: Text(buttonLabel),
-                      );
-                    },
+                        },
                   );
                 },
               ),

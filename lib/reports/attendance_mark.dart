@@ -1,1 +1,1 @@
-enum AttendanceMark { present, absent, late, excused }
+enum AttendanceMark { present, absent, late, excused, holiday, suspension, examWeek }

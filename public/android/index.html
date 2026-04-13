@@ -83,7 +83,7 @@
         const el = document.getElementById('latestVersion');
         if (!el) return;
         try {
-          const res = await fetch('/downloads/version.json', { cache: 'no-store' });
+          const res = await fetch('/downloads/version.json?t=' + Date.now(), { cache: 'no-store' });
           if (!res.ok) throw new Error('http ' + res.status);
           const m = await res.json();
 

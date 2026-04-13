@@ -133,10 +133,9 @@ class FaceEnrollmentPage extends StatefulWidget {
 class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   static const VpsEmbeddingsApiClient _vpsClient = VpsEmbeddingsApiClient();
 
-  // Capture multiple embeddings per pose and store them all as templates
-  // (3 per phase × 7 phases = 21 templates) to improve coverage.
+  // Capture multiple embeddings per pose and fuse them into a single template
+  // per pose (3 captures per phase × 7 phases => 7 stored templates).
   static const int _capturesPerPhase = 3;
-  static const int _storedEmbeddingsPerPhase = 3;
   static const Duration _kPhaseCompleteHold = Duration(milliseconds: 1200);
   static final List<_OrientationPhase> _phaseOrder = <_OrientationPhase>[
     _OrientationPhase.front,
@@ -1313,53 +1312,41 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     setState(() => _isSaving = true);
     try {
       final Map<_OrientationPhase, List<List<double>>> selectedByPhase =
-          _selectRepresentativeEmbeddingsByPhase(
-            perPhase: _storedEmbeddingsPerPhase,
-          );
+          _selectRepresentativeEmbeddingsByPhase(perPhase: _capturesPerPhase);
 
-      final List<List<double>> templates = <List<double>>[];
+      // Fuse each pose's captures into a single unit template.
+      final List<List<double>> fusedTemplates = <List<double>>[];
       for (final _OrientationPhase phase in _phaseOrder) {
         final List<List<double>> vectors =
             selectedByPhase[phase] ?? <List<double>>[];
         if (vectors.isEmpty) continue;
 
-        // Store multiple templates per phase (typically 3) instead of averaging
-        // down to a single template. This improves coverage and reduces
-        // ambiguity during recognition.
-        for (final List<double> v in vectors) {
-          final List<double> normalized = _l2NormalizeVector(v);
-          final List<double> template = normalized.isNotEmpty ? normalized : v;
-          if (template.isNotEmpty) {
-            templates.add(template);
-          }
+        final List<List<double>> normalized = vectors
+            .map(_l2NormalizeVector)
+            .where((List<double> v) => v.isNotEmpty)
+            .toList(growable: false);
+        if (normalized.isEmpty) continue;
+
+        final List<double> averaged = _averageVectors(normalized);
+        final List<double> fused = _l2NormalizeVector(averaged);
+        if (fused.isNotEmpty) {
+          fusedTemplates.add(fused);
         }
       }
 
-      final List<List<double>> vectorsToCombine = templates.isNotEmpty
-          ? templates
+      final List<List<double>> vectorsToCombine = fusedTemplates.isNotEmpty
+          ? fusedTemplates
           : <List<double>>[_l2NormalizeVector(embedding)];
       final List<double> averagedAll = _averageVectors(vectorsToCombine);
-      final List<double> normalizedAll = _l2NormalizeVector(averagedAll);
-      final List<double> payloadSingle = normalizedAll.isNotEmpty
-          ? normalizedAll
-          : averagedAll;
+      final List<double> payloadSingle = _l2NormalizeVector(averagedAll);
 
-      if (templates.isNotEmpty) {
-        await _vpsClient.putEmbeddingsForUid(
-          user.uid,
-          embeddings: templates,
-          embedding: payloadSingle,
-          model: 'onnx_v1',
-          forceRefreshToken: true,
-        );
-      } else {
-        await _vpsClient.putEmbeddingForUid(
-          user.uid,
-          embedding: payloadSingle,
-          model: 'onnx_v1',
-          forceRefreshToken: true,
-        );
-      }
+      await _vpsClient.putEmbeddingsForUid(
+        user.uid,
+        embeddings: fusedTemplates,
+        embedding: payloadSingle,
+        model: 'onnx_v1',
+        forceRefreshToken: true,
+      );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Face enrolled successfully.')),

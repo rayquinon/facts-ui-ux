@@ -80,11 +80,15 @@ $manifest = @{
   # Use version-stamped URLs to avoid client/CDN caching returning an older APK.
   apkUrl = "https://facts.shiro.codes/downloads/app-latest-$versionSafe.apk"
   arm64Url = "https://facts.shiro.codes/downloads/app-latest-arm64-$versionSafe.apk"
+  armeabiUrl = "https://facts.shiro.codes/downloads/app-latest-armeabi-v7a-$versionSafe.apk"
+  x64Url = "https://facts.shiro.codes/downloads/app-latest-x86_64-$versionSafe.apk"
   androidPageUrl = 'https://facts.shiro.codes/android/'
 
   # Fallback URLs (same hosting site, alternate domain).
   apkUrlAlt = "https://simple-distributed-database.web.app/downloads/app-latest-$versionSafe.apk"
   arm64UrlAlt = "https://simple-distributed-database.web.app/downloads/app-latest-arm64-$versionSafe.apk"
+  armeabiUrlAlt = "https://simple-distributed-database.web.app/downloads/app-latest-armeabi-v7a-$versionSafe.apk"
+  x64UrlAlt = "https://simple-distributed-database.web.app/downloads/app-latest-x86_64-$versionSafe.apk"
   androidPageUrlAlt = 'https://simple-distributed-database.web.app/android/'
 
   updatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')

@@ -390,6 +390,13 @@ service cloud.firestore {
       allow create, update, delete: if isAdmin();
     }
 
+    // Global per-day attendance calendar overrides (Holiday / Suspension / Exam Week).
+    // Doc IDs are YYYY-MM-DD.
+    match /attendanceCalendarDays/{dateKey} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isAdmin() || isRoleAdmin();
+    }
+
     // App-level settings (small, controlled documents).
     match /settings/{settingId} {
       // Template meta is used in report generation (instructor + admin).

@@ -11,6 +11,7 @@ import 'attendance_report_template_meta.dart';
 import 'docx_attendance_builder.dart';
 import 'docx_attendance_template_builder.dart';
 import 'save_bytes.dart';
+import '../services/attendance_calendar_service.dart';
 import '../services/user_role_service.dart';
 
 const Set<int> _defaultMeetingWeekdays = <int>{
@@ -29,7 +30,6 @@ int _compareNamesAsc(String a, String b) {
   if (cmp != 0) return cmp;
   return a.compareTo(b);
 }
-
 
 class GenerateReportPage extends StatefulWidget {
   const GenerateReportPage({super.key});
@@ -382,6 +382,14 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
       final List<_StudentRosterEntry> roster = await _fetchRoster(
         selectedClass,
       );
+
+      final AttendanceCalendarService calendar = AttendanceCalendarService(
+        firestore: _firestore,
+        auth: _auth,
+      );
+      final Map<DateTime, AttendanceCalendarDay> overrides = await calendar
+          .fetchDaysFor(days: _workingDays);
+
       final Map<DateTime, Map<String, AttendanceMark>> matrix =
           await _fetchAttendanceMatrix(
             classId: selectedClass.id,
@@ -389,29 +397,35 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
             dateKeys: _workingDays,
           );
       final DateTime today = _dayKey(DateTime.now());
-      final List<_ReportRow> rows = roster.map((_StudentRosterEntry student) {
-        final Map<DateTime, AttendanceMark> marks =
-            <DateTime, AttendanceMark>{};
-        for (final DateTime day in _workingDays) {
-          final DateTime key = _dayKey(day);
-          final AttendanceMark? mark = matrix[key]?[student.id];
-          if (mark != null) {
-            marks[key] = mark;
-          } else if (key.isBefore(today)) {
-            marks[key] = AttendanceMark.absent;
-          }
-        }
-        final String courseYear = (student.courseYear?.isNotEmpty == true)
-            ? student.courseYear!
-            : selectedClass.courseYearLabel;
-        return _ReportRow(
-          studentId: student.id,
-          studentName: student.displayName,
-          courseYear: courseYear,
-          marks: marks,
-        );
-        }).toList()
-          ..sort((a, b) => _compareNamesAsc(a.studentName, b.studentName));
+      final List<_ReportRow> rows =
+          roster.map((_StudentRosterEntry student) {
+              final Map<DateTime, AttendanceMark> marks =
+                  <DateTime, AttendanceMark>{};
+              for (final DateTime day in _workingDays) {
+                final DateTime key = _dayKey(day);
+                final AttendanceCalendarDay? override = overrides[key];
+                if (override != null) {
+                  marks[key] = _markForOverride(override.type);
+                  continue;
+                }
+                final AttendanceMark? mark = matrix[key]?[student.id];
+                if (mark != null) {
+                  marks[key] = mark;
+                } else if (key.isBefore(today)) {
+                  marks[key] = AttendanceMark.absent;
+                }
+              }
+              final String courseYear = (student.courseYear?.isNotEmpty == true)
+                  ? student.courseYear!
+                  : selectedClass.courseYearLabel;
+              return _ReportRow(
+                studentId: student.id,
+                studentName: student.displayName,
+                courseYear: courseYear,
+                marks: marks,
+              );
+            }).toList()
+            ..sort((a, b) => _compareNamesAsc(a.studentName, b.studentName));
       if (!mounted) return;
       setState(() {
         _previewRows = rows;
@@ -452,6 +466,13 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
         selectedClass,
       );
 
+      final AttendanceCalendarService calendar = AttendanceCalendarService(
+        firestore: _firestore,
+        auth: _auth,
+      );
+      final Map<DateTime, AttendanceCalendarDay> overrides = await calendar
+          .fetchDaysFor(days: _workingDays);
+
       // Use the same meeting-day list as the preview so dates/marks match.
       final List<DateTime> meetingDays = _workingDays;
       if (meetingDays.isEmpty) {
@@ -469,36 +490,41 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
             dateKeys: meetingDays,
           );
 
-      final String? instructorId = await _fetchMostCommonInstructorIdForSessions(
-        classId: selectedClass.id,
-        range: range,
-      );
+      final String? instructorId =
+          await _fetchMostCommonInstructorIdForSessions(
+            classId: selectedClass.id,
+            range: range,
+          );
 
-      final List<DocxAttendanceRow> rows = roster.map((
-        _StudentRosterEntry student,
-      ) {
-        final Map<DateTime, AttendanceMark> marks =
-            <DateTime, AttendanceMark>{};
-        final DateTime today = _dayKey(DateTime.now());
-        for (final DateTime day in meetingDays) {
-          final DateTime key = _dayKey(day);
-          final AttendanceMark? mark = matrix[key]?[student.id];
-          if (mark != null) {
-            marks[key] = mark;
-          } else if (key.isBefore(today)) {
-            marks[key] = AttendanceMark.absent;
-          }
-        }
-        final String courseYear = (student.courseYear?.isNotEmpty == true)
-            ? student.courseYear!
-            : selectedClass.courseYearLabel;
-        return DocxAttendanceRow(
-          studentName: student.displayName,
-          courseYear: courseYear,
-          marksByDay: marks,
-        );
-      }).toList()
-        ..sort((a, b) => _compareNamesAsc(a.studentName, b.studentName));
+      final List<DocxAttendanceRow> docxRows =
+          roster.map((_StudentRosterEntry student) {
+              final Map<DateTime, AttendanceMark> marks =
+                  <DateTime, AttendanceMark>{};
+              final DateTime today = _dayKey(DateTime.now());
+              for (final DateTime day in meetingDays) {
+                final DateTime key = _dayKey(day);
+                final AttendanceCalendarDay? override = overrides[key];
+                if (override != null) {
+                  marks[key] = _markForOverride(override.type);
+                  continue;
+                }
+                final AttendanceMark? mark = matrix[key]?[student.id];
+                if (mark != null) {
+                  marks[key] = mark;
+                } else if (key.isBefore(today)) {
+                  marks[key] = AttendanceMark.absent;
+                }
+              }
+              final String courseYear = (student.courseYear?.isNotEmpty == true)
+                  ? student.courseYear!
+                  : selectedClass.courseYearLabel;
+              return DocxAttendanceRow(
+                studentName: student.displayName,
+                courseYear: courseYear,
+                marksByDay: marks,
+              );
+            }).toList()
+            ..sort((a, b) => _compareNamesAsc(a.studentName, b.studentName));
 
       final Uint8List templateBytes = (await rootBundle.load(
         'assets/reports/template.docx.docx',
@@ -544,9 +570,7 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
         effectiveDate: meta.effectiveDate,
       );
 
-      final String? checkedBy = await _resolveInstructorName(
-        instructorId,
-      );
+      final String? checkedBy = await _resolveInstructorName(instructorId);
       final String? submittedTo = await _resolveDepartmentHeadName(
         selectedClass.departmentName,
       );
@@ -555,7 +579,7 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
         templateDocxBytes: templateBytes,
         header: header,
         sessionDays: meetingDays,
-        students: rows,
+        students: docxRows,
         checkedBy: checkedBy,
         submittedTo: submittedTo,
       );
@@ -595,8 +619,9 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
   }) async {
     try {
       final DateTime rangeStart = _dayKey(range.start);
-      final DateTime rangeEndExclusive = _dayKey(range.end)
-          .add(const Duration(days: 1));
+      final DateTime rangeEndExclusive = _dayKey(
+        range.end,
+      ).add(const Duration(days: 1));
 
       final QuerySnapshot<Map<String, dynamic>> sessionsSnapshot =
           await _firestore
@@ -910,6 +935,17 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
         return AttendanceMark.excused;
       default:
         return null;
+    }
+  }
+
+  AttendanceMark _markForOverride(AttendanceCalendarDayType type) {
+    switch (type) {
+      case AttendanceCalendarDayType.holiday:
+        return AttendanceMark.holiday;
+      case AttendanceCalendarDayType.suspension:
+        return AttendanceMark.suspension;
+      case AttendanceCalendarDayType.examWeek:
+        return AttendanceMark.examWeek;
     }
   }
 
@@ -1364,6 +1400,12 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
         background = colors.tertiaryContainer;
       case AttendanceMark.excused:
         background = colors.secondaryContainer;
+      case AttendanceMark.holiday:
+        background = colors.surfaceContainerHighest;
+      case AttendanceMark.suspension:
+        background = colors.surfaceContainerHighest;
+      case AttendanceMark.examWeek:
+        background = colors.surfaceContainerHighest;
       case null:
         background = colors.surfaceContainerHighest;
     }
@@ -1384,6 +1426,9 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
       _LegendEntry('A', 'Absent'),
       _LegendEntry('L', 'Late'),
       _LegendEntry('Exc', 'Excused'),
+      _LegendEntry('H', 'Holiday'),
+      _LegendEntry('S', 'Suspension'),
+      _LegendEntry('Ex', 'Exam Week'),
     ];
     return Wrap(
       spacing: 16,
@@ -1780,6 +1825,12 @@ extension on AttendanceMark {
         return 'L';
       case AttendanceMark.excused:
         return 'E';
+      case AttendanceMark.holiday:
+        return 'H';
+      case AttendanceMark.suspension:
+        return 'S';
+      case AttendanceMark.examWeek:
+        return 'Ex';
     }
   }
 }

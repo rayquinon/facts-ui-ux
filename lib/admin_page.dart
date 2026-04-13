@@ -7,6 +7,8 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+
+import 'attendance_calendar_overrides_page.dart';
 import 'widgets/confirm_sign_out_dialog.dart';
 import 'package:printing/printing.dart';
 
@@ -188,6 +190,22 @@ class _AdminPageState extends State<AdminPage> {
                       Navigator.of(
                         context,
                       ).pushNamed(GenerateReportPage.routeName);
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.event_busy_outlined),
+                    title: const Text('Calendar Overrides'),
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (BuildContext context) =>
+                              const AttendanceCalendarOverridesPage(),
+                          settings: const RouteSettings(
+                            name: AttendanceCalendarOverridesPage.routeName,
+                          ),
+                        ),
+                      );
                     },
                   ),
                   ListTile(

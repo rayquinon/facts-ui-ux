@@ -637,9 +637,7 @@ class _AuthGateState extends State<AuthGate> {
     final bool? shouldUpdate = await showDialog<bool>(
       context: context,
       builder: (BuildContext dialogContext) {
-        final String latestLabel = update.latestVersion.isEmpty
-            ? 'build ${update.latestBuildNumber}'
-            : '${update.latestVersion}+${update.latestBuildNumber}';
+        final String latestLabel = update.effectiveLatestLabel;
         final String currentLabel =
             '${update.currentVersion}+${update.currentBuildNumber}';
         return AlertDialog(

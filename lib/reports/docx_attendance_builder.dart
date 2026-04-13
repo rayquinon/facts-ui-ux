@@ -32,6 +32,12 @@ String attendanceMarkSymbol(AttendanceMark mark) {
       return 'L';
     case AttendanceMark.excused:
       return 'E';
+    case AttendanceMark.holiday:
+      return 'H';
+    case AttendanceMark.suspension:
+      return 'S';
+    case AttendanceMark.examWeek:
+      return 'Ex';
   }
 }
 
