@@ -2930,7 +2930,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         ),
         body: Column(
           children: <Widget>[
-            _SessionHeader(config: config, rosterCount: _roster.length),
             Expanded(
               child: inVerify
                   ? ClaySurface(
@@ -3069,6 +3068,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                       ),
                     ),
             ),
+            _SessionHeader(config: config, rosterCount: _roster.length),
           ],
         ),
       ),
