@@ -1068,7 +1068,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     );
     final CameraController controller = CameraController(
       camera,
-      ResolutionPreset.low,
+      // Enrollment uses ResolutionPreset.medium; keep attendance verification
+      // consistent to avoid low-detail crops causing mismatches.
+      ResolutionPreset.medium,
       imageFormatGroup: ImageFormatGroup.yuv420,
       enableAudio: false,
     );
