@@ -92,6 +92,11 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   static const double _singleTemplateThreshold = 0.75;
   static const double _templateHitThreshold = 0.66;
   static const int _minTemplateHits = 2;
+  // 1:1 verification (selected student) can be slightly more forgiving than
+  // roster-wide matching without materially increasing false positives.
+  // This primarily reduces false negatives for students with only 1 template.
+  static const double _verifySingleTemplateThreshold = 0.72;
+  static const int _verifyMinTemplateHits = 1;
   static const double _similarityMargin = 0.14;
   static const double _confidenceSpan = 0.20;
   static const Duration _captureCooldown = Duration(seconds: 1);
@@ -154,6 +159,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   static const double _sweetSimilarityThreshold = 0.71;
   static const double _sweetSingleTemplateThreshold = 0.79;
   static const int _sweetMinTemplateHits = 2;
+
+  static const double _verifySweetSingleTemplateThreshold = 0.75;
+  static const int _verifySweetMinTemplateHits = 1;
 
   static const int _centroidPrefilterTopK = 12;
 
@@ -1241,7 +1249,13 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           rawWidth: image.width.toDouble(),
           rawHeight: image.height.toDouble(),
         );
-        final _DistanceTuning tuning = _distanceTuningForRatio(faceRatio);
+        final bool isVerifying =
+            _viewMode == _AttendanceSessionViewMode.verify &&
+            _selectedStudent != null;
+        final _DistanceTuning tuning = _distanceTuningForRatio(
+          faceRatio,
+          isVerification: isVerifying,
+        );
         if (tuning.skipMatching) {
           _lastCaptureTime = _now();
           _updateStatus(
@@ -1830,11 +1844,20 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       final double best = result.similarity ?? double.nan;
       final String mode = usedLegacy ? ' (legacy)' : '';
       final String extra = legacyDebug == null ? '' : '\n$legacyDebug';
+      final String reason = result.rejectionReason == null
+          ? ''
+          : '\nReason: ${result.rejectionReason}';
       if (best.isFinite) {
+        final bool singleTooWeak =
+            (result.rejectionReason ?? '').startsWith('single-template-too-weak');
+        final String thresholdLine = singleTooWeak
+            ? '(best similarity ${best.toStringAsFixed(2)}, '
+                'required ${tuning.singleTemplateThreshold.toStringAsFixed(2)})'
+            : '(best similarity ${best.toStringAsFixed(2)}, '
+                'threshold ${tuning.similarityThreshold.toStringAsFixed(2)})';
         _updateStatus(
           'Face detected but does not match ${selected.displayName}.$mode\n'
-          '(best similarity ${best.toStringAsFixed(2)}, '
-          'threshold ${tuning.similarityThreshold.toStringAsFixed(2)})$extra',
+          '$thresholdLine$reason$extra',
         );
       } else {
         _updateStatus('Face detected but does not match ${selected.displayName}.');
@@ -2096,32 +2119,47 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     return baseSize / minDim;
   }
 
-  _DistanceTuning _distanceTuningForRatio(double ratio) {
+  _DistanceTuning _distanceTuningForRatio(
+    double ratio, {
+    required bool isVerification,
+  }) {
+    final double singleTemplateThreshold = isVerification
+        ? _verifySingleTemplateThreshold
+        : _singleTemplateThreshold;
+    final int minTemplateHits =
+        isVerification ? _verifyMinTemplateHits : _minTemplateHits;
+    final double sweetSingleTemplateThreshold = isVerification
+        ? _verifySweetSingleTemplateThreshold
+        : _sweetSingleTemplateThreshold;
+    final int sweetMinTemplateHits = isVerification
+        ? _verifySweetMinTemplateHits
+        : _sweetMinTemplateHits;
+
     if (ratio > 0 && ratio < _distanceTooFarRatio) {
-      return const _DistanceTuning(
+      return _DistanceTuning(
         skipMatching: true,
         guidanceMessage:
             'Move closer to the camera (about half an arm length).',
         similarityThreshold: _similarityThreshold,
-        singleTemplateThreshold: _singleTemplateThreshold,
-        minTemplateHits: _minTemplateHits,
+        singleTemplateThreshold: singleTemplateThreshold,
+        minTemplateHits: minTemplateHits,
       );
     }
 
     if (ratio >= _distanceTooFarRatio && ratio <= _distanceSweetMaxRatio) {
-      return const _DistanceTuning(
+      return _DistanceTuning(
         skipMatching: false,
         similarityThreshold: _sweetSimilarityThreshold,
-        singleTemplateThreshold: _sweetSingleTemplateThreshold,
-        minTemplateHits: _sweetMinTemplateHits,
+        singleTemplateThreshold: sweetSingleTemplateThreshold,
+        minTemplateHits: sweetMinTemplateHits,
       );
     }
 
-    return const _DistanceTuning(
+    return _DistanceTuning(
       skipMatching: false,
       similarityThreshold: _similarityThreshold,
-      singleTemplateThreshold: _singleTemplateThreshold,
-      minTemplateHits: _minTemplateHits,
+      singleTemplateThreshold: singleTemplateThreshold,
+      minTemplateHits: minTemplateHits,
     );
   }
 
