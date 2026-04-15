@@ -105,6 +105,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   );
   static const Duration _duplicateCaptureCooldown = Duration(seconds: 10);
   static const Duration _unrecognizedCooldown = Duration(milliseconds: 1200);
+  static const Duration _unalignedFallbackCooldown = Duration(seconds: 2);
   static const Duration _ambiguousConfirmationWindow = Duration(seconds: 7);
   static const int _ambiguousConfirmationsRequired = 4;
   static const Duration _confirmationWindow = Duration(seconds: 6);
@@ -188,6 +189,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   String? _sessionPointerDateKey;
   DateTime? _lastCaptureTime;
   DateTime? _lastUnrecognizedTime;
+  DateTime? _lastUnalignedFallbackAt;
   DateTime? _lastProbeSampleAt;
   int _lastRotationCompensation = 0;
 
@@ -257,6 +259,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   void _resetProbeAndPendingState() {
     _probeHistoryUnit.clear();
     _lastProbeSampleAt = null;
+    _lastUnalignedFallbackAt = null;
 
     _pendingAmbiguousStudentId = null;
     _pendingAmbiguousConfirmations = 0;
@@ -1361,6 +1364,33 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     return false;
   }
 
+  bool _shouldTryUnalignedFallback(_MatchResult result) {
+    if (result.student != null) {
+      return false;
+    }
+
+    final String reason = result.rejectionReason ?? '';
+    if (reason != 'below-threshold' && reason != 'single-template-too-weak') {
+      return false;
+    }
+
+    final double best = result.similarity ?? double.nan;
+    if (!best.isFinite) return false;
+
+    // Only attempt if we're in the near-miss range. This supports older
+    // enrollments that were captured without eye alignment.
+    if (best < 0.35) return false;
+
+    final DateTime now = _now();
+    final DateTime? last = _lastUnalignedFallbackAt;
+    if (last != null && now.difference(last) < _unalignedFallbackCooldown) {
+      return false;
+    }
+
+    _lastUnalignedFallbackAt = now;
+    return true;
+  }
+
   ({_MatchResult result, List<double> embedding, bool usedLegacy})
   _chooseBetweenNormalAndLegacy(
     _MatchResult normal,
@@ -1794,6 +1824,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     List<double> embeddingUsed = smoothed;
     bool usedLegacy = false;
     String? legacyDebug;
+    bool usedUnaligned = false;
+    String? unalignedDebug;
 
     if (sourceImage != null &&
         sourceBbox != null &&
@@ -1829,6 +1861,33 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       }
     }
 
+    // If we still can't match, try an unaligned embedding as a compatibility
+    // fallback for older enrollments. Throttled to avoid doubling inference
+    // cost on every frame.
+    if (sourceImage != null && sourceBbox != null && _shouldTryUnalignedFallback(result)) {
+      try {
+        final List<double> unalignedEmbedding =
+            await _embeddingService.generateEmbedding(sourceImage, sourceBbox);
+        final _MatchResult unalignedResult = _matchEmbeddingAgainstStudent(
+          unalignedEmbedding,
+          selected,
+          tuning,
+        );
+        final double? ub = unalignedResult.similarity;
+        if (ub != null && !ub.isNaN) {
+          unalignedDebug = 'Unaligned(best ${ub.toStringAsFixed(2)})';
+        }
+
+        if (unalignedResult.student != null && result.student == null) {
+          result = unalignedResult;
+          embeddingUsed = unalignedEmbedding;
+          usedUnaligned = true;
+        }
+      } catch (_) {
+        // Best-effort only.
+      }
+    }
+
     // If we are no longer verifying the same selected student, ignore.
     if (_viewMode != _AttendanceSessionViewMode.verify ||
         _selectedStudent?.userId != selected.userId) {
@@ -1844,8 +1903,13 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       _pendingStartedAt = null;
 
       final double best = result.similarity ?? double.nan;
-      final String mode = usedLegacy ? ' (legacy)' : '';
-      final String extra = legacyDebug == null ? '' : '\n$legacyDebug';
+        final String mode = usedLegacy
+          ? ' (legacy)'
+          : (usedUnaligned ? ' (unaligned)' : '');
+        final List<String> debugLines = <String>[];
+        if (legacyDebug != null) debugLines.add(legacyDebug);
+        if (unalignedDebug != null) debugLines.add(unalignedDebug);
+        final String extra = debugLines.isEmpty ? '' : '\n${debugLines.join('\n')}';
       final String reason = result.rejectionReason == null
           ? ''
           : '\nReason: ${result.rejectionReason}';
