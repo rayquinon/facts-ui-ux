@@ -2936,14 +2936,31 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                   ? ClaySurface(
                       margin: const EdgeInsets.all(8),
                       borderRadius: BorderRadius.circular(24),
-                      child: Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Column(
-                          children: <Widget>[
-                            DecoratedBox(
+                      child: Stack(
+                        children: <Widget>[
+                          Positioned.fill(child: preview),
+                          if (showOvalGuide)
+                            const Positioned.fill(
+                              child: _OvalFaceGuideOverlay(),
+                            ),
+                          if (_openingCamera)
+                            const Positioned.fill(
+                              child: IgnorePointer(
+                                child: Center(
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 3,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          Positioned(
+                            left: 12,
+                            right: 12,
+                            bottom: 12,
+                            child: DecoratedBox(
                               decoration: BoxDecoration(
                                 color: theme.colorScheme.surface.withValues(
-                                  alpha: 0.92,
+                                  alpha: 0.90,
                                 ),
                                 borderRadius: BorderRadius.circular(16),
                                 border: Border.all(
@@ -2972,33 +2989,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                                 ),
                               ),
                             ),
-                            const SizedBox(height: 12),
-                            Expanded(
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(18),
-                                child: Stack(
-                                  children: <Widget>[
-                                    Positioned.fill(child: preview),
-                                    if (showOvalGuide)
-                                      const Positioned.fill(
-                                        child: _OvalFaceGuideOverlay(),
-                                      ),
-                                    if (_openingCamera)
-                                      const Positioned.fill(
-                                        child: IgnorePointer(
-                                          child: Center(
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 3,
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
+                          ),
+                        ],
                       ),
                     )
                   : ClaySurface(
