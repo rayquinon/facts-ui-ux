@@ -116,9 +116,13 @@ class OfflineModeService {
 
   String _normalizeSectionForCacheKey(String sectionLabel) {
     final String section = sectionLabel.trim();
-    return section.isEmpty
-        ? 'all'
-        : section.toLowerCase().replaceAll(RegExp(r'\s+'), '-');
+    if (section.isEmpty) return 'all';
+    final String lowered = section.toLowerCase();
+    final String dashed = lowered.replaceAll(
+      RegExp('[\u2010\u2011\u2012\u2013\u2014\u2212]'),
+      '-',
+    );
+    return dashed.replaceAll(RegExp(r'\s+'), '-');
   }
 
   String _rosterCacheKeyForSection(String sectionLabel) {
@@ -466,6 +470,19 @@ class OfflineModeService {
                 jsonString = await _rosterCache.readJson(key: safeKey);
               }
             }
+            if (jsonString == null || jsonString.trim().isEmpty) {
+              final String underscored = cacheKey.replaceAll('-', '_');
+              if (underscored != cacheKey) {
+                jsonString = await _rosterCache.readJson(key: underscored);
+              }
+            }
+            if (jsonString == null || jsonString.trim().isEmpty) {
+              final String underscored = cacheKey.replaceAll('-', '_');
+              final String safeUnderscored = _safeRosterCacheKey(underscored);
+              if (safeUnderscored != underscored) {
+                jsonString = await _rosterCache.readJson(key: safeUnderscored);
+              }
+            }
             if (jsonString != null && jsonString.trim().isNotEmpty) {
               final Object? decoded = jsonDecode(jsonString);
               if (decoded is Map) {
@@ -614,7 +631,26 @@ class OfflineModeService {
 
     // Incremental prep: reuse cached embeddings when possible and only fetch
     // embeddings for new student IDs.
-    final String? existingJson = await _rosterCache.readJson(key: cacheKey);
+    String? existingJson = await _rosterCache.readJson(key: cacheKey);
+    if (existingJson == null || existingJson.trim().isEmpty) {
+      final String safeKey = _safeRosterCacheKey(cacheKey);
+      if (safeKey != cacheKey) {
+        existingJson = await _rosterCache.readJson(key: safeKey);
+      }
+    }
+    if (existingJson == null || existingJson.trim().isEmpty) {
+      final String underscored = cacheKey.replaceAll('-', '_');
+      if (underscored != cacheKey) {
+        existingJson = await _rosterCache.readJson(key: underscored);
+      }
+    }
+    if (existingJson == null || existingJson.trim().isEmpty) {
+      final String underscored = cacheKey.replaceAll('-', '_');
+      final String safeUnderscored = _safeRosterCacheKey(underscored);
+      if (safeUnderscored != underscored) {
+        existingJson = await _rosterCache.readJson(key: safeUnderscored);
+      }
+    }
     final Map<String, Object?>? existingPayload = _tryDecodeCachePayload(
       existingJson,
     );

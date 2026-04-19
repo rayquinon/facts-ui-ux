@@ -1044,9 +1044,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
   String _buildRosterCacheKey() {
     final String section = (widget.config.section ?? '').trim();
-    final String normalizedSection = section.isEmpty
-        ? 'all'
-        : section.toLowerCase().replaceAll(RegExp(r'\s+'), '-');
+    final String normalizedSection = _normalizeSectionForCacheKey(section);
     // V2: section-only cache key.
     // The roster query is based on role + section, not classId, so including
     // classId prevents offline re-use (and breaks offline-mode preparation).
@@ -1056,10 +1054,43 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   String _buildLegacyRosterCacheKey() {
     final String classId = widget.config.classId.trim();
     final String section = (widget.config.section ?? '').trim();
-    final String normalizedSection = section.isEmpty
-        ? 'all'
-        : section.toLowerCase().replaceAll(RegExp(r'\s+'), '-');
+    final String normalizedSection = _normalizeSectionForCacheKey(section);
     return 'roster_${classId}_$normalizedSection';
+  }
+
+  String _normalizeSectionForCacheKey(String sectionLabel) {
+    final String section = sectionLabel.trim();
+    if (section.isEmpty) return 'all';
+    final String lowered = section.toLowerCase();
+    final String dashed = lowered.replaceAll(
+      RegExp('[\u2010\u2011\u2012\u2013\u2014\u2212]'),
+      '-',
+    );
+    return dashed.replaceAll(RegExp(r'\s+'), '-');
+  }
+
+  List<String> _compatRosterCacheKeys(String key) {
+    final Set<String> out = <String>{};
+    void add(String k) {
+      final String trimmed = k.trim();
+      if (trimmed.isNotEmpty) out.add(trimmed);
+    }
+
+    add(key);
+    final String safe = _safeRosterCacheKey(key);
+    if (safe != key) add(safe);
+
+    // Compat: older caches created from Unicode dashes end up with '_' in the
+    // filename (because the IO cache sanitizes non-ascii chars). Try a
+    // hyphen-to-underscore variant so we can still load those files.
+    final String dashedToUnderscore = key.replaceAll('-', '_');
+    if (dashedToUnderscore != key) {
+      add(dashedToUnderscore);
+      final String safe2 = _safeRosterCacheKey(dashedToUnderscore);
+      if (safe2 != dashedToUnderscore) add(safe2);
+    }
+
+    return out.toList(growable: false);
   }
 
   String _safeRosterCacheKey(String key) {
@@ -1121,26 +1152,31 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       final String primaryKey = _buildRosterCacheKey();
       final String legacyKey = _buildLegacyRosterCacheKey();
 
-      String? jsonString = await _rosterCache.readJson(key: primaryKey);
+      String? jsonString;
+      String? loadedKey;
       bool loadedFromLegacy = false;
 
-      if (jsonString == null || jsonString.trim().isEmpty) {
-        final String safePrimary = _safeRosterCacheKey(primaryKey);
-        if (safePrimary != primaryKey) {
-          jsonString = await _rosterCache.readJson(key: safePrimary);
+      for (final String k in _compatRosterCacheKeys(primaryKey)) {
+        final String? candidate = await _rosterCache.readJson(key: k);
+        if (candidate != null && candidate.trim().isNotEmpty) {
+          jsonString = candidate;
+          loadedKey = k;
+          break;
         }
       }
+
       if (jsonString == null || jsonString.trim().isEmpty) {
-        jsonString = await _rosterCache.readJson(key: legacyKey);
-        loadedFromLegacy = jsonString != null && jsonString.trim().isNotEmpty;
-      }
-      if (jsonString == null || jsonString.trim().isEmpty) {
-        final String safeLegacy = _safeRosterCacheKey(legacyKey);
-        if (safeLegacy != legacyKey) {
-          jsonString = await _rosterCache.readJson(key: safeLegacy);
-          loadedFromLegacy = jsonString != null && jsonString.trim().isNotEmpty;
+        for (final String k in _compatRosterCacheKeys(legacyKey)) {
+          final String? candidate = await _rosterCache.readJson(key: k);
+          if (candidate != null && candidate.trim().isNotEmpty) {
+            jsonString = candidate;
+            loadedKey = k;
+            loadedFromLegacy = true;
+            break;
+          }
         }
       }
+
       if (jsonString == null || jsonString.trim().isEmpty) return;
       final Object? decoded = jsonDecode(jsonString);
       if (decoded is! Map) return;
@@ -1156,7 +1192,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
       // Migration: if we loaded an older per-class key, persist under the new
       // section-only key so future offline runs find it quickly.
-      if (loadedFromLegacy) {
+      if (loadedFromLegacy || (loadedKey != null && loadedKey != primaryKey)) {
         unawaited(_rosterCache.writeJson(key: primaryKey, json: jsonString));
         final String safePrimary = _safeRosterCacheKey(primaryKey);
         if (safePrimary != primaryKey) {
