@@ -73,6 +73,21 @@ class FaceEmbeddingService {
     }
   }
 
+  /// Releases any loaded model session so the next [initialize] call reloads
+  /// the model bytes from disk.
+  ///
+  /// Used by offline-mode "hard reset" to force a true model refresh.
+  void reset() {
+    try {
+      _session?.release();
+    } catch (_) {
+      // Best-effort only.
+    }
+    _session = null;
+    _sessionProvider = 'cpu';
+    _debugInferenceCount = 0;
+  }
+
   bool get isReady => _session != null;
 
   /// Generates a face embedding for the detected region inside [image].

@@ -22,9 +22,65 @@ class OfflineModeService {
 
   static const String _markerFileName = 'offline_mode_markers.json';
 
+  static const String _modelFileName = 'face_embedding.onnx';
+
   Future<File> _markerFile() async {
     final Directory dir = await getApplicationDocumentsDirectory();
     return File('${dir.path}/$_markerFileName');
+  }
+
+  Future<File> _modelFile() async {
+    final Directory dir = await getApplicationDocumentsDirectory();
+    return File('${dir.path}/$_modelFileName');
+  }
+
+  Future<Directory> _rosterCacheDir() async {
+    final Directory base = await getApplicationSupportDirectory();
+    return Directory('${base.path}${Platform.pathSeparator}roster_cache');
+  }
+
+  /// Hard reset for offline mode:
+  /// - Deletes the local roster embeddings cache
+  /// - Deletes offline preparation markers
+  /// - Deletes the locally cached ONNX model file
+  /// - Resets any in-memory ONNX session so the model truly reloads
+  Future<void> resetOfflineMode() async {
+    // 1) Drop in-memory session first (so it doesn't keep using old bytes).
+    try {
+      FaceEmbeddingService.instance.reset();
+    } catch (_) {
+      // Best-effort only.
+    }
+
+    // 2) Delete roster cache directory.
+    try {
+      final Directory dir = await _rosterCacheDir();
+      if (await dir.exists()) {
+        await dir.delete(recursive: true);
+      }
+    } catch (_) {
+      // Best-effort only.
+    }
+
+    // 3) Delete markers.
+    try {
+      final File file = await _markerFile();
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (_) {
+      // Best-effort only.
+    }
+
+    // 4) Delete local model file.
+    try {
+      final File model = await _modelFile();
+      if (await model.exists()) {
+        await model.delete();
+      }
+    } catch (_) {
+      // Best-effort only.
+    }
   }
 
   Future<Map<String, dynamic>> _readMarkers() async {

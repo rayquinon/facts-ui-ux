@@ -100,7 +100,37 @@ class _OfflineModeChecklistPageState extends State<OfflineModeChecklistPage> {
     }
   }
 
-  Future<void> _prepareAll() async {
+  Future<void> _confirmResetAndPrepare() async {
+    if (_preparingAll) return;
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Reset offline mode?'),
+          content: const Text(
+            'This will delete all offline caches (roster embeddings, markers, and the downloaded face model). '
+            'You will need internet to prepare again.',
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Reset & prepare'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed == true && mounted) {
+      await _resetAndPrepareAll();
+    }
+  }
+
+  Future<void> _resetAndPrepareAll() async {
     if (_preparingAll) return;
     setState(() {
       _preparingAll = true;
@@ -108,18 +138,21 @@ class _OfflineModeChecklistPageState extends State<OfflineModeChecklistPage> {
     });
 
     try {
+      await _service.resetOfflineMode();
       await _service.warmUpModel();
+
       final Map<String, String> failures = <String, String>{};
       for (final String section in _normalizedSections) {
         try {
           await _service.prepareSectionCache(section);
         } catch (e) {
           failures[section] = e.toString();
-          // Continue preparing other sections.
         }
       }
+
       await _refresh();
       if (!mounted) return;
+
       final bool ready = _status?.isReady == true;
       final int total = _normalizedSections.length;
       final int failedCount = failures.length;
@@ -144,12 +177,9 @@ class _OfflineModeChecklistPageState extends State<OfflineModeChecklistPage> {
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = e.toString());
+      await _refresh();
     } finally {
       if (mounted) setState(() => _preparingAll = false);
-      // Refresh already happens above on success; do it here for failures.
-      if (_error != null) {
-        await _refresh();
-      }
     }
   }
 
@@ -200,7 +230,8 @@ class _OfflineModeChecklistPageState extends State<OfflineModeChecklistPage> {
                             ),
                           ),
                           FilledButton(
-                            onPressed: _preparingAll ? null : _prepareAll,
+                            onPressed:
+                                _preparingAll ? null : _confirmResetAndPrepare,
                             child: _preparingAll
                                 ? const SizedBox(
                                     width: 18,
@@ -209,7 +240,7 @@ class _OfflineModeChecklistPageState extends State<OfflineModeChecklistPage> {
                                       strokeWidth: 2,
                                     ),
                                   )
-                                : const Text('Prepare'),
+                                : const Text('Reset & Prepare'),
                           ),
                         ],
                       ),

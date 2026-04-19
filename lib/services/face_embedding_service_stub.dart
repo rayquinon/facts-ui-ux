@@ -32,6 +32,10 @@ class FaceEmbeddingService {
 
   bool get isReady => _initialized;
 
+  void reset() {
+    _initialized = false;
+  }
+
   Future<List<double>> generateEmbedding(
     CameraImage image,
     Rect boundingBox,

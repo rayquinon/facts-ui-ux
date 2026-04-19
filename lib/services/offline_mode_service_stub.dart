@@ -1,6 +1,10 @@
 import 'offline_mode_service_types.dart';
 
 class OfflineModeService {
+  Future<void> resetOfflineMode() async {
+    throw UnsupportedError('Offline mode is not supported on this platform.');
+  }
+
   Future<bool> isModelAvailable() async => false;
 
   Future<List<OfflineModeSectionStatus>> checkSectionsCached(
