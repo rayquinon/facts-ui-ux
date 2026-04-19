@@ -335,6 +335,12 @@ class _OfflineModeChecklistPageState extends State<OfflineModeChecklistPage> {
 
     final bool modelOk = status?.modelAvailable == true;
     final bool ready = status?.isReady == true;
+    final bool allCached = status?.allSectionsCached == true;
+    final int sectionsTotal = _normalizedSections.length;
+    final int sectionsMissingEmbeddings = (status?.sectionStatuses ??
+            const <OfflineModeSectionStatus>[])
+        .where((OfflineModeSectionStatus s) => s.isCached && !s.hasEmbeddings)
+        .length;
 
     return Scaffold(
       appBar: AppBar(
@@ -363,15 +369,33 @@ class _OfflineModeChecklistPageState extends State<OfflineModeChecklistPage> {
                         children: <Widget>[
                           Icon(
                             ready ? Icons.check_circle : Icons.cancel,
-                            color: ready ? Colors.green : Colors.red,
+                            color: ready
+                                ? theme.colorScheme.primary
+                                : theme.colorScheme.error,
                           ),
                           const SizedBox(width: 12),
                           Expanded(
-                            child: Text(
-                              ready
-                                  ? 'Offline face scanning is ready'
-                                  : 'Offline face scanning is NOT ready',
-                              style: theme.textTheme.titleMedium,
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: <Widget>[
+                                Text(
+                                  ready
+                                      ? 'Offline face scanning is ready'
+                                      : 'Offline face scanning is NOT ready',
+                                  style: theme.textTheme.titleMedium,
+                                ),
+                                if (!ready)
+                                  Text(
+                                    _buildNotReadyReason(
+                                      modelOk: modelOk,
+                                      allCached: allCached,
+                                      sectionsTotal: sectionsTotal,
+                                      sectionsMissingEmbeddings:
+                                          sectionsMissingEmbeddings,
+                                    ),
+                                    style: theme.textTheme.bodySmall,
+                                  ),
+                              ],
                             ),
                           ),
                           FilledButton(
@@ -556,14 +580,28 @@ class _OfflineModeChecklistPageState extends State<OfflineModeChecklistPage> {
           final bool prepared = s?.isCached == true;
           final bool embeddingsOk = s?.hasEmbeddings == true;
           final bool ok = prepared && embeddingsOk;
+
+          final IconData leadingIcon;
+          final Color leadingColor;
+          if (!prepared) {
+            leadingIcon = Icons.close;
+            leadingColor = Theme.of(context).colorScheme.error;
+          } else if (!embeddingsOk) {
+            leadingIcon = Icons.warning_amber;
+            leadingColor = Theme.of(context).colorScheme.tertiary;
+          } else {
+            leadingIcon = Icons.check;
+            leadingColor = Theme.of(context).colorScheme.primary;
+          }
+
           return Card(
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(14),
             ),
             child: ListTile(
               leading: Icon(
-                prepared ? Icons.check : Icons.close,
-                color: prepared ? Colors.green : Colors.red,
+                leadingIcon,
+                color: leadingColor,
               ),
               title: Text(sectionLabel),
               subtitle: _buildSectionSubtitle(prepared, s),
@@ -600,5 +638,27 @@ class _OfflineModeChecklistPageState extends State<OfflineModeChecklistPage> {
     return Text(
       'Prepared, but $embeddingsSafe/$students student(s) have embeddings. Enroll students to enable offline recognition.',
     );
+  }
+
+  String _buildNotReadyReason({
+    required bool modelOk,
+    required bool allCached,
+    required int sectionsTotal,
+    required int sectionsMissingEmbeddings,
+  }) {
+    if (!modelOk) {
+      return 'Reason: face model is not available.';
+    }
+
+    if (sectionsTotal > 0 && !allCached) {
+      return 'Reason: roster cache is not prepared for all sections.';
+    }
+
+    if (sectionsMissingEmbeddings > 0) {
+      final String plural = sectionsMissingEmbeddings == 1 ? '' : 's';
+      return 'Reason: missing offline embeddings in $sectionsMissingEmbeddings section$plural.';
+    }
+
+    return 'Reason: preparation is incomplete.';
   }
 }
