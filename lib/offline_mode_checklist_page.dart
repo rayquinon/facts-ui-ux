@@ -1,5 +1,9 @@
-import 'package:flutter/material.dart';
+import 'dart:convert';
 
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+
+import 'firebase_options.dart';
 import 'services/offline_mode_service.dart';
 import 'services/offline_mode_service_types.dart';
 
@@ -17,6 +21,14 @@ class OfflineModeChecklistPage extends StatefulWidget {
 
 class _OfflineModeChecklistPageState extends State<OfflineModeChecklistPage> {
   final OfflineModeService _service = OfflineModeService();
+
+  late final TextEditingController _apiKeyController;
+  final TextEditingController _emailController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
+  final TextEditingController _uidController = TextEditingController();
+  bool _showPassword = false;
+  bool _checkingEnrollment = false;
+  String? _enrollmentResult;
 
   bool _loading = true;
   bool _preparingAll = false;
@@ -37,7 +49,140 @@ class _OfflineModeChecklistPageState extends State<OfflineModeChecklistPage> {
   @override
   void initState() {
     super.initState();
+    _apiKeyController = TextEditingController(
+      text: DefaultFirebaseOptions.currentPlatform.apiKey,
+    );
     _refresh();
+  }
+
+  @override
+  void dispose() {
+    _apiKeyController.dispose();
+    _emailController.dispose();
+    _passwordController.dispose();
+    _uidController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _checkEmbeddingsEnrollment() async {
+    if (_checkingEnrollment) return;
+
+    final String apiKey = _apiKeyController.text.trim();
+    final String email = _emailController.text.trim();
+    final String password = _passwordController.text;
+    final String uid = _uidController.text.trim();
+
+    if (apiKey.isEmpty || email.isEmpty || password.isEmpty || uid.isEmpty) {
+      setState(() {
+        _enrollmentResult = 'Enter apiKey, email, password, and student UID.';
+      });
+      return;
+    }
+
+    setState(() {
+      _checkingEnrollment = true;
+      _enrollmentResult = null;
+    });
+
+    try {
+      final Uri signInUri = Uri.parse(
+        'https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=$apiKey',
+      );
+      final Map<String, Object?> signInBody = <String, Object?>{
+        'email': email,
+        'password': password,
+        'returnSecureToken': true,
+      };
+
+      final http.Response signInResponse = await http.post(
+        signInUri,
+        headers: const <String, String>{
+          'Accept': 'application/json',
+          'Content-Type': 'application/json; charset=utf-8',
+        },
+        body: jsonEncode(signInBody),
+      );
+
+      if (signInResponse.statusCode != 200) {
+        String message = 'Sign-in failed (${signInResponse.statusCode}).';
+        try {
+          final Object? decoded = jsonDecode(signInResponse.body);
+          if (decoded is Map) {
+            final Object? err = decoded['error'];
+            if (err is Map && err['message'] != null) {
+              message = 'Sign-in failed: ${err['message']}';
+            }
+          }
+        } catch (_) {
+          // Ignore parse errors.
+        }
+        setState(() {
+          _enrollmentResult = message;
+        });
+        return;
+      }
+
+      final Object? signInDecoded = jsonDecode(signInResponse.body);
+      if (signInDecoded is! Map) {
+        setState(() {
+          _enrollmentResult = 'Sign-in response was not valid JSON.';
+        });
+        return;
+      }
+      final String token = (signInDecoded['idToken'] ?? '').toString().trim();
+      if (token.isEmpty) {
+        setState(() {
+          _enrollmentResult = 'Sign-in succeeded but no idToken was returned.';
+        });
+        return;
+      }
+
+      final Uri checkUri = Uri.parse(
+        'https://embeddings.shiro.codes/v1/embeddings/$uid',
+      );
+      final http.Response checkResponse = await http.get(
+        checkUri,
+        headers: <String, String>{
+          'Authorization': 'Bearer $token',
+          'Accept': 'application/json',
+        },
+      );
+
+      if (checkResponse.statusCode == 200) {
+        setState(() {
+          _enrollmentResult = 'Enrolled: VPS returned 200 for this UID.';
+        });
+        return;
+      }
+      if (checkResponse.statusCode == 404) {
+        setState(() {
+          _enrollmentResult = 'Not enrolled: VPS returned 404 (no embeddings record).';
+        });
+        return;
+      }
+      if (checkResponse.statusCode == 401 || checkResponse.statusCode == 403) {
+        setState(() {
+          _enrollmentResult =
+              'Permission denied: VPS returned ${checkResponse.statusCode}. Use an instructor/admin account.';
+        });
+        return;
+      }
+
+      setState(() {
+        _enrollmentResult =
+            'Unexpected VPS response: ${checkResponse.statusCode}. Try again while online.';
+      });
+    } catch (e) {
+      setState(() {
+        _enrollmentResult = 'Check failed: $e';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _checkingEnrollment = false;
+        });
+      }
+    }
   }
 
   Future<void> _refresh() async {
@@ -298,6 +443,98 @@ class _OfflineModeChecklistPageState extends State<OfflineModeChecklistPage> {
                   const SizedBox(height: 12),
                   const Text(
                     'Note: Preparing requires internet and may take a few minutes (it downloads the roster + face embeddings). After preparation, scanning can run offline for the prepared sections.',
+                  ),
+                  const SizedBox(height: 16),
+                  Card(
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Text(
+                            'Verify embeddings enrollment',
+                            style: theme.textTheme.titleMedium,
+                          ),
+                          const SizedBox(height: 8),
+                          const Text(
+                            'Uses Firebase Auth REST to get an ID token, then calls the embeddings server. Use your instructor/admin account and the student UID.',
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: _apiKeyController,
+                            decoration: const InputDecoration(
+                              labelText: 'Firebase Web API key (apiKey)',
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: _emailController,
+                            decoration: const InputDecoration(
+                              labelText: 'Instructor/admin email',
+                            ),
+                            keyboardType: TextInputType.emailAddress,
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: _passwordController,
+                            obscureText: !_showPassword,
+                            decoration: InputDecoration(
+                              labelText: 'Password',
+                              suffixIcon: IconButton(
+                                tooltip:
+                                    _showPassword ? 'Hide' : 'Show',
+                                onPressed: () {
+                                  setState(() {
+                                    _showPassword = !_showPassword;
+                                  });
+                                },
+                                icon: Icon(
+                                  _showPassword
+                                      ? Icons.visibility_off
+                                      : Icons.visibility,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: _uidController,
+                            decoration: const InputDecoration(
+                              labelText: 'Student UID to check',
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          Row(
+                            children: <Widget>[
+                              FilledButton(
+                                onPressed: _checkingEnrollment
+                                    ? null
+                                    : _checkEmbeddingsEnrollment,
+                                child: _checkingEnrollment
+                                    ? const SizedBox(
+                                        width: 18,
+                                        height: 18,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : const Text('Check'),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  _enrollmentResult ?? '',
+                                  style: theme.textTheme.bodyMedium,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ],
               ),
