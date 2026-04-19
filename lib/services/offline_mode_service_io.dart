@@ -361,7 +361,11 @@ class OfflineModeService {
         // from the server at least once.
         final bool isPrepared = preparedAtMs != null;
 
-        bool hasEmbeddings = false;
+        bool cacheExists = false;
+        int? embeddingsCount;
+        int? missingCount;
+        int? failedCount;
+        int? forbiddenCount;
         if (isPrepared) {
           try {
             final String cacheKey = _rosterCacheKeyForSection(sectionLabel);
@@ -371,15 +375,21 @@ class OfflineModeService {
             if (jsonString != null && jsonString.trim().isNotEmpty) {
               final Object? decoded = jsonDecode(jsonString);
               if (decoded is Map) {
+                cacheExists = true;
                 final Object? rosterObj = decoded['roster'];
                 if (rosterObj is List) {
-                  final int rosterCount = rosterObj.length;
-                  hasEmbeddings = (studentCount ?? 1) == 0 || rosterCount > 0;
+                  embeddingsCount = rosterObj.length;
                 }
+                final Object? missingObj = decoded['missing'];
+                final Object? failedObj = decoded['failed'];
+                final Object? forbiddenObj = decoded['forbidden'];
+                if (missingObj is num) missingCount = missingObj.toInt();
+                if (failedObj is num) failedCount = failedObj.toInt();
+                if (forbiddenObj is num) forbiddenCount = forbiddenObj.toInt();
               }
             }
           } catch (_) {
-            hasEmbeddings = false;
+            cacheExists = false;
           }
         }
 
@@ -397,8 +407,12 @@ class OfflineModeService {
         out.add(
           OfflineModeSectionStatus(
             sectionLabel: sectionLabel,
-            isCached: isPrepared && hasEmbeddings,
+            isCached: isPrepared && cacheExists,
             studentCount: studentCount,
+            embeddingsCount: embeddingsCount,
+            missingCount: missingCount,
+            failedCount: failedCount,
+            forbiddenCount: forbiddenCount,
             preparedAt: preparedAtMs == null
                 ? null
                 : DateTime.fromMillisecondsSinceEpoch(preparedAtMs),

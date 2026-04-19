@@ -285,18 +285,20 @@ class _OfflineModeChecklistPageState extends State<OfflineModeChecklistPage> {
     return _normalizedSections
         .map((String sectionLabel) {
           final OfflineModeSectionStatus? s = byLabel[sectionLabel];
-          final bool ok = s?.isCached == true;
+          final bool prepared = s?.isCached == true;
+          final bool embeddingsOk = s?.hasEmbeddings == true;
+          final bool ok = prepared && embeddingsOk;
           return Card(
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(14),
             ),
             child: ListTile(
               leading: Icon(
-                ok ? Icons.check : Icons.close,
-                color: ok ? Colors.green : Colors.red,
+                prepared ? Icons.check : Icons.close,
+                color: prepared ? Colors.green : Colors.red,
               ),
               title: Text(sectionLabel),
-              subtitle: _buildSectionSubtitle(ok, s),
+              subtitle: _buildSectionSubtitle(prepared, s),
               trailing: TextButton(
                 onPressed: ok ? null : () => _prepareSection(sectionLabel),
                 child: const Text('Cache'),
@@ -307,17 +309,28 @@ class _OfflineModeChecklistPageState extends State<OfflineModeChecklistPage> {
         .toList(growable: false);
   }
 
-  Widget _buildSectionSubtitle(bool ok, OfflineModeSectionStatus? s) {
+  Widget _buildSectionSubtitle(bool prepared, OfflineModeSectionStatus? s) {
     if (s?.error != null) {
       return Text('Not prepared: ${s!.error}');
     }
-    if (!ok) {
+    if (!prepared) {
       return const Text('Not prepared yet');
     }
-    final int? count = s?.studentCount;
-    if (count == null) {
+    final int? students = s?.studentCount;
+    final int? embeddings = s?.embeddingsCount;
+
+    if (students == null) {
       return const Text('Prepared (available offline)');
     }
-    return Text('Prepared (available offline) • $count students');
+
+    final bool embeddingsOk = s?.hasEmbeddings == true;
+    if (embeddingsOk) {
+      return Text('Prepared (available offline) • $students students');
+    }
+
+    final int embeddingsSafe = embeddings ?? 0;
+    return Text(
+      'Prepared, but $embeddingsSafe/$students student(s) have embeddings. Enroll students to enable offline recognition.',
+    );
   }
 }
