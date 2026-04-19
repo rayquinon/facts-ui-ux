@@ -350,7 +350,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       });
 
       if (!_recognitionSupported) {
-        // Attendance recognition is not supported on web because the web build
         // uses a lightweight fallback embedding (no MLKit face detection / ONNX).
         // Make this explicit to avoid misleading results.
         if (!mounted) return;
@@ -1069,30 +1068,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     return dashed.replaceAll(RegExp(r'\s+'), '-');
   }
 
-  List<String> _compatRosterCacheKeys(String key) {
-    final Set<String> out = <String>{};
-    void add(String k) {
-      final String trimmed = k.trim();
-      if (trimmed.isNotEmpty) out.add(trimmed);
-    }
-
-    add(key);
-    final String safe = _safeRosterCacheKey(key);
-    if (safe != key) add(safe);
-
-    // Compat: older caches created from Unicode dashes end up with '_' in the
-    // filename (because the IO cache sanitizes non-ascii chars). Try a
-    // hyphen-to-underscore variant so we can still load those files.
-    final String dashedToUnderscore = key.replaceAll('-', '_');
-    if (dashedToUnderscore != key) {
-      add(dashedToUnderscore);
-      final String safe2 = _safeRosterCacheKey(dashedToUnderscore);
-      if (safe2 != dashedToUnderscore) add(safe2);
-    }
-
-    return out.toList(growable: false);
-  }
-
   String _safeRosterCacheKey(String key) {
     final String normalized = key.trim().toLowerCase();
     final String safe = normalized.replaceAll(RegExp(r'[^a-z0-9._-]+'), '_');
@@ -1152,28 +1127,72 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       final String primaryKey = _buildRosterCacheKey();
       final String legacyKey = _buildLegacyRosterCacheKey();
 
-      String? jsonString;
-      String? loadedKey;
-      bool loadedFromLegacy = false;
+      String dashToUnderscore(String input) {
+        // Some older caches ended up with '_' where newer code uses '-'
+        // because of unicode dash sanitization differences.
+        return input.replaceAll('-', '_');
+      }
 
-      for (final String k in _compatRosterCacheKeys(primaryKey)) {
-        final String? candidate = await _rosterCache.readJson(key: k);
-        if (candidate != null && candidate.trim().isNotEmpty) {
-          jsonString = candidate;
-          loadedKey = k;
-          break;
+      String? jsonString = await _rosterCache.readJson(key: primaryKey);
+      bool loadedFromLegacy = false;
+      bool loadedFromVariant = false;
+
+      if (jsonString == null || jsonString.trim().isEmpty) {
+        final String safePrimary = _safeRosterCacheKey(primaryKey);
+        if (safePrimary != primaryKey) {
+          jsonString = await _rosterCache.readJson(key: safePrimary);
+        }
+      }
+
+      // Compatibility: if prep wrote a cache whose effective filename uses
+      // underscores, try a dash->underscore variant.
+      if (jsonString == null || jsonString.trim().isEmpty) {
+        final String underscored = dashToUnderscore(primaryKey);
+        if (underscored != primaryKey) {
+          jsonString = await _rosterCache.readJson(key: underscored);
+          loadedFromVariant =
+              jsonString != null && jsonString.trim().isNotEmpty;
+        }
+      }
+      if (jsonString == null || jsonString.trim().isEmpty) {
+        final String safeUnderscored = _safeRosterCacheKey(
+          dashToUnderscore(primaryKey),
+        );
+        if (safeUnderscored.isNotEmpty && safeUnderscored != primaryKey) {
+          jsonString = await _rosterCache.readJson(key: safeUnderscored);
+          loadedFromVariant =
+              jsonString != null && jsonString.trim().isNotEmpty;
         }
       }
 
       if (jsonString == null || jsonString.trim().isEmpty) {
-        for (final String k in _compatRosterCacheKeys(legacyKey)) {
-          final String? candidate = await _rosterCache.readJson(key: k);
-          if (candidate != null && candidate.trim().isNotEmpty) {
-            jsonString = candidate;
-            loadedKey = k;
-            loadedFromLegacy = true;
-            break;
-          }
+        jsonString = await _rosterCache.readJson(key: legacyKey);
+        loadedFromLegacy = jsonString != null && jsonString.trim().isNotEmpty;
+      }
+      if (jsonString == null || jsonString.trim().isEmpty) {
+        final String safeLegacy = _safeRosterCacheKey(legacyKey);
+        if (safeLegacy != legacyKey) {
+          jsonString = await _rosterCache.readJson(key: safeLegacy);
+          loadedFromLegacy = jsonString != null && jsonString.trim().isNotEmpty;
+        }
+      }
+
+      if (jsonString == null || jsonString.trim().isEmpty) {
+        final String underscoredLegacy = dashToUnderscore(legacyKey);
+        if (underscoredLegacy != legacyKey) {
+          jsonString = await _rosterCache.readJson(key: underscoredLegacy);
+          loadedFromVariant =
+              jsonString != null && jsonString.trim().isNotEmpty;
+        }
+      }
+      if (jsonString == null || jsonString.trim().isEmpty) {
+        final String safeUnderscoredLegacy = _safeRosterCacheKey(
+          dashToUnderscore(legacyKey),
+        );
+        if (safeUnderscoredLegacy.isNotEmpty && safeUnderscoredLegacy != legacyKey) {
+          jsonString = await _rosterCache.readJson(key: safeUnderscoredLegacy);
+          loadedFromVariant =
+              jsonString != null && jsonString.trim().isNotEmpty;
         }
       }
 
@@ -1192,7 +1211,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
       // Migration: if we loaded an older per-class key, persist under the new
       // section-only key so future offline runs find it quickly.
-      if (loadedFromLegacy || (loadedKey != null && loadedKey != primaryKey)) {
+      if (loadedFromLegacy || loadedFromVariant) {
         unawaited(_rosterCache.writeJson(key: primaryKey, json: jsonString));
         final String safePrimary = _safeRosterCacheKey(primaryKey);
         if (safePrimary != primaryKey) {
