@@ -95,7 +95,10 @@ $manifest = @{
 }
 
 $manifestJson = $manifest | ConvertTo-Json -Depth 4
-Set-Content -Path $manifestPath -Value $manifestJson -Encoding UTF8
+# PowerShell 5.1 writes UTF-8 with BOM by default, which can break strict JSON
+# decoders (e.g., Dart's jsonDecode). Write UTF-8 *without* BOM.
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($manifestPath, $manifestJson, $utf8NoBom)
 
 Write-Host "Building Flutter web release…"
 flutter build web --release --base-href /app/

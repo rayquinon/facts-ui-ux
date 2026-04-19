@@ -20,19 +20,23 @@ class AppUpdateService {
     'https://simple-distributed-database.web.app/downloads/version.json',
   ];
 
-  Future<AppUpdateInfo?> checkForUpdate({Duration timeout = const Duration(seconds: 3)}) async {
+  Future<AppUpdateInfo?> checkForUpdate({
+    Duration timeout = const Duration(seconds: 3),
+  }) async {
     final PackageInfo info = await PackageInfo.fromPlatform();
     final int currentBuild = int.tryParse(info.buildNumber) ?? 0;
     final String currentVersion = info.version;
 
-    final Map<String, dynamic>? manifest = await _fetchManifest(timeout: timeout);
+    final Map<String, dynamic>? manifest = await _fetchManifest(
+      timeout: timeout,
+    );
     if (manifest == null) return null;
 
     final int latestBuild = _readInt(manifest['latestBuildNumber']) ?? 0;
     final String latestVersion =
         (manifest['latestVersionName'] as String?)?.trim().isNotEmpty == true
-            ? (manifest['latestVersionName'] as String).trim()
-            : '';
+        ? (manifest['latestVersionName'] as String).trim()
+        : '';
 
     final String? apkUrl = _readString(manifest['apkUrl']);
     final String? arm64Url = _readString(manifest['arm64Url']);
@@ -44,7 +48,9 @@ class AppUpdateService {
     final String? arm64UrlAlt = _readString(manifest['arm64UrlAlt']);
     final String? armeabiV7aUrlAlt = _readString(manifest['armeabiUrlAlt']);
     final String? x86_64UrlAlt = _readString(manifest['x64UrlAlt']);
-    final String? androidPageUrlAlt = _readString(manifest['androidPageUrlAlt']);
+    final String? androidPageUrlAlt = _readString(
+      manifest['androidPageUrlAlt'],
+    );
 
     final _AbiUpdateChoice abiChoice = _chooseAndroidUpdate(
       currentBuildNumber: currentBuild,
@@ -178,7 +184,9 @@ class AppUpdateService {
     return bestOffset;
   }
 
-  Future<Map<String, dynamic>?> _fetchManifest({required Duration timeout}) async {
+  Future<Map<String, dynamic>?> _fetchManifest({
+    required Duration timeout,
+  }) async {
     final HttpClient client = HttpClient();
     client.connectionTimeout = timeout;
 
@@ -195,17 +203,26 @@ class AppUpdateService {
         );
 
         try {
-          final HttpClientRequest request = await client.getUrl(uri).timeout(timeout);
+          final HttpClientRequest request = await client
+              .getUrl(uri)
+              .timeout(timeout);
           request.headers.set(HttpHeaders.acceptHeader, 'application/json');
 
-          final HttpClientResponse response = await request.close().timeout(timeout);
+          final HttpClientResponse response = await request.close().timeout(
+            timeout,
+          );
           if (response.statusCode != 200) {
             continue;
           }
 
-          final String body =
-              await response.transform(utf8.decoder).join().timeout(timeout);
-          final Object? decoded = jsonDecode(body);
+          final String body = await response
+              .transform(utf8.decoder)
+              .join()
+              .timeout(timeout);
+          // Some hosting pipelines may accidentally write UTF-8 BOM (\uFEFF)
+          // into JSON files. Dart's jsonDecode does not ignore BOM.
+          final String cleanedBody = body.replaceFirst(RegExp(r'^\uFEFF+'), '');
+          final Object? decoded = jsonDecode(cleanedBody);
           Map<String, dynamic>? manifest;
           if (decoded is Map<String, dynamic>) {
             manifest = decoded;
@@ -216,7 +233,8 @@ class AppUpdateService {
           }
 
           if (manifest != null) {
-            final int latestBuild = _readInt(manifest['latestBuildNumber']) ?? 0;
+            final int latestBuild =
+                _readInt(manifest['latestBuildNumber']) ?? 0;
             if (latestBuild > bestLatestBuild) {
               bestLatestBuild = latestBuild;
               bestManifest = manifest;
@@ -253,7 +271,10 @@ class AppUpdateService {
 }
 
 class _AbiUpdateChoice {
-  const _AbiUpdateChoice({required this.preferredUrl, required this.latestBuildEffective});
+  const _AbiUpdateChoice({
+    required this.preferredUrl,
+    required this.latestBuildEffective,
+  });
 
   final String? preferredUrl;
   final int latestBuildEffective;
