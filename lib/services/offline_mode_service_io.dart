@@ -126,6 +126,34 @@ class OfflineModeService {
     return 'roster_section_$normalized';
   }
 
+  String _normalizeLabelForCompare(String input) {
+    final String trimmed = input.trim().toLowerCase();
+    if (trimmed.isEmpty) return '';
+    // Normalize common unicode dashes/minus to ASCII hyphen.
+    final String dashed = trimmed.replaceAll(
+      RegExp('[\u2010\u2011\u2012\u2013\u2014\u2212]'),
+      '-',
+    );
+    // Collapse whitespace.
+    return dashed.replaceAll(RegExp(r'\s+'), ' ');
+  }
+
+  String _extractSectionLabel(Map<String, dynamic> data) {
+    final Object? rawSection =
+        data['section'] ?? data['Section'] ?? data['SECTION'];
+    return rawSection?.toString() ?? '';
+  }
+
+  bool _isStudentProfile(Map<String, dynamic> data) {
+    final Object? rawRole = data['role'] ?? data['Role'] ?? data['ROLE'];
+    final String role = _normalizeLabelForCompare(rawRole?.toString() ?? '');
+    if (role == 'student' || role.contains('student')) return true;
+    final Object? rawStudentId =
+        data['studentId'] ?? data['StudentId'] ?? data['Student ID'];
+    final String studentId = (rawStudentId ?? '').toString().trim();
+    return studentId.isNotEmpty;
+  }
+
   String _safeRosterCacheKey(String key) {
     final String normalized = key.trim().toLowerCase();
     final String safe = normalized.replaceAll(RegExp(r'[^a-z0-9._-]+'), '_');
@@ -507,16 +535,47 @@ class OfflineModeService {
 
     // Force a server fetch so we know we are actually online and we populate
     // the local cache for later offline usage.
-    final QuerySnapshot<Map<String, dynamic>> snapshot = await _firestore
-        .collection('users')
-        .where('role', isEqualTo: 'student')
+    final CollectionReference<Map<String, dynamic>> users = _firestore
+        .collection('users');
+    final Query<Map<String, dynamic>> baseQuery = users.where(
+      'role',
+      isEqualTo: 'student',
+    );
+
+    QuerySnapshot<Map<String, dynamic>> snapshot = await baseQuery
         .where('section', isEqualTo: label)
         .get(const GetOptions(source: Source.server));
+
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> rosterDocs = snapshot
+        .docs
+        .where((doc) => _isStudentProfile(doc.data()))
+        .toList(growable: false);
+
+    // If the exact-match query yields no docs, fall back to a broader fetch
+    // and do client-side normalization to avoid subtle label mismatches.
+    if (rosterDocs.isEmpty) {
+      try {
+        final QuerySnapshot<Map<String, dynamic>> fallback = await baseQuery
+            .get(const GetOptions(source: Source.server));
+        final String wanted = _normalizeLabelForCompare(label);
+        rosterDocs = fallback.docs
+            .where((doc) => _isStudentProfile(doc.data()))
+            .where((doc) {
+              final String actual = _normalizeLabelForCompare(
+                _extractSectionLabel(doc.data()),
+              );
+              return actual.isNotEmpty && actual == wanted;
+            })
+            .toList(growable: false);
+      } catch (_) {
+        // Keep rosterDocs empty; caller will treat as empty section.
+      }
+    }
 
     final String cacheKey = _rosterCacheKeyForSection(label);
 
     // Fast path: if the section has no students, store an empty roster payload.
-    if (snapshot.docs.isEmpty) {
+    if (rosterDocs.isEmpty) {
       final Map<String, Object?> emptyPayload = <String, Object?>{
         'cachedAtUtc': DateTime.now().toUtc().toIso8601String(),
         'roster': <Object?>[],
@@ -529,6 +588,14 @@ class OfflineModeService {
         key: cacheKey,
         json: jsonEncode(emptyPayload),
       );
+
+      final String safeCacheKey = _safeRosterCacheKey(cacheKey);
+      if (safeCacheKey != cacheKey) {
+        await _rosterCache.writeJson(
+          key: safeCacheKey,
+          json: jsonEncode(emptyPayload),
+        );
+      }
 
       final Map<String, dynamic> markers = await _readMarkers();
       final Map<String, dynamic> sections =
@@ -564,13 +631,22 @@ class OfflineModeService {
         .where((id) => id.isNotEmpty)
         .toSet();
 
+    // Recompute allowedIds from the selected roster docs (supports fallback).
+    allowedIds
+      ..clear()
+      ..addAll(
+        rosterDocs
+            .map((doc) => doc.id.trim())
+            .where((id) => id.isNotEmpty),
+      );
+
     final Map<String, Map<String, Object?>> existingById =
         existingPayload == null
         ? <String, Map<String, Object?>>{}
         : _indexRosterEntries(existingPayload);
 
     final List<QueryDocumentSnapshot<Map<String, dynamic>>> docsToFetch =
-        snapshot.docs
+      rosterDocs
             .where((doc) => !existingById.containsKey(doc.id))
             .toList(growable: false);
 
@@ -631,7 +707,7 @@ class OfflineModeService {
         'missing': fetchedPayload['missing'] ?? 0,
         'failed': fetchedPayload['failed'] ?? 0,
         'forbidden': fetchedPayload['forbidden'] ?? 0,
-        'totalUsers': snapshot.docs.length,
+        'totalUsers': rosterDocs.length,
       };
     }
 
@@ -652,7 +728,7 @@ class OfflineModeService {
         <String, dynamic>{};
     sections[_sectionPreparedAtKey(label)] = <String, dynamic>{
       'preparedAt': DateTime.now().millisecondsSinceEpoch,
-      'studentCount': snapshot.docs.length,
+      'studentCount': rosterDocs.length,
       'embeddingsCachedAt': DateTime.now().millisecondsSinceEpoch,
       'embeddingsCount': (mergedPayload['roster'] is List)
           ? (mergedPayload['roster'] as List).length
