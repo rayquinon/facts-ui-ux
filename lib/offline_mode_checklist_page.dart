@@ -109,21 +109,38 @@ class _OfflineModeChecklistPageState extends State<OfflineModeChecklistPage> {
 
     try {
       await _service.warmUpModel();
+      final Map<String, String> failures = <String, String>{};
       for (final String section in _normalizedSections) {
-        await _service.prepareSectionCache(section);
+        try {
+          await _service.prepareSectionCache(section);
+        } catch (e) {
+          failures[section] = e.toString();
+          // Continue preparing other sections.
+        }
       }
       await _refresh();
       if (!mounted) return;
       final bool ready = _status?.isReady == true;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            ready
-                ? 'Offline mode is ready.'
-                : 'Prepared, but some items are still not ready.',
-          ),
-        ),
-      );
+      final int total = _normalizedSections.length;
+      final int failedCount = failures.length;
+      final int okCount = total - failedCount;
+      final String baseMessage = ready
+          ? 'Offline mode is ready.'
+          : 'Prepared $okCount/$total section(s).';
+
+      if (failedCount > 0) {
+        final String failedLabels = failures.keys.join(', ');
+        setState(() {
+          _error = 'Failed to prepare: $failedLabels';
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$baseMessage Failed: $failedLabels')),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(baseMessage)),
+        );
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = e.toString());
