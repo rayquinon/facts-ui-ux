@@ -1015,6 +1015,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         _updateStatus(
           'Loaded ${roster.length} students for recognition. ${outcome.forbidden} forbidden (check instructor/admin claim).',
         );
+      } else {
+        // Successful refresh with no caveats; replace any cached-roster banner.
+        _updateStatus('Loaded ${roster.length} students for recognition.');
       }
     } catch (error, stackTrace) {
       debugPrint('Roster load failed: $error\n$stackTrace');
