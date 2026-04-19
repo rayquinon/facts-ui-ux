@@ -66,6 +66,17 @@ class _InstructorPageState extends State<InstructorPage> {
 
   static const String _kSessionPointerCollection = 'attendanceSessionPointers';
 
+  String _scheduleKeyFor({
+    required int dayOfWeek,
+    required TimeOfDay start,
+    required TimeOfDay end,
+  }) {
+    String two(int n) => n.toString().padLeft(2, '0');
+    final String startKey = '${two(start.hour)}${two(start.minute)}';
+    final String endKey = '${two(end.hour)}${two(end.minute)}';
+    return 'd$dayOfWeek-${startKey}_$endKey';
+  }
+
   Future<bool> _confirmReopenCompletedSession(
     BuildContext context, {
     required bool expired,
@@ -79,7 +90,7 @@ class _InstructorPageState extends State<InstructorPage> {
             'This session is marked as completed.',
             'Existing recorded attendance will be kept.',
             if (expired)
-              'Note: your simulated time is past the scheduled end, so it may auto-end immediately.',
+              'Note: the current time is past the scheduled end, so it may auto-end immediately.',
           ].join('\n\n'),
         ),
         actions: <Widget>[
@@ -101,8 +112,6 @@ class _InstructorPageState extends State<InstructorPage> {
     required String sessionId,
     required String pointerId,
   }) async {
-    if (!_simulationEnabled) return false;
-
     try {
       await FirebaseFirestore.instance
           .collection('attendanceSessions')
@@ -1172,8 +1181,19 @@ class _InstructorPageState extends State<InstructorPage> {
         final Map<String, dynamic>? data = pointerSnap?.data();
         final String status = (data?['status'] as String?)?.toLowerCase() ?? '';
         final String sessionId = (data?['sessionId'] as String?)?.trim() ?? '';
+        final String pointerScheduleKey =
+            (data?['scheduleKey'] as String?)?.trim() ?? '';
         final Timestamp? scheduledEndTs = data?['scheduledEndAt'] as Timestamp?;
         final DateTime? scheduledEnd = scheduledEndTs?.toDate();
+
+        final String desiredScheduleKey = _scheduleKeyFor(
+          dayOfWeek: schedule.dayOfWeek,
+          start: schedule.start,
+          end: schedule.end,
+        );
+        final bool pointerMatchesSchedule =
+            pointerScheduleKey.isEmpty ||
+            pointerScheduleKey == desiredScheduleKey;
 
         final bool expired =
             scheduledEnd != null &&
@@ -1182,7 +1202,8 @@ class _InstructorPageState extends State<InstructorPage> {
         final bool resumable =
             sessionId.isNotEmpty &&
             (status == 'active' || status == 'paused') &&
-            !expired;
+          !expired &&
+          pointerMatchesSchedule;
 
         if (expired &&
             sessionId.isNotEmpty &&
@@ -1864,10 +1885,21 @@ class _InstructorPageState extends State<InstructorPage> {
                               (data?['status'] as String?)?.toLowerCase() ?? '';
                           final String sessionId =
                               (data?['sessionId'] as String?)?.trim() ?? '';
+                            final String pointerScheduleKey =
+                              (data?['scheduleKey'] as String?)?.trim() ?? '';
                           final Timestamp? scheduledEndTs =
                               data?['scheduledEndAt'] as Timestamp?;
                           final DateTime? scheduledEnd = scheduledEndTs
                               ?.toDate();
+
+                            final String desiredScheduleKey = _scheduleKeyFor(
+                            dayOfWeek: activeSchedule.dayOfWeek,
+                            start: activeSchedule.start,
+                            end: activeSchedule.end,
+                            );
+                            final bool pointerMatchesSchedule =
+                              pointerScheduleKey.isEmpty ||
+                              pointerScheduleKey == desiredScheduleKey;
 
                           final bool expired =
                               scheduledEnd != null &&
@@ -1876,12 +1908,13 @@ class _InstructorPageState extends State<InstructorPage> {
                           final bool resumable =
                               sessionId.isNotEmpty &&
                               (status == 'active' || status == 'paused') &&
-                              !expired;
+                              !expired &&
+                              pointerMatchesSchedule;
 
                             final bool reopenable =
-                              _simulationEnabled &&
                               sessionId.isNotEmpty &&
-                              status == 'completed';
+                              status == 'completed' &&
+                              pointerMatchesSchedule;
 
                           if (expired &&
                               sessionId.isNotEmpty &&

@@ -29,12 +29,17 @@ class _VerifyPhonePageState extends State<VerifyPhonePage> {
   bool _verifying = false;
   bool _codeSent = false;
 
+  static const Duration _resendCooldown = Duration(minutes: 1);
+  DateTime? _resendCooldownEndsAt;
+  Timer? _resendCooldownTimer;
+
   String? _verificationId;
   int? _resendToken;
   String? _error;
 
   @override
   void dispose() {
+    _resendCooldownTimer?.cancel();
     _phoneController.dispose();
     _codeController.dispose();
     super.dispose();
@@ -67,12 +72,48 @@ class _VerifyPhonePageState extends State<VerifyPhonePage> {
     return value;
   }
 
+  int get _resendCooldownSecondsRemaining {
+    final DateTime? until = _resendCooldownEndsAt;
+    if (until == null) return 0;
+    final int seconds = until.difference(DateTime.now()).inSeconds;
+    return seconds <= 0 ? 0 : seconds;
+  }
+
+  void _startResendCooldown() {
+    _resendCooldownEndsAt = DateTime.now().add(_resendCooldown);
+    _resendCooldownTimer?.cancel();
+    _resendCooldownTimer = Timer.periodic(const Duration(seconds: 1), (Timer t) {
+      if (!mounted) return;
+      if (_resendCooldownSecondsRemaining <= 0) {
+        t.cancel();
+        setState(() {});
+        return;
+      }
+      setState(() {});
+    });
+  }
+
+  void _clearResendCooldown() {
+    _resendCooldownEndsAt = null;
+    _resendCooldownTimer?.cancel();
+    _resendCooldownTimer = null;
+  }
+
   Future<void> _sendCode({bool forceResend = false}) async {
     if (!_supported) return;
     final User? user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
     if (_sending || _verifying) return;
+
+    final int remaining = _resendCooldownSecondsRemaining;
+    if (remaining > 0) {
+      setState(() {
+        _error = 'Please wait ${remaining}s before resending the code.';
+      });
+      return;
+    }
+
     final String phone = _normalizePhone(_phoneController.text);
     if (phone.isEmpty) {
       setState(() => _error = 'Enter a phone number (include country code).');
@@ -83,6 +124,9 @@ class _VerifyPhonePageState extends State<VerifyPhonePage> {
       _sending = true;
       _error = null;
     });
+
+    // Client-side rate limit to reduce accidental spamming.
+    _startResendCooldown();
 
     final Completer<void> completer = Completer<void>();
 
@@ -99,6 +143,7 @@ class _VerifyPhonePageState extends State<VerifyPhonePage> {
             );
             await FirebaseAuth.instance.currentUser?.reload();
             if (!mounted) return;
+            _clearResendCooldown();
             widget.onVerified();
           } on FirebaseAuthException catch (e) {
             if (!mounted) return;
@@ -110,6 +155,10 @@ class _VerifyPhonePageState extends State<VerifyPhonePage> {
         verificationFailed: (FirebaseAuthException e) {
           if (mounted) {
             setState(() => _error = _mapAuthError(e));
+          }
+          if (mounted) {
+            // If the send failed, allow retry immediately.
+            _clearResendCooldown();
           }
           if (!completer.isCompleted) completer.complete();
         },
@@ -134,6 +183,9 @@ class _VerifyPhonePageState extends State<VerifyPhonePage> {
     } catch (e) {
       if (mounted) {
         setState(() => _error = 'Failed to send code. $e');
+      }
+      if (mounted) {
+        _clearResendCooldown();
       }
       if (!completer.isCompleted) completer.complete();
     } finally {
@@ -306,14 +358,22 @@ class _VerifyPhonePageState extends State<VerifyPhonePage> {
                       ),
                       const SizedBox(height: 12),
                       FilledButton(
-                        onPressed: _sending || _verifying ? null : _sendCode,
+                        onPressed: _sending ||
+                                _verifying ||
+                                _resendCooldownSecondsRemaining > 0
+                            ? null
+                            : _sendCode,
                         child: _sending
                             ? const SizedBox(
                                 width: 20,
                                 height: 20,
                                 child: CircularProgressIndicator(strokeWidth: 2),
                               )
-                            : Text(_codeSent ? 'Resend code' : 'Send code'),
+                            : Text(
+                                _resendCooldownSecondsRemaining > 0
+                                    ? 'Resend available in ${_resendCooldownSecondsRemaining}s'
+                                    : (_codeSent ? 'Resend code' : 'Send code'),
+                              ),
                       ),
                       const SizedBox(height: 16),
                       TextField(

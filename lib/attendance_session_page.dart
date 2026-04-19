@@ -70,6 +70,13 @@ class AttendanceSessionConfig {
   final TimeOfDay end;
   final Duration? simulatedClockOffset;
   final String? resumeSessionId;
+
+  String get scheduleKey {
+    String two(int n) => n.toString().padLeft(2, '0');
+    final String startKey = '${two(start.hour)}${two(start.minute)}';
+    final String endKey = '${two(end.hour)}${two(end.minute)}';
+    return 'd$dayOfWeek-${startKey}_$endKey';
+  }
 }
 
 class AttendanceSessionPage extends StatefulWidget {
@@ -409,78 +416,23 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     // Anchor the pointer ID to the date at session launch (supports simulation).
     _sessionPointerDateKey ??= _dateKey(_now());
 
-    final String? resumeId = widget.config.resumeSessionId;
-    if (resumeId != null && resumeId.trim().isNotEmpty) {
-      final String normalized = resumeId.trim();
-      final DocumentReference<Map<String, dynamic>> ref = _firestore
-          .collection('attendanceSessions')
-          .doc(normalized);
-      try {
-        DocumentSnapshot<Map<String, dynamic>> snap;
-        try {
-          snap = await ref
-              .get(const GetOptions(source: Source.server))
-              .timeout(const Duration(seconds: 3));
-        } catch (_) {
-          snap = await ref
-              .get(const GetOptions(source: Source.cache))
-              .timeout(const Duration(seconds: 2));
-        }
-        if (snap.exists) {
-          _sessionDocId = normalized;
-          final Map<String, dynamic>? data = snap.data();
-
-          // Safety: never implicitly re-activate completed sessions.
-          // Re-opening a completed session is an explicit simulation-only
-          // action initiated by the instructor/admin UI.
-          final String docStatus =
-              (data?['status'] as String?)?.trim().toLowerCase() ?? '';
-          final bool hasEndedAt = data != null && data['endedAt'] is Timestamp;
-          final bool hasEffectiveEndedAt =
-              data != null && data['effectiveEndedAt'] is Timestamp;
-          if (docStatus == 'completed' || hasEndedAt || hasEffectiveEndedAt) {
-            _sessionDocId = null;
-            throw StateError('Refusing to resume a completed session.');
-          }
-
-          final Timestamp? scheduledEndTs = data != null
-              ? (data['scheduledEndAt'] as Timestamp?)
-              : null;
-          if (scheduledEndTs != null) {
-            _scheduledEndAt = scheduledEndTs.toDate();
-          }
-
-          final Object? effectiveStartedAt = data != null
-              ? data['effectiveStartedAt']
-              : null;
-          final Object? startedAt = data != null ? data['startedAt'] : null;
-          final Timestamp? started = (effectiveStartedAt is Timestamp)
-              ? effectiveStartedAt
-              : (startedAt is Timestamp ? startedAt : null);
-          if (started != null) {
-            _sessionStartedAt = started.toDate();
-            _scheduledEndAt ??= _computeScheduledEnd(_sessionStartedAt!);
-          }
-
-          await ref.update(<String, dynamic>{
-            'status': 'active',
-            'resumedAt': FieldValue.serverTimestamp(),
-          });
-          await _upsertSessionPointer(status: 'active');
-          return;
-        }
-      } catch (_) {
-        // Fall through to creating a new session.
-      }
-    }
-
     final User? user = FirebaseAuth.instance.currentUser;
-    final DocumentReference<Map<String, dynamic>> doc = _firestore
-        .collection('attendanceSessions')
-        .doc();
+    final String? uid = user?.uid;
+    if (uid == null || uid.isEmpty) {
+      throw StateError('Not signed in.');
+    }
 
     final DateTime now = _now();
     _sessionPointerDateKey ??= _dateKey(now);
+
+    final String dateKey = _sessionPointerDateKey ?? _dateKey(now);
+    final String canonicalSessionId = _buildCanonicalSessionId(
+      instructorId: uid,
+      classId: widget.config.classId,
+      dateKey: dateKey,
+      scheduleKey: widget.config.scheduleKey,
+    );
+
     final DateTime scheduledStart = _dateWithTime(now, widget.config.start);
     DateTime scheduledEnd = _dateWithTime(now, widget.config.end);
     if (scheduledEnd.isBefore(scheduledStart)) {
@@ -488,7 +440,137 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     }
     _scheduledEndAt = scheduledEnd;
 
-    await doc.set(<String, dynamic>{
+    final DocumentReference<Map<String, dynamic>> canonicalRef = _firestore
+        .collection('attendanceSessions')
+        .doc(canonicalSessionId);
+
+    // 1) Prefer the canonical document if it already exists.
+    // This prevents duplicate "attempt" sessions for the same day+schedule.
+    try {
+      DocumentSnapshot<Map<String, dynamic>> snap;
+      try {
+        snap = await canonicalRef
+            .get(const GetOptions(source: Source.server))
+            .timeout(const Duration(seconds: 3));
+      } catch (_) {
+        snap = await canonicalRef
+            .get(const GetOptions(source: Source.cache))
+            .timeout(const Duration(seconds: 2));
+      }
+
+      if (snap.exists) {
+        _sessionDocId = canonicalSessionId;
+        final Map<String, dynamic>? data = snap.data();
+        _applySessionMetaFromDoc(data);
+
+        // Safety: never implicitly re-activate completed sessions.
+        // Re-opening a completed session is an explicit user action.
+        final String docStatus =
+            (data?['status'] as String?)?.trim().toLowerCase() ?? '';
+        final bool hasEndedAt = data != null && data['endedAt'] is Timestamp;
+        final bool hasEffectiveEndedAt =
+            data != null && data['effectiveEndedAt'] is Timestamp;
+        if (docStatus == 'completed' || hasEndedAt || hasEffectiveEndedAt) {
+          _sessionDocId = null;
+          throw StateError('Refusing to resume a completed session.');
+        }
+
+        await canonicalRef.set(<String, dynamic>{
+          'status': 'active',
+          'resumedAt': FieldValue.serverTimestamp(),
+          'scheduleKey': widget.config.scheduleKey,
+          'dateKey': dateKey,
+          'dayOfWeek': widget.config.dayOfWeek,
+          'startHour': widget.config.start.hour,
+          'startMinute': widget.config.start.minute,
+          'endHour': widget.config.end.hour,
+          'endMinute': widget.config.end.minute,
+          'scheduledStartAt': Timestamp.fromDate(scheduledStart),
+          'scheduledEndAt': Timestamp.fromDate(scheduledEnd),
+          if (_isSimulatedSession) 'effectiveDateKey': dateKey,
+          if (_isSimulatedSession)
+            'simulatedClockOffsetMs':
+                widget.config.simulatedClockOffset?.inMilliseconds,
+        }, SetOptions(merge: true));
+        await _upsertSessionPointer(status: 'active');
+
+        // Best-effort: collapse any historical duplicates into the canonical doc.
+        await _mergeDuplicateSessionAttemptsBestEffort(
+          canonicalSessionId: canonicalSessionId,
+          scheduledStart: scheduledStart,
+        );
+        return;
+      }
+    } catch (_) {
+      // Ignore and continue to migration/creation.
+    }
+
+    // 2) If a resume session exists (legacy random ID), migrate it into the
+    // canonical doc so "Start session" never creates a second attempt.
+    final String? resumeId = widget.config.resumeSessionId;
+    final String? normalizedResume =
+        (resumeId != null && resumeId.trim().isNotEmpty)
+            ? resumeId.trim()
+            : null;
+
+    if (normalizedResume != null && normalizedResume != canonicalSessionId) {
+      final DocumentReference<Map<String, dynamic>> resumeRef = _firestore
+          .collection('attendanceSessions')
+          .doc(normalizedResume);
+      try {
+        DocumentSnapshot<Map<String, dynamic>> snap;
+        try {
+          snap = await resumeRef
+              .get(const GetOptions(source: Source.server))
+              .timeout(const Duration(seconds: 3));
+        } catch (_) {
+          snap = await resumeRef
+              .get(const GetOptions(source: Source.cache))
+              .timeout(const Duration(seconds: 2));
+        }
+        if (snap.exists) {
+          final Map<String, dynamic>? data = snap.data();
+
+          // Safety: never implicitly re-activate completed sessions.
+          final String docStatus =
+              (data?['status'] as String?)?.trim().toLowerCase() ?? '';
+          final bool hasEndedAt = data != null && data['endedAt'] is Timestamp;
+          final bool hasEffectiveEndedAt =
+              data != null && data['effectiveEndedAt'] is Timestamp;
+          if (docStatus == 'completed' || hasEndedAt || hasEffectiveEndedAt) {
+            throw StateError('Refusing to resume a completed session.');
+          }
+
+          // Copy the session metadata into the canonical doc (best-effort).
+          final Map<String, dynamic> copy = <String, dynamic>{
+            ...?data,
+            'status': 'active',
+            'resumedAt': FieldValue.serverTimestamp(),
+            'scheduleKey': widget.config.scheduleKey,
+            'dateKey': dateKey,
+            'dayOfWeek': widget.config.dayOfWeek,
+            'startHour': widget.config.start.hour,
+            'startMinute': widget.config.start.minute,
+            'endHour': widget.config.end.hour,
+            'endMinute': widget.config.end.minute,
+            'scheduledStartAt': Timestamp.fromDate(scheduledStart),
+            'scheduledEndAt': Timestamp.fromDate(scheduledEnd),
+          };
+          if (_isSimulatedSession) {
+            copy['effectiveDateKey'] = dateKey;
+            copy['simulatedClockOffsetMs'] =
+                widget.config.simulatedClockOffset?.inMilliseconds;
+          }
+
+          await canonicalRef.set(copy, SetOptions(merge: true));
+        }
+      } catch (_) {
+        // Ignore.
+      }
+    }
+
+    // 3) Create/reuse the canonical session doc.
+    await canonicalRef.set(<String, dynamic>{
       'classId': widget.config.classId,
       'subjectCode': widget.config.subjectCode,
       'subjectName': widget.config.subjectName,
@@ -500,24 +582,32 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       'startMinute': widget.config.start.minute,
       'endHour': widget.config.end.hour,
       'endMinute': widget.config.end.minute,
+      'scheduleKey': widget.config.scheduleKey,
+      'dateKey': dateKey,
       'scheduledStartAt': Timestamp.fromDate(scheduledStart),
       'scheduledEndAt': Timestamp.fromDate(scheduledEnd),
-      'instructorId': user?.uid,
+      'instructorId': uid,
       'instructorEmail': user?.email,
       'status': 'active',
       'effectiveStartedAt': _isSimulatedSession
           ? Timestamp.fromDate(now)
           : FieldValue.serverTimestamp(),
-      if (_isSimulatedSession) 'effectiveDateKey': _dateKey(now),
+      if (_isSimulatedSession) 'effectiveDateKey': dateKey,
       if (_isSimulatedSession)
         'simulatedClockOffsetMs':
             widget.config.simulatedClockOffset?.inMilliseconds,
       'startedAt': FieldValue.serverTimestamp(),
       'createdAt': FieldValue.serverTimestamp(),
-    });
-    _sessionDocId = doc.id;
+    }, SetOptions(merge: true));
+
+    _sessionDocId = canonicalSessionId;
 
     await _upsertSessionPointer(status: 'active');
+
+    await _mergeDuplicateSessionAttemptsBestEffort(
+      canonicalSessionId: canonicalSessionId,
+      scheduledStart: scheduledStart,
+    );
 
     if (_isSimulatedSession) {
       _sessionStartedAt ??= now;
@@ -527,7 +617,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     // Anchor the session start time on Firestore server time.
     // This avoids device clock drift affecting the 30-minute cutoff.
     try {
-      final DocumentSnapshot<Map<String, dynamic>> snap = await doc
+      final DocumentSnapshot<Map<String, dynamic>> snap = await canonicalRef
           .get(const GetOptions(source: Source.server))
           .timeout(const Duration(seconds: 2));
       final Object? startedAt = snap.data() != null
@@ -538,6 +628,162 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       }
     } catch (_) {
       // Offline/slow network: keep the local start time fallback.
+    }
+  }
+
+  String _buildCanonicalSessionId({
+    required String instructorId,
+    required String classId,
+    required String dateKey,
+    required String scheduleKey,
+  }) {
+    String sanitize(String input) {
+      final String trimmed = input.trim();
+      return trimmed
+          .replaceAll(RegExp(r'[^a-zA-Z0-9_\-]'), '_')
+          .replaceAll(RegExp(r'_+'), '_');
+    }
+
+    final String a = sanitize(instructorId);
+    final String b = sanitize(classId);
+    final String c = sanitize(dateKey);
+    final String d = sanitize(scheduleKey);
+    return 'sess_${a}_${b}_${c}_$d';
+  }
+
+  void _applySessionMetaFromDoc(Map<String, dynamic>? data) {
+    if (data == null) return;
+
+    final Timestamp? scheduledEndTs = data['scheduledEndAt'] as Timestamp?;
+    if (scheduledEndTs != null) {
+      _scheduledEndAt = scheduledEndTs.toDate();
+    }
+
+    final Object? effectiveStartedAt = data['effectiveStartedAt'];
+    final Object? startedAt = data['startedAt'];
+    final Timestamp? started = (effectiveStartedAt is Timestamp)
+        ? effectiveStartedAt
+        : (startedAt is Timestamp ? startedAt : null);
+    if (started != null) {
+      _sessionStartedAt = started.toDate();
+      _scheduledEndAt ??= _computeScheduledEnd(_sessionStartedAt!);
+    }
+  }
+
+  Future<void> _mergeDuplicateSessionAttemptsBestEffort({
+    required String canonicalSessionId,
+    required DateTime scheduledStart,
+  }) async {
+    final String? uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null || uid.isEmpty) return;
+    if (_sessionDocId == null || _sessionDocId != canonicalSessionId) {
+      return;
+    }
+
+    QuerySnapshot<Map<String, dynamic>> snap;
+    try {
+      snap = await _firestore
+          .collection('attendanceSessions')
+          .where('instructorId', isEqualTo: uid)
+          .where('classId', isEqualTo: widget.config.classId)
+          .where('scheduledStartAt',
+              isEqualTo: Timestamp.fromDate(scheduledStart))
+          .get(const GetOptions(source: Source.server))
+          .timeout(const Duration(seconds: 4));
+    } catch (_) {
+      try {
+        snap = await _firestore
+            .collection('attendanceSessions')
+            .where('instructorId', isEqualTo: uid)
+            .where('classId', isEqualTo: widget.config.classId)
+            .where('scheduledStartAt',
+                isEqualTo: Timestamp.fromDate(scheduledStart))
+            .get(const GetOptions(source: Source.cache))
+            .timeout(const Duration(seconds: 2));
+      } catch (_) {
+        return;
+      }
+    }
+
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = snap.docs;
+    if (docs.length <= 1) return;
+
+    final Set<String> sessionIds = docs
+        .map((QueryDocumentSnapshot<Map<String, dynamic>> d) => d.id)
+        .where((String id) => id.trim().isNotEmpty)
+        .toSet();
+    if (sessionIds.length <= 1) return;
+
+    // Merge attendees locally first (works offline if cached).
+    final DocumentReference<Map<String, dynamic>> canonicalRef = _firestore
+        .collection('attendanceSessions')
+        .doc(canonicalSessionId);
+
+    for (final String id in sessionIds) {
+      if (id == canonicalSessionId) continue;
+      final CollectionReference<Map<String, dynamic>> attendees = _firestore
+          .collection('attendanceSessions')
+          .doc(id)
+          .collection('attendees');
+
+      QuerySnapshot<Map<String, dynamic>> attendeeSnap;
+      try {
+        attendeeSnap = await attendees
+            .get(const GetOptions(source: Source.server))
+            .timeout(const Duration(seconds: 4));
+      } catch (_) {
+        try {
+          attendeeSnap = await attendees
+              .get(const GetOptions(source: Source.cache))
+              .timeout(const Duration(seconds: 2));
+        } catch (_) {
+          continue;
+        }
+      }
+
+      if (attendeeSnap.docs.isEmpty) continue;
+      WriteBatch batch = _firestore.batch();
+      int writes = 0;
+      for (final QueryDocumentSnapshot<Map<String, dynamic>> attendee
+          in attendeeSnap.docs) {
+        final String studentId = attendee.id.trim();
+        if (studentId.isEmpty) continue;
+        final DocumentReference<Map<String, dynamic>> dest = canonicalRef
+            .collection('attendees')
+            .doc(studentId);
+        batch.set(dest, attendee.data(), SetOptions(merge: true));
+        writes++;
+        if (writes >= 450) {
+          try {
+            await batch.commit();
+          } catch (_) {
+            // Best-effort.
+          }
+          batch = _firestore.batch();
+          writes = 0;
+        }
+      }
+      if (writes > 0) {
+        try {
+          await batch.commit();
+        } catch (_) {
+          // Best-effort.
+        }
+      }
+    }
+
+    // Server-side cleanup: delete old session docs + subcollections.
+    try {
+      final HttpsCallable callable = FirebaseFunctions.instance
+          .httpsCallable('mergeAttendanceSessionAttemptsForSlot');
+      await callable
+          .call(<String, dynamic>{
+            'canonicalSessionId': canonicalSessionId,
+            'sessionIds': sessionIds.toList(growable: false),
+          })
+          .timeout(const Duration(seconds: 8));
+    } catch (_) {
+      // Offline or insufficient permissions: keep best-effort local merge.
     }
   }
 
@@ -1263,64 +1509,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           statusMessage ?? 'Select a student from the roster to continue.';
     });
     _resetProbeAndPendingState();
-  }
-
-  bool get _scanSimulationEnabled =>
-      widget.config.simulatedClockOffset != null && !kIsWeb;
-
-  Future<void> _simulateScanForSelectedStudent() async {
-    if (!_scanSimulationEnabled) return;
-    if (_initializing || _isEndingSession) return;
-    if (_shouldEndSessionNow()) {
-      _showSnack('Session has reached the scheduled end time.');
-      return;
-    }
-    if (!_captureEnabled) {
-      _showSnack('Session is paused. Tap Continue session to resume.');
-      return;
-    }
-
-    final _RecognizedStudent? selected = _selectedStudent;
-    if (_viewMode != _AttendanceSessionViewMode.verify || selected == null) {
-      return;
-    }
-
-    final DateTime captureTime = _now();
-    final String studentId = selected.userId;
-
-    if (_capturedStudentIds.contains(studentId)) {
-      _showSnack('Already recorded ${selected.displayName}.');
-      await _exitVerifyMode(
-        statusMessage: 'Already recorded ${selected.displayName}.',
-      );
-      return;
-    }
-
-    if (_shouldThrottleStudentCapture(studentId, captureTime)) {
-      _showSnack('Already recorded ${selected.displayName} recently.');
-      return;
-    }
-
-    final _MatchResult result = _MatchResult(
-      embedding: const <double>[],
-      student: selected,
-      similarity: 1.0,
-      confidence: 1.0,
-    );
-
-    _recordLocalCapture(result, captureTime);
-    _capturedStudentIds.add(studentId);
-    try {
-      await _persistCapture(result, const <double>[], captureTime);
-    } catch (_) {
-      _capturedStudentIds.remove(studentId);
-      rethrow;
-    }
-
-    _showSnack('Recorded ${selected.displayName} (simulated).');
-    await _exitVerifyMode(
-      statusMessage: 'Recorded ${selected.displayName} (simulated).',
-    );
   }
 
   Future<void> _processCameraImage(CameraImage image) async {
@@ -3172,29 +3360,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                                           ),
                                         ),
                                       ),
-                                      if (_scanSimulationEnabled &&
-                                          selected != null &&
-                                          !_openingCamera)
-                                        Padding(
-                                          padding: const EdgeInsets.only(
-                                            top: 10,
-                                          ),
-                                          child: OutlinedButton.icon(
-                                            onPressed:
-                                                _simulateScanForSelectedStudent,
-                                            icon: const Icon(
-                                              Icons.check_circle_outline,
-                                            ),
-                                            label: const Text('Simulate scan'),
-                                            style: OutlinedButton.styleFrom(
-                                              visualDensity:
-                                                  VisualDensity.compact,
-                                              tapTargetSize:
-                                                  MaterialTapTargetSize
-                                                      .shrinkWrap,
-                                            ),
-                                          ),
-                                        ),
                                     ],
                                   ),
                                 ),
@@ -3349,6 +3514,13 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
             'classId': widget.config.classId,
             'instructorId': FirebaseAuth.instance.currentUser?.uid,
             'dateKey': _dateKey(now),
+            'scheduleKey': widget.config.scheduleKey,
+            'dayOfWeek': widget.config.dayOfWeek,
+            'startHour': widget.config.start.hour,
+            'startMinute': widget.config.start.minute,
+            'endHour': widget.config.end.hour,
+            'endMinute': widget.config.end.minute,
+            'scheduledStartAt': Timestamp.fromDate(scheduledStart),
             'status': status,
             'scheduledEndAt': Timestamp.fromDate(scheduledEnd),
             'updatedAt': FieldValue.serverTimestamp(),

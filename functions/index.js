@@ -1402,3 +1402,134 @@ exports.adminBulkDeleteAttendanceSessions = onCall(
     };
   }
 );
+
+exports.mergeAttendanceSessionAttemptsForSlot = onCall(
+  { cors: true, timeoutSeconds: 540 },
+  async (request) => {
+    const uid = requireSignedIn(request);
+    const canonicalSessionId = request.data && request.data.canonicalSessionId
+      ? String(request.data.canonicalSessionId).trim()
+      : '';
+    const sessionIdsRaw = request.data && Array.isArray(request.data.sessionIds)
+      ? request.data.sessionIds
+      : null;
+
+    if (!canonicalSessionId) {
+      throw new HttpsError('invalid-argument', 'canonicalSessionId is required');
+    }
+    if (!sessionIdsRaw || sessionIdsRaw.length === 0) {
+      throw new HttpsError('invalid-argument', 'sessionIds is required');
+    }
+    if (sessionIdsRaw.length > 50) {
+      throw new HttpsError('invalid-argument', 'Too many sessionIds (max 50 per call)');
+    }
+
+    const sessionIds = sessionIdsRaw
+      .map((x) => (typeof x === 'string' ? x.trim() : ''))
+      .filter((x) => !!x);
+    if (sessionIds.length === 0) {
+      throw new HttpsError('invalid-argument', 'sessionIds is empty');
+    }
+    if (!sessionIds.includes(canonicalSessionId)) {
+      sessionIds.push(canonicalSessionId);
+    }
+
+    const db = getFirestore();
+
+    const canonicalRef = db.collection('attendanceSessions').doc(canonicalSessionId);
+    const canonicalSnap = await canonicalRef.get();
+    if (!canonicalSnap.exists) {
+      throw new HttpsError('failed-precondition', 'Canonical session not found');
+    }
+    const canonicalData = canonicalSnap.data() || {};
+    const canonicalInstructorId = typeof canonicalData.instructorId === 'string' ? canonicalData.instructorId.trim() : '';
+    const canonicalClassId = typeof canonicalData.classId === 'string' ? canonicalData.classId.trim() : '';
+
+    const isAdmin = isAdminClaim(request);
+    if (!isAdmin) {
+      if (!canonicalInstructorId || canonicalInstructorId !== uid) {
+        throw new HttpsError('permission-denied', 'Only the session instructor can merge attempts');
+      }
+    }
+
+    async function mergeAttendeesFromSession(sessionId) {
+      const ref = db.collection('attendanceSessions').doc(sessionId);
+      const snap = await ref.get();
+      if (!snap.exists) return { merged: 0, skipped: true };
+
+      const data = snap.data() || {};
+      const instructorId = typeof data.instructorId === 'string' ? data.instructorId.trim() : '';
+      const classId = typeof data.classId === 'string' ? data.classId.trim() : '';
+      if (canonicalInstructorId && instructorId && canonicalInstructorId !== instructorId) {
+        return { merged: 0, skipped: true };
+      }
+      if (canonicalClassId && classId && canonicalClassId !== classId) {
+        return { merged: 0, skipped: true };
+      }
+      if (!isAdmin && instructorId && instructorId !== uid) {
+        return { merged: 0, skipped: true };
+      }
+
+      const attendeesCol = ref.collection('attendees');
+      let last = null;
+      let merged = 0;
+
+      while (true) {
+        let q = attendeesCol.orderBy(FieldPath.documentId()).limit(400);
+        if (last) q = q.startAfter(last);
+        const attendeesSnap = await q.get();
+        if (attendeesSnap.empty) break;
+
+        const batch = db.batch();
+        for (const doc of attendeesSnap.docs) {
+          const dest = canonicalRef.collection('attendees').doc(doc.id);
+          batch.set(dest, doc.data() || {}, { merge: true });
+          merged += 1;
+        }
+        await batch.commit();
+
+        last = attendeesSnap.docs[attendeesSnap.docs.length - 1];
+        if (attendeesSnap.size < 400) break;
+      }
+
+      return { merged, skipped: false };
+    }
+
+    let mergedAttendees = 0;
+    const deleted = [];
+    const failed = [];
+
+    // Merge attendees first.
+    for (const sessionId of sessionIds) {
+      if (sessionId === canonicalSessionId) continue;
+      try {
+        const res = await mergeAttendeesFromSession(sessionId);
+        mergedAttendees += res.merged;
+      } catch (error) {
+        failed.push({ sessionId, step: 'merge-attendees', error: error && error.message ? String(error.message) : String(error) });
+      }
+    }
+
+    // Then delete old attempt sessions (including their subcollections).
+    for (const sessionId of sessionIds) {
+      if (sessionId === canonicalSessionId) continue;
+      try {
+        const res = await deleteAttendanceSessionById({ db, sessionId });
+        if (res.deleted) deleted.push(sessionId);
+      } catch (error) {
+        failed.push({ sessionId, step: 'delete', error: error && error.message ? String(error.message) : String(error) });
+      }
+    }
+
+    return {
+      ok: true,
+      canonicalSessionId,
+      requestedCount: sessionIds.length,
+      mergedAttendees,
+      deletedCount: deleted.length,
+      deletedIds: deleted,
+      failedCount: failed.length,
+      failed,
+    };
+  }
+);
