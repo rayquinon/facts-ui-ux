@@ -688,8 +688,10 @@ class FaceEmbeddingService {
     required int imageHeight,
   }) {
     final double baseSize = math.max(bbox.width.abs(), bbox.height.abs());
+    // Performance: smaller ROI => fewer pixels converted from YUV->RGB.
+    // Behavior: still includes face bbox + eyes with a safety margin.
     final double margin = baseSize.isFinite && baseSize > 0
-        ? baseSize * 0.9
+        ? baseSize * 0.6
         : 0;
 
     double minX = bbox.left;

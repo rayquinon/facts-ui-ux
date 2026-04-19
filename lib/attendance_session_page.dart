@@ -142,9 +142,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   );
 
   // Throttle camera frame processing to avoid UI jank.
-  static const Duration _frameProcessingInterval = Duration(milliseconds: 320);
+  static const Duration _frameProcessingInterval = Duration(milliseconds: 480);
   static const Duration _confirmingFrameProcessingInterval = Duration(
-    milliseconds: 200,
+    milliseconds: 320,
   );
 
   // Rate-limit status updates to avoid rebuilding the entire page too often
@@ -510,8 +510,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     final String? resumeId = widget.config.resumeSessionId;
     final String? normalizedResume =
         (resumeId != null && resumeId.trim().isNotEmpty)
-            ? resumeId.trim()
-            : null;
+        ? resumeId.trim()
+        : null;
 
     if (normalizedResume != null && normalizedResume != canonicalSessionId) {
       final DocumentReference<Map<String, dynamic>> resumeRef = _firestore
@@ -686,8 +686,10 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           .collection('attendanceSessions')
           .where('instructorId', isEqualTo: uid)
           .where('classId', isEqualTo: widget.config.classId)
-          .where('scheduledStartAt',
-              isEqualTo: Timestamp.fromDate(scheduledStart))
+          .where(
+            'scheduledStartAt',
+            isEqualTo: Timestamp.fromDate(scheduledStart),
+          )
           .get(const GetOptions(source: Source.server))
           .timeout(const Duration(seconds: 4));
     } catch (_) {
@@ -696,8 +698,10 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
             .collection('attendanceSessions')
             .where('instructorId', isEqualTo: uid)
             .where('classId', isEqualTo: widget.config.classId)
-            .where('scheduledStartAt',
-                isEqualTo: Timestamp.fromDate(scheduledStart))
+            .where(
+              'scheduledStartAt',
+              isEqualTo: Timestamp.fromDate(scheduledStart),
+            )
             .get(const GetOptions(source: Source.cache))
             .timeout(const Duration(seconds: 2));
       } catch (_) {
@@ -774,8 +778,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
     // Server-side cleanup: delete old session docs + subcollections.
     try {
-      final HttpsCallable callable = FirebaseFunctions.instance
-          .httpsCallable('mergeAttendanceSessionAttemptsForSlot');
+      final HttpsCallable callable = FirebaseFunctions.instance.httpsCallable(
+        'mergeAttendanceSessionAttemptsForSlot',
+      );
       await callable
           .call(<String, dynamic>{
             'canonicalSessionId': canonicalSessionId,
@@ -1038,6 +1043,17 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   }
 
   String _buildRosterCacheKey() {
+    final String section = (widget.config.section ?? '').trim();
+    final String normalizedSection = section.isEmpty
+        ? 'all'
+        : section.toLowerCase().replaceAll(RegExp(r'\s+'), '-');
+    // V2: section-only cache key.
+    // The roster query is based on role + section, not classId, so including
+    // classId prevents offline re-use (and breaks offline-mode preparation).
+    return 'roster_section_$normalizedSection';
+  }
+
+  String _buildLegacyRosterCacheKey() {
     final String classId = widget.config.classId.trim();
     final String section = (widget.config.section ?? '').trim();
     final String normalizedSection = section.isEmpty
@@ -1096,8 +1112,15 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
   Future<void> _loadRosterEmbeddingsFromCacheBestEffort() async {
     try {
-      final String key = _buildRosterCacheKey();
-      final String? jsonString = await _rosterCache.readJson(key: key);
+      final String primaryKey = _buildRosterCacheKey();
+      final String legacyKey = _buildLegacyRosterCacheKey();
+
+      String? jsonString = await _rosterCache.readJson(key: primaryKey);
+      bool loadedFromLegacy = false;
+      if (jsonString == null || jsonString.trim().isEmpty) {
+        jsonString = await _rosterCache.readJson(key: legacyKey);
+        loadedFromLegacy = jsonString != null && jsonString.trim().isNotEmpty;
+      }
       if (jsonString == null || jsonString.trim().isEmpty) return;
       final Object? decoded = jsonDecode(jsonString);
       if (decoded is! Map) return;
@@ -1110,6 +1133,12 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
       final List<_RecognizedStudent> roster = _parseRosterFromJson(decoded);
       if (roster.isEmpty) return;
+
+      // Migration: if we loaded an older per-class key, persist under the new
+      // section-only key so future offline runs find it quickly.
+      if (loadedFromLegacy) {
+        unawaited(_rosterCache.writeJson(key: primaryKey, json: jsonString));
+      }
 
       if (!mounted) return;
       setState(() {
@@ -1132,6 +1161,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     if (roster.isEmpty) return;
     try {
       final String key = _buildRosterCacheKey();
+      final String legacyKey = _buildLegacyRosterCacheKey();
       final Map<String, Object?> payload = <String, Object?>{
         'cachedAtUtc': DateTime.now().toUtc().toIso8601String(),
         'roster': roster
@@ -1145,7 +1175,10 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
             )
             .toList(growable: false),
       };
-      await _rosterCache.writeJson(key: key, json: jsonEncode(payload));
+      final String json = jsonEncode(payload);
+      await _rosterCache.writeJson(key: key, json: json);
+      // Back-compat for older builds that still include classId in the key.
+      unawaited(_rosterCache.writeJson(key: legacyKey, json: json));
       _rosterCacheUpdatedAtUtc = DateTime.now().toUtc();
     } catch (_) {
       // Best-effort only.
