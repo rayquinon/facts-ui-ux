@@ -776,6 +776,104 @@ exports.onAttendanceStatsWritten = onDocumentWritten('classes/{classId}/attendan
   }
 });
 
+exports.onAttendanceSessionAttendeeWritten = onDocumentWritten(
+  'attendanceSessions/{sessionId}/attendees/{studentId}',
+  async (event) => {
+    const after = event.data.after;
+    if (!after || !after.exists) return;
+
+    const before = event.data.before;
+    const afterData = after.data() || {};
+    const beforeData = before && before.exists ? before.data() || {} : {};
+
+    const statusAfter = typeof afterData.status === 'string' ? afterData.status.trim().toLowerCase() : '';
+    const statusBefore = typeof beforeData.status === 'string' ? beforeData.status.trim().toLowerCase() : '';
+
+    const minutesLateAfter = clampInt(afterData.minutesLate, 0);
+    const minutesLateBefore = clampInt(beforeData.minutesLate, 0);
+    const minutesAbsentAfter = clampInt(afterData.minutesAbsent, 0);
+    const minutesAbsentBefore = clampInt(beforeData.minutesAbsent, 0);
+
+    // Fast no-op: ignore noisy updates (confidence/lastCapturedAt/etc.).
+    if (
+      statusAfter === statusBefore &&
+      minutesLateAfter === minutesLateBefore &&
+      minutesAbsentAfter === minutesAbsentBefore
+    ) {
+      return;
+    }
+
+    const db = getFirestore();
+    const sessionId = event.params.sessionId;
+    const studentId = event.params.studentId;
+
+    const sessionSnap = await db.collection('attendanceSessions').doc(sessionId).get();
+    if (!sessionSnap.exists) return;
+    const session = sessionSnap.data() || {};
+
+    const classId = typeof session.classId === 'string' ? session.classId.trim() : '';
+    if (!classId) return;
+
+    const dateKeyRaw =
+      (typeof session.effectiveDateKey === 'string' && session.effectiveDateKey.trim())
+        ? session.effectiveDateKey.trim()
+        : (typeof session.dateKey === 'string' ? session.dateKey.trim() : '');
+    const dateKey = isValidDateKey(dateKeyRaw) ? dateKeyRaw : null;
+    if (!dateKey) return;
+
+    function metrics(status, minutesLate, minutesAbsent) {
+      const s = typeof status === 'string' ? status : '';
+      if (s === 'present') {
+        return { presentCount: 1, lateCount: 0, absentCount: 0, lateMinutes: 0, absentMinutes: 0 };
+      }
+      if (s === 'late') {
+        return { presentCount: 0, lateCount: 1, absentCount: 0, lateMinutes: clampInt(minutesLate, 0), absentMinutes: 0 };
+      }
+      if (s === 'absent') {
+        return { presentCount: 0, lateCount: 0, absentCount: 1, lateMinutes: 0, absentMinutes: clampInt(minutesAbsent, 0) };
+      }
+      return { presentCount: 0, lateCount: 0, absentCount: 0, lateMinutes: 0, absentMinutes: 0 };
+    }
+
+    const afterM = metrics(statusAfter, minutesLateAfter, minutesAbsentAfter);
+    const beforeM = metrics(statusBefore, minutesLateBefore, minutesAbsentBefore);
+
+    const delta = {
+      presentCount: afterM.presentCount - beforeM.presentCount,
+      lateCount: afterM.lateCount - beforeM.lateCount,
+      absentCount: afterM.absentCount - beforeM.absentCount,
+      lateMinutes: afterM.lateMinutes - beforeM.lateMinutes,
+      absentMinutes: afterM.absentMinutes - beforeM.absentMinutes,
+    };
+
+    const hasDelta = Object.values(delta).some((v) => v !== 0);
+    if (!hasDelta) return;
+
+    const dailyRef = db
+      .collection('classes')
+      .doc(classId)
+      .collection('students')
+      .doc(studentId)
+      .collection('daily')
+      .doc(dateKey);
+
+    const update = {
+      classId,
+      studentId,
+      dateKey,
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+
+    if (delta.presentCount) update.presentCount = FieldValue.increment(delta.presentCount);
+    if (delta.lateCount) update.lateCount = FieldValue.increment(delta.lateCount);
+    if (delta.absentCount) update.absentCount = FieldValue.increment(delta.absentCount);
+    if (delta.lateMinutes) update.lateMinutes = FieldValue.increment(delta.lateMinutes);
+    if (delta.absentMinutes) update.absentMinutes = FieldValue.increment(delta.absentMinutes);
+
+    await dailyRef.set(update, { merge: true });
+  }
+);
+
 exports.sendNextClassReminders = onSchedule(
   {
     schedule: 'every 5 minutes',

@@ -306,6 +306,17 @@ service cloud.firestore {
       allow create, update: if isAdmin() && isValidClass(request.resource.data);
       allow delete: if isAdmin();
 
+      match /students/{studentId} {
+        match /daily/{dateKey} {
+          allow read: if isSignedIn() && (
+            request.auth.uid == studentId ||
+            isClassInstructor(classId) ||
+            isAdmin()
+          );
+          allow create, update, delete: if false;
+        }
+      }
+
       match /attendanceStats/{studentId} {
         allow read: if isSignedIn() && (request.auth.uid == studentId || isClassInstructor(classId) || isAdmin());
         allow write: if isAdmin() || (isSignedIn() && isClassInstructor(classId) && isApprovedInstructor());

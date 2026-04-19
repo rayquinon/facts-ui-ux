@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:printing/printing.dart';
 
+import 'analytics/analytics_class_picker_page.dart';
 import 'face_enrollment_page.dart';
 import 'widgets/android_only_feature_page.dart';
 import 'services/excuse_request_service.dart';
@@ -95,7 +96,9 @@ class _StudentPageState extends State<StudentPage> {
   }
 
   Future<bool> _checkVpsEnrollment(String uid) async {
-    final VpsEmbeddingsRecord? record = await _vpsClient.getEmbeddingForUid(uid);
+    final VpsEmbeddingsRecord? record = await _vpsClient.getEmbeddingForUid(
+      uid,
+    );
     return record != null;
   }
 
@@ -399,35 +402,38 @@ class _StudentHomeShellState extends State<_StudentHomeShell> {
                 .where('readAt', isNull: true)
                 .limit(1)
                 .snapshots(),
-            builder: (
-              BuildContext context,
-              AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot,
-            ) {
-              final bool hasUnread =
-                  snapshot.hasData && snapshot.data!.docs.isNotEmpty;
-              return IconButton(
-                tooltip: 'Notifications',
-                onPressed: () {
-                  Navigator.of(context).pushNamed(NotificationsPage.routeName);
+            builder:
+                (
+                  BuildContext context,
+                  AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot,
+                ) {
+                  final bool hasUnread =
+                      snapshot.hasData && snapshot.data!.docs.isNotEmpty;
+                  return IconButton(
+                    tooltip: 'Notifications',
+                    onPressed: () {
+                      Navigator.of(
+                        context,
+                      ).pushNamed(NotificationsPage.routeName);
+                    },
+                    icon: Stack(
+                      clipBehavior: Clip.none,
+                      children: <Widget>[
+                        const Icon(Icons.notifications_outlined),
+                        if (hasUnread)
+                          Positioned(
+                            top: -1,
+                            right: -1,
+                            child: Icon(
+                              Icons.circle,
+                              size: 10,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                          ),
+                      ],
+                    ),
+                  );
                 },
-                icon: Stack(
-                  clipBehavior: Clip.none,
-                  children: <Widget>[
-                    const Icon(Icons.notifications_outlined),
-                    if (hasUnread)
-                      Positioned(
-                        top: -1,
-                        right: -1,
-                        child: Icon(
-                          Icons.circle,
-                          size: 10,
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
-                      ),
-                  ],
-                ),
-              );
-            },
           ),
         ],
       ),
@@ -482,6 +488,23 @@ class _StudentHomeShellState extends State<_StudentHomeShell> {
                 title: const Text('Dashboard'),
                 selected: _section == _StudentSection.dashboard,
                 onTap: () => _selectSection(_StudentSection.dashboard),
+              ),
+              ListTile(
+                leading: const Icon(Icons.analytics_outlined),
+                title: const Text('Analytics'),
+                onTap: () async {
+                  Navigator.of(context).maybePop();
+                  await Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (BuildContext context) =>
+                          AnalyticsClassPickerPage(
+                            viewerRole: AnalyticsViewerRole.student,
+                            studentId: widget.profile.userId,
+                            studentSection: widget.profile.section,
+                          ),
+                    ),
+                  );
+                },
               ),
               ListTile(
                 leading: const Icon(Icons.description_outlined),

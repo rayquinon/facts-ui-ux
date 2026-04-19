@@ -213,6 +213,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   DateTime? _rosterCacheUpdatedAtUtc;
   final List<_AttendanceCapture> _recentCaptures = <_AttendanceCapture>[];
   final Map<String, String> _recordedStatuses = <String, String>{};
+  final Map<String, int> _recordedLateMinutes = <String, int>{};
   final Map<String, DateTime> _lastStudentCaptureTimes = <String, DateTime>{};
   final Set<String> _capturedStudentIds = <String>{};
   final ScrollController _captureListController = ScrollController();
@@ -840,6 +841,14 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         final String status = (statusRaw as String?)?.trim() ?? '';
         if (status.isNotEmpty) {
           _recordedStatuses[uid] = status;
+
+          final Object? minutesLateRaw = doc.data()['minutesLate'];
+          if (minutesLateRaw is num) {
+            final int v = minutesLateRaw.round();
+            if (v > 0) {
+              _recordedLateMinutes[uid] = v;
+            }
+          }
         }
       }
     });
@@ -849,6 +858,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     // Try to load a cached roster first so offline sessions can still run.
     // This is best-effort and will be replaced by fresh VPS data when online.
     await _loadRosterEmbeddingsFromCacheBestEffort();
+
+    final int cachedRosterCountBeforeRefresh = _roster.length;
 
     final CollectionReference<Map<String, dynamic>> usersCollection = _firestore
         .collection('users');
@@ -963,6 +974,16 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       final _RosterEmbeddingsFetchOutcome outcome =
           await _fetchRosterEmbeddingsFromVps(rosterDocs);
       final List<_RecognizedStudent> roster = outcome.roster;
+
+      // If we already loaded a cached roster and the refresh yields an empty
+      // roster (common when offline and Firestore/VPS cannot be reached), keep
+      // the cached roster so offline mode can still function.
+      if (roster.isEmpty && cachedRosterCountBeforeRefresh > 0) {
+        _updateStatus(
+          'Offline mode: keeping cached roster ($cachedRosterCountBeforeRefresh).',
+        );
+        return;
+      }
 
       await _saveRosterEmbeddingsToCacheBestEffort(roster);
 
@@ -1190,7 +1211,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         final String safeUnderscoredLegacy = _safeRosterCacheKey(
           dashToUnderscore(legacyKey),
         );
-        if (safeUnderscoredLegacy.isNotEmpty && safeUnderscoredLegacy != legacyKey) {
+        if (safeUnderscoredLegacy.isNotEmpty &&
+            safeUnderscoredLegacy != legacyKey) {
           jsonString = await _rosterCache.readJson(key: safeUnderscoredLegacy);
           loadedFromVariant =
               jsonString != null && jsonString.trim().isNotEmpty;
@@ -1246,7 +1268,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       final String when = cachedAtUtc == null
           ? ''
           : ' (saved ${cachedAtUtc.toLocal()})';
-      _updateStatus('Loaded cached roster$when. Will refresh when online.');
+      _updateStatus(
+        'Offline mode: loaded cached roster (${roster.length})$when. Will refresh when online.',
+      );
     } catch (_) {
       // Best-effort only.
     }
@@ -2764,7 +2788,22 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     }
     final String? attendanceStatus = result.student == null
         ? null
-        : _classifyAttendanceStatus(captureTime);
+        : _recordedStatuses[result.student!.userId] ??
+              _classifyAttendanceStatus(captureTime);
+
+    final int minutesLate = (result.student == null)
+        ? 0
+        : (() {
+            final String studentId = result.student!.userId;
+            final String? existing = _recordedStatuses[studentId];
+            if (existing != null && existing.isNotEmpty) {
+              return _recordedLateMinutes[studentId] ?? 0;
+            }
+            if (attendanceStatus != 'late') {
+              return 0;
+            }
+            return _computeLateMinutesBeyondGrace(captureTime);
+          })();
     final DocumentReference<Map<String, dynamic>> sessionRef = _firestore
         .collection('attendanceSessions')
         .doc(sessionId);
@@ -2779,20 +2818,32 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       'attendanceStatus': attendanceStatus,
     });
     if (result.student != null) {
+      final String studentId = result.student!.userId;
+      final bool isFirstStatusForStudent = !_recordedStatuses.containsKey(
+        studentId,
+      );
+
       await sessionRef
           .collection('attendees')
-          .doc(result.student!.userId)
+          .doc(studentId)
           .set(<String, dynamic>{
             'displayName': result.student!.displayName,
-            'firstCapturedAt': FieldValue.serverTimestamp(),
+            if (isFirstStatusForStudent)
+              'firstCapturedAt': FieldValue.serverTimestamp(),
+            if (isFirstStatusForStudent)
+              'firstCapturedAtLocal': captureTime.toIso8601String(),
             'lastCapturedAt': FieldValue.serverTimestamp(),
             'confidence': result.confidence,
-            'status': attendanceStatus,
-            'statusComputedAt': FieldValue.serverTimestamp(),
+            if (isFirstStatusForStudent) 'status': attendanceStatus,
+            if (isFirstStatusForStudent)
+              'statusComputedAt': FieldValue.serverTimestamp(),
+            if (isFirstStatusForStudent) 'minutesLate': minutesLate,
+            if (isFirstStatusForStudent) 'minutesAbsent': 0,
           }, SetOptions(merge: true));
       await _updateClassAttendanceStats(
-        studentId: result.student!.userId,
+        studentId: studentId,
         newStatus: attendanceStatus,
+        lateMinutesBeyondGrace: minutesLate,
       );
     }
     await sessionRef.update(<String, dynamic>{
@@ -2817,15 +2868,11 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     if (endDateTime.isBefore(startDateTime)) {
       endDateTime = endDateTime.add(const Duration(days: 1));
     }
-    final Duration totalDuration = endDateTime.difference(startDateTime);
-    if (totalDuration.inMinutes <= 0) {
-      return 'present';
-    }
-    final Duration tardyWindow = Duration(
-      milliseconds: (totalDuration.inMilliseconds * 0.25).round(),
-    );
+    // Rule: students are marked late only when they are 15 minutes late.
+    // (At exactly +15 minutes, treat as late.)
+    const Duration tardyWindow = Duration(minutes: 15);
     final DateTime tardyThreshold = startDateTime.add(tardyWindow);
-    return captureTime.isAfter(tardyThreshold) ? 'late' : 'present';
+    return captureTime.isBefore(tardyThreshold) ? 'present' : 'late';
   }
 
   DateTime _dateWithTime(DateTime reference, TimeOfDay time) {
@@ -2838,9 +2885,29 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     );
   }
 
+  int _computeLateMinutesBeyondGrace(DateTime captureTime) {
+    final DateTime scheduledStart = _dateWithTime(
+      captureTime,
+      widget.config.start,
+    );
+    final int sessionMinutes = _computeSessionDurationMinutes();
+    if (sessionMinutes <= 0) {
+      return 0;
+    }
+
+    final int actualLateMinutes = captureTime
+        .difference(scheduledStart)
+        .inMinutes;
+    final int clampedActual = actualLateMinutes.clamp(0, sessionMinutes);
+    const int graceMinutes = 15;
+    final int beyondGrace = clampedActual - graceMinutes;
+    return beyondGrace > 0 ? beyondGrace : 0;
+  }
+
   Future<void> _updateClassAttendanceStats({
     required String studentId,
     required String? newStatus,
+    int? lateMinutesBeyondGrace,
   }) async {
     if (newStatus == null || newStatus.isEmpty) {
       return;
@@ -2883,10 +2950,41 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       if (previousStatus == 'absent' && newStatus != 'absent') {
         updateData['absentMinutes'] = FieldValue.increment(-sessionMinutes);
       }
+
+      if (newStatus == 'late') {
+        final int lateMinutes = (lateMinutesBeyondGrace ?? 0).clamp(
+          0,
+          sessionMinutes,
+        );
+        if (lateMinutes != 0) {
+          updateData['lateMinutes'] = FieldValue.increment(lateMinutes);
+        }
+      }
+      if (previousStatus == 'late' && newStatus != 'late') {
+        final int previousLateMinutes = _recordedLateMinutes[studentId] ?? 0;
+        if (previousLateMinutes != 0) {
+          updateData['lateMinutes'] = FieldValue.increment(
+            -previousLateMinutes,
+          );
+        }
+      }
     }
     try {
       await statsRef.set(updateData, SetOptions(merge: true));
       _recordedStatuses[studentId] = newStatus;
+      if (newStatus == 'late') {
+        final int lateMinutes = (lateMinutesBeyondGrace ?? 0).clamp(
+          0,
+          sessionMinutes,
+        );
+        if (lateMinutes > 0) {
+          _recordedLateMinutes[studentId] = lateMinutes;
+        } else {
+          _recordedLateMinutes.remove(studentId);
+        }
+      } else {
+        _recordedLateMinutes.remove(studentId);
+      }
     } catch (error) {
       debugPrint('Failed to update attendance stats: $error');
     }
@@ -2921,12 +3019,41 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     if (roster.isEmpty) {
       return;
     }
+
+    final String? sessionId = _sessionDocId;
+    final DocumentReference<Map<String, dynamic>>? sessionRef =
+        (sessionId == null || sessionId.trim().isEmpty)
+        ? null
+        : _firestore.collection('attendanceSessions').doc(sessionId);
+    final DateTime now = _now();
+    final int sessionMinutes = _computeSessionDurationMinutes();
+
     final Set<String> countedStudentIds = _recordedStatuses.keys.toSet();
     final Iterable<_RecognizedStudent> uncaptured = roster.where(
       (_RecognizedStudent student) =>
           !countedStudentIds.contains(student.userId),
     );
     for (final _RecognizedStudent student in uncaptured) {
+      // Persist an explicit attendee record for analytics + audit.
+      if (sessionRef != null) {
+        try {
+          await sessionRef
+              .collection('attendees')
+              .doc(student.userId)
+              .set(<String, dynamic>{
+                'displayName': student.displayName,
+                'status': 'absent',
+                'statusComputedAt': FieldValue.serverTimestamp(),
+                'markedAbsentAt': FieldValue.serverTimestamp(),
+                'markedAbsentAtLocal': now.toIso8601String(),
+                'minutesLate': 0,
+                'minutesAbsent': sessionMinutes,
+              }, SetOptions(merge: true));
+        } catch (_) {
+          // Best-effort only.
+        }
+      }
+
       await _updateClassAttendanceStats(
         studentId: student.userId,
         newStatus: 'absent',

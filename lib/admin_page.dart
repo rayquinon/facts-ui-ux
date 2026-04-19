@@ -7,6 +7,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import 'analytics/analytics_class_picker_page.dart';
 import 'attendance_calendar_overrides_page.dart';
 import 'widgets/confirm_sign_out_dialog.dart';
 import 'package:printing/printing.dart';
@@ -39,7 +40,7 @@ class AdminPage extends StatefulWidget {
 }
 
 class _AdminPageState extends State<AdminPage> {
-  _AdminSection _selectedSection = _AdminSection.overview;
+  final _AdminSection _selectedSection = _AdminSection.overview;
   late Future<_AdminOverviewStats> _overviewFuture;
   final ExcuseRequestService _excuseService = ExcuseRequestService();
   bool _isApprovingExcuse = false;
@@ -140,25 +141,6 @@ class _AdminPageState extends State<AdminPage> {
                     onPressed: () => Navigator.of(context).pop(),
                     icon: const Icon(Icons.close),
                   ),
-                ],
-              ),
-            ),
-            const Divider(height: 1),
-            Expanded(
-              child: ListView(
-                padding: EdgeInsets.zero,
-                children: <Widget>[
-                  for (final _SectionNavItem item in _navItems)
-                    ListTile(
-                      leading: Icon(item.icon),
-                      title: Text(item.label),
-                      selected: item.section == _selectedSection,
-                      onTap: () {
-                        setState(() => _selectedSection = item.section);
-                        Navigator.of(context).pop();
-                      },
-                    ),
-                  const Divider(height: 1),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
                     child: Text(
@@ -189,6 +171,21 @@ class _AdminPageState extends State<AdminPage> {
                       Navigator.of(
                         context,
                       ).pushNamed(GenerateReportPage.routeName);
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.analytics_outlined),
+                    title: const Text('Analytics'),
+                    onTap: () {
+                      Navigator.of(context).pop();
+                      Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (BuildContext context) =>
+                              const AnalyticsClassPickerPage(
+                                viewerRole: AnalyticsViewerRole.admin,
+                              ),
+                        ),
+                      );
                     },
                   ),
                   ListTile(
@@ -6858,8 +6855,8 @@ class _AttendanceSessionDetailsDialog extends StatelessWidget {
     return '${dt.year}-${two(dt.month)}-${two(dt.day)}';
   }
 
-  Future<DocumentSnapshot<Map<String, dynamic>>?> _getSessionSnapBestEffort()
-  async {
+  Future<DocumentSnapshot<Map<String, dynamic>>?>
+  _getSessionSnapBestEffort() async {
     try {
       return await sessionRef.get(const GetOptions(source: Source.server));
     } catch (_) {
@@ -6882,7 +6879,8 @@ class _AttendanceSessionDetailsDialog extends StatelessWidget {
     String dateKey = (data['effectiveDateKey'] as String?)?.trim() ?? '';
 
     if (dateKey.isEmpty) {
-      final Timestamp? effectiveStartedAt = data['effectiveStartedAt'] is Timestamp
+      final Timestamp? effectiveStartedAt =
+          data['effectiveStartedAt'] is Timestamp
           ? (data['effectiveStartedAt'] as Timestamp)
           : null;
       if (effectiveStartedAt != null) {
@@ -6923,21 +6921,26 @@ class _AttendanceSessionDetailsDialog extends StatelessWidget {
         await _getSessionSnapBestEffort();
     final Map<String, dynamic>? data = snap?.data();
     if (data == null) {
-      messenger.showSnackBar(const SnackBar(content: Text('Session not found.')));
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Session not found.')),
+      );
       return;
     }
 
     if (!_isSimulatedSession(data)) {
       messenger.showSnackBar(
         const SnackBar(
-          content: Text('Ending sessions from admin is only enabled for simulated sessions.'),
+          content: Text(
+            'Ending sessions from admin is only enabled for simulated sessions.',
+          ),
         ),
       );
       return;
     }
 
-    final Timestamp? scheduledEndAt =
-        data['scheduledEndAt'] is Timestamp ? (data['scheduledEndAt'] as Timestamp) : null;
+    final Timestamp? scheduledEndAt = data['scheduledEndAt'] is Timestamp
+        ? (data['scheduledEndAt'] as Timestamp)
+        : null;
 
     try {
       await sessionRef.update(<String, dynamic>{
@@ -7000,14 +7003,18 @@ class _AttendanceSessionDetailsDialog extends StatelessWidget {
         await _getSessionSnapBestEffort();
     final Map<String, dynamic>? data = snap?.data();
     if (data == null) {
-      messenger.showSnackBar(const SnackBar(content: Text('Session not found.')));
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Session not found.')),
+      );
       return;
     }
 
     if (!_isSimulatedSession(data)) {
       messenger.showSnackBar(
         const SnackBar(
-          content: Text('Reopening sessions is only enabled for simulated sessions.'),
+          content: Text(
+            'Reopening sessions is only enabled for simulated sessions.',
+          ),
         ),
       );
       return;
@@ -7021,7 +7028,9 @@ class _AttendanceSessionDetailsDialog extends StatelessWidget {
         'effectiveEndedAt': FieldValue.delete(),
       });
     } catch (error) {
-      messenger.showSnackBar(SnackBar(content: Text('Failed to reopen: $error')));
+      messenger.showSnackBar(
+        SnackBar(content: Text('Failed to reopen: $error')),
+      );
       return;
     }
 
@@ -7236,7 +7245,9 @@ class _AttendanceSessionDetailsDialog extends StatelessWidget {
                             value: 'reopen',
                             child: ListTile(
                               dense: true,
-                              leading: Icon(Icons.replay_circle_filled_outlined),
+                              leading: Icon(
+                                Icons.replay_circle_filled_outlined,
+                              ),
                               title: Text('Reopen session (simulated only)'),
                             ),
                           ),

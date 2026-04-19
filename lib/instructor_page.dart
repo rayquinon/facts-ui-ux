@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:printing/printing.dart';
 
+import 'analytics/analytics_class_picker_page.dart';
 import 'attendance_session_page.dart';
 import 'widgets/android_only_feature_page.dart';
 import 'offline_mode_checklist_page.dart';
@@ -1202,8 +1203,8 @@ class _InstructorPageState extends State<InstructorPage> {
         final bool resumable =
             sessionId.isNotEmpty &&
             (status == 'active' || status == 'paused') &&
-          !expired &&
-          pointerMatchesSchedule;
+            !expired &&
+            pointerMatchesSchedule;
 
         if (expired &&
             sessionId.isNotEmpty &&
@@ -1518,6 +1519,21 @@ class _InstructorPageState extends State<InstructorPage> {
                 selected: _section == _InstructorSection.attendanceReports,
                 onTap: () =>
                     _selectSection(_InstructorSection.attendanceReports),
+              ),
+              ListTile(
+                leading: const Icon(Icons.analytics_outlined),
+                title: const Text('Analytics'),
+                onTap: () async {
+                  Navigator.of(context).pop();
+                  await Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (BuildContext context) =>
+                          const AnalyticsClassPickerPage(
+                            viewerRole: AnalyticsViewerRole.instructor,
+                          ),
+                    ),
+                  );
+                },
               ),
               ListTile(
                 leading: const Icon(Icons.calendar_month_outlined),
@@ -1885,19 +1901,19 @@ class _InstructorPageState extends State<InstructorPage> {
                               (data?['status'] as String?)?.toLowerCase() ?? '';
                           final String sessionId =
                               (data?['sessionId'] as String?)?.trim() ?? '';
-                            final String pointerScheduleKey =
+                          final String pointerScheduleKey =
                               (data?['scheduleKey'] as String?)?.trim() ?? '';
                           final Timestamp? scheduledEndTs =
                               data?['scheduledEndAt'] as Timestamp?;
                           final DateTime? scheduledEnd = scheduledEndTs
                               ?.toDate();
 
-                            final String desiredScheduleKey = _scheduleKeyFor(
+                          final String desiredScheduleKey = _scheduleKeyFor(
                             dayOfWeek: activeSchedule.dayOfWeek,
                             start: activeSchedule.start,
                             end: activeSchedule.end,
-                            );
-                            final bool pointerMatchesSchedule =
+                          );
+                          final bool pointerMatchesSchedule =
                               pointerScheduleKey.isEmpty ||
                               pointerScheduleKey == desiredScheduleKey;
 
@@ -1911,7 +1927,7 @@ class _InstructorPageState extends State<InstructorPage> {
                               !expired &&
                               pointerMatchesSchedule;
 
-                            final bool reopenable =
+                          final bool reopenable =
                               sessionId.isNotEmpty &&
                               status == 'completed' &&
                               pointerMatchesSchedule;
@@ -1930,11 +1946,11 @@ class _InstructorPageState extends State<InstructorPage> {
 
                           final String buttonLabel = _isLaunchingSession
                               ? 'Launching...'
-                            : (resumable
-                              ? 'Continue Session'
-                              : (reopenable
-                                ? 'Reopen session'
-                                : 'Start recognition session'));
+                              : (resumable
+                                    ? 'Continue Session'
+                                    : (reopenable
+                                          ? 'Reopen session'
+                                          : 'Start recognition session'));
 
                           return FilledButton.icon(
                             onPressed: _isLaunchingSession
@@ -1948,18 +1964,23 @@ class _InstructorPageState extends State<InstructorPage> {
                                           );
                                       if (!confirmed || !mounted) return;
 
-                                      setState(() => _isLaunchingSession = true);
+                                      setState(
+                                        () => _isLaunchingSession = true,
+                                      );
                                       final bool reopened =
                                           await _reopenSessionBestEffort(
                                             sessionId: sessionId,
                                             pointerId: pointerId,
                                           );
                                       if (!mounted) return;
-                                      setState(() => _isLaunchingSession = false);
+                                      setState(
+                                        () => _isLaunchingSession = false,
+                                      );
 
                                       if (!reopened) {
-                                        ScaffoldMessenger.of(this.context)
-                                            .showSnackBar(
+                                        ScaffoldMessenger.of(
+                                          this.context,
+                                        ).showSnackBar(
                                           const SnackBar(
                                             content: Text(
                                               'Failed to reopen session. Check your connection and try again.',
@@ -1978,7 +1999,9 @@ class _InstructorPageState extends State<InstructorPage> {
 
                                     await _startRecognitionSession(
                                       activeSchedule,
-                                      resumeSessionId: resumable ? sessionId : null,
+                                      resumeSessionId: resumable
+                                          ? sessionId
+                                          : null,
                                     );
                                   },
                             icon: _isLaunchingSession
@@ -1993,7 +2016,8 @@ class _InstructorPageState extends State<InstructorPage> {
                                     resumable
                                         ? Icons.play_circle_outline
                                         : (reopenable
-                                              ? Icons.replay_circle_filled_outlined
+                                              ? Icons
+                                                    .replay_circle_filled_outlined
                                               : Icons.play_arrow_rounded),
                                   ),
                             label: Text(buttonLabel),

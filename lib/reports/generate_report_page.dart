@@ -790,13 +790,36 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
   Future<List<_StudentRosterEntry>> _fetchRoster(
     _ClassOption selectedClass,
   ) async {
-    final QuerySnapshot<Map<String, dynamic>> snapshot = await _firestore
-        .collection('users')
-        .where('role', isEqualTo: 'student')
-        .where('section', isEqualTo: selectedClass.sectionLabel)
-        .get();
+    bool isIndexRequiredError(Object e) {
+      if (e is! FirebaseException) return false;
+      final String code = e.code.toLowerCase();
+      final String msg = (e.message ?? '').toLowerCase();
+      return code == 'failed-precondition' && msg.contains('requires an index');
+    }
+
+    QuerySnapshot<Map<String, dynamic>> snapshot;
+    try {
+      snapshot = await _firestore
+          .collection('users')
+          .where('role', isEqualTo: 'student')
+          .where('section', isEqualTo: selectedClass.sectionLabel)
+          .get();
+    } catch (e) {
+      // Composite indexes are sometimes missing in dev projects. Fall back to a
+      // single-field query and filter client-side.
+      if (!isIndexRequiredError(e)) rethrow;
+      snapshot = await _firestore
+          .collection('users')
+          .where('section', isEqualTo: selectedClass.sectionLabel)
+          .get();
+    }
+
     final List<_StudentRosterEntry> roster =
         snapshot.docs
+            .where((d) {
+              final Object? role = d.data()['role'];
+              return role == 'student';
+            })
             .map(_StudentRosterEntry.fromDoc)
             .whereType<_StudentRosterEntry>()
             .toList()
@@ -822,14 +845,49 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
     final Map<String, QueryDocumentSnapshot<Map<String, dynamic>>>
     sessionsById = <String, QueryDocumentSnapshot<Map<String, dynamic>>>{};
 
+    bool isIndexRequiredError(Object e) {
+      if (e is! FirebaseException) return false;
+      final String code = e.code.toLowerCase();
+      final String msg = (e.message ?? '').toLowerCase();
+      return code == 'failed-precondition' && msg.contains('requires an index');
+    }
+
     Future<void> fetchSessions(String field) async {
-      final Query<Map<String, dynamic>> query = _firestore
-          .collection('attendanceSessions')
-          .where('classId', isEqualTo: classId)
-          .where(field, isGreaterThanOrEqualTo: Timestamp.fromDate(rangeStart))
-          .where(field, isLessThan: Timestamp.fromDate(rangeEndExclusive));
-      final QuerySnapshot<Map<String, dynamic>> snap = await query.get();
+      QuerySnapshot<Map<String, dynamic>> snap;
+      try {
+        final Query<Map<String, dynamic>> query = _firestore
+            .collection('attendanceSessions')
+            .where('classId', isEqualTo: classId)
+            .where(
+              field,
+              isGreaterThanOrEqualTo: Timestamp.fromDate(rangeStart),
+            )
+            .where(
+              field,
+              isLessThan: Timestamp.fromDate(rangeEndExclusive),
+            );
+        snap = await query.get();
+      } catch (e) {
+        // If a composite index is missing, fall back to a range-only query and
+        // filter by classId client-side. This keeps reports working in
+        // development without requiring manual index creation.
+        if (!isIndexRequiredError(e)) rethrow;
+        snap = await _firestore
+            .collection('attendanceSessions')
+            .where(
+              field,
+              isGreaterThanOrEqualTo: Timestamp.fromDate(rangeStart),
+            )
+            .where(
+              field,
+              isLessThan: Timestamp.fromDate(rangeEndExclusive),
+            )
+            .get();
+      }
+
       for (final QueryDocumentSnapshot<Map<String, dynamic>> doc in snap.docs) {
+        final Object? docClassId = doc.data()['classId'];
+        if (docClassId != classId) continue;
         sessionsById.putIfAbsent(doc.id, () => doc);
       }
     }
@@ -1001,11 +1059,6 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
-                    Text(
-                      'Select Instructor, Subject, Class/Section, and Date Range to generate the attendance report. You can print or export the generated report(only in .docx format)',
-                      style: theme.textTheme.bodyLarge,
-                    ),
-                    const SizedBox(height: 24),
                     _buildFiltersCard(theme),
                     const SizedBox(height: 24),
                     _buildPreviewCard(theme),
