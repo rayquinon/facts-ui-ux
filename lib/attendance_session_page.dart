@@ -1062,6 +1062,12 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     return 'roster_${classId}_$normalizedSection';
   }
 
+  String _safeRosterCacheKey(String key) {
+    final String normalized = key.trim().toLowerCase();
+    final String safe = normalized.replaceAll(RegExp(r'[^a-z0-9._-]+'), '_');
+    return safe.isEmpty ? 'default' : safe;
+  }
+
   List<_RecognizedStudent> _parseRosterFromJson(Object? payload) {
     if (payload is! Map) return <_RecognizedStudent>[];
     final Object? rosterObj = payload['roster'];
@@ -1117,9 +1123,23 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
       String? jsonString = await _rosterCache.readJson(key: primaryKey);
       bool loadedFromLegacy = false;
+
+      if (jsonString == null || jsonString.trim().isEmpty) {
+        final String safePrimary = _safeRosterCacheKey(primaryKey);
+        if (safePrimary != primaryKey) {
+          jsonString = await _rosterCache.readJson(key: safePrimary);
+        }
+      }
       if (jsonString == null || jsonString.trim().isEmpty) {
         jsonString = await _rosterCache.readJson(key: legacyKey);
         loadedFromLegacy = jsonString != null && jsonString.trim().isNotEmpty;
+      }
+      if (jsonString == null || jsonString.trim().isEmpty) {
+        final String safeLegacy = _safeRosterCacheKey(legacyKey);
+        if (safeLegacy != legacyKey) {
+          jsonString = await _rosterCache.readJson(key: safeLegacy);
+          loadedFromLegacy = jsonString != null && jsonString.trim().isNotEmpty;
+        }
       }
       if (jsonString == null || jsonString.trim().isEmpty) return;
       final Object? decoded = jsonDecode(jsonString);
@@ -1138,6 +1158,10 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       // section-only key so future offline runs find it quickly.
       if (loadedFromLegacy) {
         unawaited(_rosterCache.writeJson(key: primaryKey, json: jsonString));
+        final String safePrimary = _safeRosterCacheKey(primaryKey);
+        if (safePrimary != primaryKey) {
+          unawaited(_rosterCache.writeJson(key: safePrimary, json: jsonString));
+        }
       }
 
       if (!mounted) return;
@@ -1177,8 +1201,16 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       };
       final String json = jsonEncode(payload);
       await _rosterCache.writeJson(key: key, json: json);
+      final String safeKey = _safeRosterCacheKey(key);
+      if (safeKey != key) {
+        unawaited(_rosterCache.writeJson(key: safeKey, json: json));
+      }
       // Back-compat for older builds that still include classId in the key.
       unawaited(_rosterCache.writeJson(key: legacyKey, json: json));
+      final String safeLegacy = _safeRosterCacheKey(legacyKey);
+      if (safeLegacy != legacyKey) {
+        unawaited(_rosterCache.writeJson(key: safeLegacy, json: json));
+      }
       _rosterCacheUpdatedAtUtc = DateTime.now().toUtc();
     } catch (_) {
       // Best-effort only.

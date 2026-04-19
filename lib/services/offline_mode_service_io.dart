@@ -126,6 +126,12 @@ class OfflineModeService {
     return 'roster_section_$normalized';
   }
 
+  String _safeRosterCacheKey(String key) {
+    final String normalized = key.trim().toLowerCase();
+    final String safe = normalized.replaceAll(RegExp(r'[^a-z0-9._-]+'), '_');
+    return safe.isEmpty ? 'default' : safe;
+  }
+
   static List<double> _l2NormalizeVector(List<double> v) {
     if (v.isEmpty) return <double>[];
     double sumSquares = 0;
@@ -425,9 +431,13 @@ class OfflineModeService {
         if (isPrepared) {
           try {
             final String cacheKey = _rosterCacheKeyForSection(sectionLabel);
-            final String? jsonString = await _rosterCache.readJson(
-              key: cacheKey,
-            );
+            String? jsonString = await _rosterCache.readJson(key: cacheKey);
+            if (jsonString == null || jsonString.trim().isEmpty) {
+              final String safeKey = _safeRosterCacheKey(cacheKey);
+              if (safeKey != cacheKey) {
+                jsonString = await _rosterCache.readJson(key: safeKey);
+              }
+            }
             if (jsonString != null && jsonString.trim().isNotEmpty) {
               final Object? decoded = jsonDecode(jsonString);
               if (decoded is Map) {
@@ -629,6 +639,12 @@ class OfflineModeService {
       key: cacheKey,
       json: jsonEncode(mergedPayload),
     );
+
+    final String safeCacheKey = _safeRosterCacheKey(cacheKey);
+    if (safeCacheKey != cacheKey) {
+      // Duplicate under the safe key so reads are resilient.
+      await _rosterCache.writeJson(key: safeCacheKey, json: jsonEncode(mergedPayload));
+    }
 
     final Map<String, dynamic> markers = await _readMarkers();
     final Map<String, dynamic> sections =
