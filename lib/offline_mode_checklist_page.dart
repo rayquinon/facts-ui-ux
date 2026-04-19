@@ -4,17 +4,15 @@ import 'services/offline_mode_service.dart';
 import 'services/offline_mode_service_types.dart';
 
 class OfflineModeChecklistPage extends StatefulWidget {
-  const OfflineModeChecklistPage({
-    super.key,
-    required this.sectionLabels,
-  });
+  const OfflineModeChecklistPage({super.key, required this.sectionLabels});
 
   static const String routeName = '/offline-mode';
 
   final List<String> sectionLabels;
 
   @override
-  State<OfflineModeChecklistPage> createState() => _OfflineModeChecklistPageState();
+  State<OfflineModeChecklistPage> createState() =>
+      _OfflineModeChecklistPageState();
 }
 
 class _OfflineModeChecklistPageState extends State<OfflineModeChecklistPage> {
@@ -229,7 +227,9 @@ class _OfflineModeChecklistPageState extends State<OfflineModeChecklistPage> {
                             ? const SizedBox(
                                 width: 16,
                                 height: 16,
-                                child: CircularProgressIndicator(strokeWidth: 2),
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
                               )
                             : const Text('Warm up'),
                       ),
@@ -249,7 +249,7 @@ class _OfflineModeChecklistPageState extends State<OfflineModeChecklistPage> {
                     ..._buildSectionTiles(status),
                   const SizedBox(height: 12),
                   const Text(
-                    'Note: Preparing requires internet (it fetches from Firestore server). Scanning can run offline after preparation.',
+                    'Note: Preparing requires internet and may take a few minutes (it downloads the roster + face embeddings). After preparation, scanning can run offline for the prepared sections.',
                   ),
                 ],
               ),
@@ -258,29 +258,36 @@ class _OfflineModeChecklistPageState extends State<OfflineModeChecklistPage> {
   }
 
   List<Widget> _buildSectionTiles(OfflineModeStatus? status) {
-    final Map<String, OfflineModeSectionStatus> byLabel = <String, OfflineModeSectionStatus>{
-      for (final OfflineModeSectionStatus s in status?.sectionStatuses ?? <OfflineModeSectionStatus>[]) s.sectionLabel: s,
-    };
+    final Map<String, OfflineModeSectionStatus> byLabel =
+        <String, OfflineModeSectionStatus>{
+          for (final OfflineModeSectionStatus s
+              in status?.sectionStatuses ?? <OfflineModeSectionStatus>[])
+            s.sectionLabel: s,
+        };
 
-    return _normalizedSections.map((String sectionLabel) {
-      final OfflineModeSectionStatus? s = byLabel[sectionLabel];
-      final bool ok = s?.isCached == true;
-      return Card(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-        child: ListTile(
-          leading: Icon(
-            ok ? Icons.check : Icons.close,
-            color: ok ? Colors.green : Colors.red,
-          ),
-          title: Text(sectionLabel),
-          subtitle: _buildSectionSubtitle(ok, s),
-          trailing: TextButton(
-            onPressed: ok ? null : () => _prepareSection(sectionLabel),
-            child: const Text('Cache'),
-          ),
-        ),
-      );
-    }).toList(growable: false);
+    return _normalizedSections
+        .map((String sectionLabel) {
+          final OfflineModeSectionStatus? s = byLabel[sectionLabel];
+          final bool ok = s?.isCached == true;
+          return Card(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: ListTile(
+              leading: Icon(
+                ok ? Icons.check : Icons.close,
+                color: ok ? Colors.green : Colors.red,
+              ),
+              title: Text(sectionLabel),
+              subtitle: _buildSectionSubtitle(ok, s),
+              trailing: TextButton(
+                onPressed: ok ? null : () => _prepareSection(sectionLabel),
+                child: const Text('Cache'),
+              ),
+            ),
+          );
+        })
+        .toList(growable: false);
   }
 
   Widget _buildSectionSubtitle(bool ok, OfflineModeSectionStatus? s) {

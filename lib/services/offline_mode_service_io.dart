@@ -18,6 +18,8 @@ class OfflineModeService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final RosterEmbeddingsCache _rosterCache = getRosterEmbeddingsCache();
 
+  static const Duration _cacheFreshnessWindow = Duration(hours: 18);
+
   static const String _markerFileName = 'offline_mode_markers.json';
 
   Future<File> _markerFile() async {
@@ -136,7 +138,7 @@ class OfflineModeService {
     List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
   ) async {
     const VpsEmbeddingsApiClient client = VpsEmbeddingsApiClient();
-    const int batchSize = 8;
+    const int batchSize = 14;
 
     final List<Map<String, Object?>> roster = <Map<String, Object?>>[];
     int missing = 0;
@@ -253,6 +255,50 @@ class OfflineModeService {
       'forbidden': forbidden,
       'totalUsers': docs.length,
     };
+  }
+
+  Map<String, Object?>? _tryDecodeCachePayload(String? jsonString) {
+    if (jsonString == null) return null;
+    final String trimmed = jsonString.trim();
+    if (trimmed.isEmpty) return null;
+    try {
+      final Object? decoded = jsonDecode(trimmed);
+      if (decoded is Map) {
+        return decoded.map((Object? key, Object? value) {
+          return MapEntry<String, Object?>(key.toString(), value);
+        });
+      }
+    } catch (_) {
+      return null;
+    }
+    return null;
+  }
+
+  DateTime? _tryParseCachedAtUtc(Map<String, Object?> payload) {
+    final Object? cachedAt = payload['cachedAtUtc'];
+    if (cachedAt is String) {
+      return DateTime.tryParse(cachedAt);
+    }
+    return null;
+  }
+
+  Map<String, Map<String, Object?>> _indexRosterEntries(
+    Map<String, Object?> payload,
+  ) {
+    final Object? rosterObj = payload['roster'];
+    if (rosterObj is! List) return <String, Map<String, Object?>>{};
+    final Map<String, Map<String, Object?>> indexed =
+        <String, Map<String, Object?>>{};
+    for (final Object? item in rosterObj) {
+      if (item is! Map) continue;
+      final Map<String, Object?> entry = item.map((Object? key, Object? value) {
+        return MapEntry<String, Object?>(key.toString(), value);
+      });
+      final String userId = (entry['userId'] ?? '').toString().trim();
+      if (userId.isEmpty) continue;
+      indexed[userId] = entry;
+    }
+    return indexed;
   }
 
   Future<bool> isModelAvailable() async {
@@ -387,15 +433,131 @@ class OfflineModeService {
         .where('section', isEqualTo: label)
         .get(const GetOptions(source: Source.server));
 
-    // Also download VPS embeddings and persist them to the local roster cache.
-    // This is required for offline recognition (Firestore cache alone is not
-    // enough).
-    final Map<String, Object?> rosterPayload =
-        await _downloadRosterEmbeddingsFromVps(snapshot.docs);
     final String cacheKey = _rosterCacheKeyForSection(label);
+
+    // Fast path: if the section has no students, store an empty roster payload.
+    if (snapshot.docs.isEmpty) {
+      final Map<String, Object?> emptyPayload = <String, Object?>{
+        'cachedAtUtc': DateTime.now().toUtc().toIso8601String(),
+        'roster': <Object?>[],
+        'missing': 0,
+        'failed': 0,
+        'forbidden': 0,
+        'totalUsers': 0,
+      };
+      await _rosterCache.writeJson(
+        key: cacheKey,
+        json: jsonEncode(emptyPayload),
+      );
+
+      final Map<String, dynamic> markers = await _readMarkers();
+      final Map<String, dynamic> sections =
+          (markers[_sectionsRootKey()] as Map?)?.cast<String, dynamic>() ??
+          <String, dynamic>{};
+      sections[_sectionPreparedAtKey(label)] = <String, dynamic>{
+        'preparedAt': DateTime.now().millisecondsSinceEpoch,
+        'studentCount': 0,
+        'embeddingsCachedAt': DateTime.now().millisecondsSinceEpoch,
+        'embeddingsCount': 0,
+      };
+      markers[_sectionsRootKey()] = sections;
+      await _writeMarkers(markers);
+      return;
+    }
+
+    // Incremental prep: reuse cached embeddings when possible and only fetch
+    // embeddings for new student IDs.
+    final String? existingJson = await _rosterCache.readJson(key: cacheKey);
+    final Map<String, Object?>? existingPayload = _tryDecodeCachePayload(
+      existingJson,
+    );
+    final DateTime? existingCachedAtUtc = existingPayload == null
+        ? null
+        : _tryParseCachedAtUtc(existingPayload);
+    final bool existingFresh =
+        existingCachedAtUtc != null &&
+        DateTime.now().toUtc().difference(existingCachedAtUtc) <
+            _cacheFreshnessWindow;
+
+    final Set<String> allowedIds = snapshot.docs
+        .map((doc) => doc.id.trim())
+        .where((id) => id.isNotEmpty)
+        .toSet();
+
+    final Map<String, Map<String, Object?>> existingById =
+        existingPayload == null
+        ? <String, Map<String, Object?>>{}
+        : _indexRosterEntries(existingPayload);
+
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docsToFetch =
+        snapshot.docs
+            .where((doc) => !existingById.containsKey(doc.id))
+            .toList(growable: false);
+
+    Map<String, Object?> mergedPayload;
+    if (docsToFetch.isEmpty && existingPayload != null && existingFresh) {
+      // Nothing new to fetch and cache is still fresh.
+      mergedPayload = existingPayload;
+    } else {
+      final Map<String, Object?> fetchedPayload = docsToFetch.isEmpty
+          ? <String, Object?>{
+              'cachedAtUtc': DateTime.now().toUtc().toIso8601String(),
+              'roster': <Object?>[],
+              'missing': 0,
+              'failed': 0,
+              'forbidden': 0,
+              'totalUsers': 0,
+            }
+          : await _downloadRosterEmbeddingsFromVps(docsToFetch);
+
+      final List<Map<String, Object?>> fetchedRoster = _indexRosterEntries(
+        fetchedPayload,
+      ).values.toList(growable: false);
+
+      final List<Map<String, Object?>> keptExisting = existingById.entries
+          .where((e) => allowedIds.contains(e.key))
+          .map((e) => e.value)
+          .toList(growable: false);
+
+      final Map<String, Map<String, Object?>> mergedById =
+          <String, Map<String, Object?>>{
+            for (final Map<String, Object?> entry in keptExisting)
+              (entry['userId'] ?? '').toString().trim(): entry,
+          };
+      for (final Map<String, Object?> entry in fetchedRoster) {
+        final String uid = (entry['userId'] ?? '').toString().trim();
+        if (uid.isEmpty) continue;
+        mergedById[uid] = entry;
+      }
+
+      final List<Map<String, Object?>> mergedRoster =
+          mergedById.values
+              .where((entry) {
+                final String uid = (entry['userId'] ?? '').toString().trim();
+                return uid.isNotEmpty && allowedIds.contains(uid);
+              })
+              .toList(growable: false)
+            ..sort((a, b) {
+              final String aName =
+                  (a['displayName'] as String?)?.toLowerCase() ?? '';
+              final String bName =
+                  (b['displayName'] as String?)?.toLowerCase() ?? '';
+              return aName.compareTo(bName);
+            });
+
+      mergedPayload = <String, Object?>{
+        'cachedAtUtc': DateTime.now().toUtc().toIso8601String(),
+        'roster': mergedRoster,
+        'missing': fetchedPayload['missing'] ?? 0,
+        'failed': fetchedPayload['failed'] ?? 0,
+        'forbidden': fetchedPayload['forbidden'] ?? 0,
+        'totalUsers': snapshot.docs.length,
+      };
+    }
+
     await _rosterCache.writeJson(
       key: cacheKey,
-      json: jsonEncode(rosterPayload),
+      json: jsonEncode(mergedPayload),
     );
 
     final Map<String, dynamic> markers = await _readMarkers();
@@ -406,8 +568,8 @@ class OfflineModeService {
       'preparedAt': DateTime.now().millisecondsSinceEpoch,
       'studentCount': snapshot.docs.length,
       'embeddingsCachedAt': DateTime.now().millisecondsSinceEpoch,
-      'embeddingsCount': (rosterPayload['roster'] is List)
-          ? (rosterPayload['roster'] as List).length
+      'embeddingsCount': (mergedPayload['roster'] is List)
+          ? (mergedPayload['roster'] as List).length
           : null,
     };
     markers[_sectionsRootKey()] = sections;
