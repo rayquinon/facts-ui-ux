@@ -13,6 +13,7 @@ import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 
 import 'services/face_embedding_service.dart';
 import 'services/face_quality_exception.dart';
+import 'services/roster_cache_locator.dart';
 import 'services/roster_embeddings_cache.dart';
 import 'services/vps_embeddings_api_client.dart';
 import 'widgets/clay_surface.dart';
@@ -1193,6 +1194,23 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           jsonString = await _rosterCache.readJson(key: safeUnderscoredLegacy);
           loadedFromVariant =
               jsonString != null && jsonString.trim().isNotEmpty;
+        }
+      }
+
+      // Last resort: scan the cache directory for a matching roster_section_*
+      // file. This fixes cases where the section label contained non-ascii
+      // characters and the resulting on-disk filename does not match the
+      // in-memory key variants.
+      if (jsonString == null || jsonString.trim().isEmpty) {
+        final String section = (widget.config.section ?? '').trim();
+        if (section.isNotEmpty) {
+          final String? found = await findRosterCacheJsonForSectionBestEffort(
+            sectionLabel: section,
+          );
+          if (found != null && found.trim().isNotEmpty) {
+            jsonString = found;
+            loadedFromVariant = true;
+          }
         }
       }
 
