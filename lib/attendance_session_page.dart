@@ -251,9 +251,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
   void _showSnack(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   void _resetProbeAndPendingState() {
@@ -278,6 +278,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     final DateTime systemNow = DateTime.now();
     return offset == null ? systemNow : systemNow.add(offset);
   }
+
+  bool get _isSimulatedSession => widget.config.simulatedClockOffset != null;
 
   bool _shouldEndSessionNow() {
     final DateTime now = _now();
@@ -336,6 +338,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
       // Best-effort: creating the session document can fail offline.
       final Future<void> sessionDocInit = _ensureSessionDocumentBestEffort();
+      final Future<void> attendeesInit = sessionDocInit.then((_) {
+        return _loadRecordedAttendeesBestEffort();
+      });
 
       if (!_recognitionSupported) {
         // Attendance recognition is not supported on web because the web build
@@ -355,12 +360,17 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           modelInit,
           rosterInit,
           sessionDocInit,
+          attendeesInit,
         ]);
         return;
       }
 
       // Camera is initialized lazily after the instructor selects a student.
-      await Future.wait(<Future<void>>[rosterInit, sessionDocInit]);
+      await Future.wait(<Future<void>>[
+        rosterInit,
+        sessionDocInit,
+        attendeesInit,
+      ]);
       if (!mounted) return;
       setState(() {
         _initializing = false;
@@ -406,17 +416,52 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           .collection('attendanceSessions')
           .doc(normalized);
       try {
-        final DocumentSnapshot<Map<String, dynamic>> snap = await ref
-            .get(const GetOptions(source: Source.server))
-            .timeout(const Duration(seconds: 3));
+        DocumentSnapshot<Map<String, dynamic>> snap;
+        try {
+          snap = await ref
+              .get(const GetOptions(source: Source.server))
+              .timeout(const Duration(seconds: 3));
+        } catch (_) {
+          snap = await ref
+              .get(const GetOptions(source: Source.cache))
+              .timeout(const Duration(seconds: 2));
+        }
         if (snap.exists) {
           _sessionDocId = normalized;
           final Map<String, dynamic>? data = snap.data();
+
+          // Safety: never implicitly re-activate completed sessions.
+          // Re-opening a completed session is an explicit simulation-only
+          // action initiated by the instructor/admin UI.
+          final String docStatus =
+              (data?['status'] as String?)?.trim().toLowerCase() ?? '';
+          final bool hasEndedAt = data != null && data['endedAt'] is Timestamp;
+          final bool hasEffectiveEndedAt =
+              data != null && data['effectiveEndedAt'] is Timestamp;
+          if (docStatus == 'completed' || hasEndedAt || hasEffectiveEndedAt) {
+            _sessionDocId = null;
+            throw StateError('Refusing to resume a completed session.');
+          }
+
+          final Timestamp? scheduledEndTs = data != null
+              ? (data['scheduledEndAt'] as Timestamp?)
+              : null;
+          if (scheduledEndTs != null) {
+            _scheduledEndAt = scheduledEndTs.toDate();
+          }
+
+          final Object? effectiveStartedAt = data != null
+              ? data['effectiveStartedAt']
+              : null;
           final Object? startedAt = data != null ? data['startedAt'] : null;
-          if (startedAt is Timestamp) {
-            _sessionStartedAt = startedAt.toDate();
+          final Timestamp? started = (effectiveStartedAt is Timestamp)
+              ? effectiveStartedAt
+              : (startedAt is Timestamp ? startedAt : null);
+          if (started != null) {
+            _sessionStartedAt = started.toDate();
             _scheduledEndAt ??= _computeScheduledEnd(_sessionStartedAt!);
           }
+
           await ref.update(<String, dynamic>{
             'status': 'active',
             'resumedAt': FieldValue.serverTimestamp(),
@@ -460,12 +505,24 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       'instructorId': user?.uid,
       'instructorEmail': user?.email,
       'status': 'active',
+      'effectiveStartedAt': _isSimulatedSession
+          ? Timestamp.fromDate(now)
+          : FieldValue.serverTimestamp(),
+      if (_isSimulatedSession) 'effectiveDateKey': _dateKey(now),
+      if (_isSimulatedSession)
+        'simulatedClockOffsetMs':
+            widget.config.simulatedClockOffset?.inMilliseconds,
       'startedAt': FieldValue.serverTimestamp(),
       'createdAt': FieldValue.serverTimestamp(),
     });
     _sessionDocId = doc.id;
 
     await _upsertSessionPointer(status: 'active');
+
+    if (_isSimulatedSession) {
+      _sessionStartedAt ??= now;
+      return;
+    }
 
     // Anchor the session start time on Firestore server time.
     // This avoids device clock drift affecting the 30-minute cutoff.
@@ -491,6 +548,50 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     } catch (_) {
       // Offline or slow network: skip for now.
     }
+  }
+
+  Future<void> _loadRecordedAttendeesBestEffort() async {
+    final String? sessionId = _sessionDocId;
+    if (sessionId == null || sessionId.trim().isEmpty) {
+      return;
+    }
+
+    final CollectionReference<Map<String, dynamic>> attendees = _firestore
+        .collection('attendanceSessions')
+        .doc(sessionId)
+        .collection('attendees');
+
+    QuerySnapshot<Map<String, dynamic>> snapshot;
+    try {
+      snapshot = await attendees
+          .get(const GetOptions(source: Source.server))
+          .timeout(const Duration(seconds: 4));
+    } catch (_) {
+      try {
+        snapshot = await attendees
+            .get(const GetOptions(source: Source.cache))
+            .timeout(const Duration(seconds: 2));
+      } catch (_) {
+        return;
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      for (final QueryDocumentSnapshot<Map<String, dynamic>> doc
+          in snapshot.docs) {
+        final String uid = doc.id.trim();
+        if (uid.isEmpty) continue;
+
+        _capturedStudentIds.add(uid);
+
+        final Object? statusRaw = doc.data()['status'];
+        final String status = (statusRaw as String?)?.trim() ?? '';
+        if (status.isNotEmpty) {
+          _recordedStatuses[uid] = status;
+        }
+      }
+    });
   }
 
   Future<void> _loadRosterEmbeddings() async {
@@ -738,7 +839,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     }
 
     roster.sort(
-      (a, b) => a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase()),
+      (a, b) =>
+          a.displayName.toLowerCase().compareTo(b.displayName.toLowerCase()),
     );
     return roster;
   }
@@ -769,9 +871,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       final String when = cachedAtUtc == null
           ? ''
           : ' (saved ${cachedAtUtc.toLocal()})';
-      _updateStatus(
-        'Loaded cached roster$when. Will refresh when online.',
-      );
+      _updateStatus('Loaded cached roster$when. Will refresh when online.');
     } catch (_) {
       // Best-effort only.
     }
@@ -1163,6 +1263,64 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           statusMessage ?? 'Select a student from the roster to continue.';
     });
     _resetProbeAndPendingState();
+  }
+
+  bool get _scanSimulationEnabled =>
+      widget.config.simulatedClockOffset != null && !kIsWeb;
+
+  Future<void> _simulateScanForSelectedStudent() async {
+    if (!_scanSimulationEnabled) return;
+    if (_initializing || _isEndingSession) return;
+    if (_shouldEndSessionNow()) {
+      _showSnack('Session has reached the scheduled end time.');
+      return;
+    }
+    if (!_captureEnabled) {
+      _showSnack('Session is paused. Tap Continue session to resume.');
+      return;
+    }
+
+    final _RecognizedStudent? selected = _selectedStudent;
+    if (_viewMode != _AttendanceSessionViewMode.verify || selected == null) {
+      return;
+    }
+
+    final DateTime captureTime = _now();
+    final String studentId = selected.userId;
+
+    if (_capturedStudentIds.contains(studentId)) {
+      _showSnack('Already recorded ${selected.displayName}.');
+      await _exitVerifyMode(
+        statusMessage: 'Already recorded ${selected.displayName}.',
+      );
+      return;
+    }
+
+    if (_shouldThrottleStudentCapture(studentId, captureTime)) {
+      _showSnack('Already recorded ${selected.displayName} recently.');
+      return;
+    }
+
+    final _MatchResult result = _MatchResult(
+      embedding: const <double>[],
+      student: selected,
+      similarity: 1.0,
+      confidence: 1.0,
+    );
+
+    _recordLocalCapture(result, captureTime);
+    _capturedStudentIds.add(studentId);
+    try {
+      await _persistCapture(result, const <double>[], captureTime);
+    } catch (_) {
+      _capturedStudentIds.remove(studentId);
+      rethrow;
+    }
+
+    _showSnack('Recorded ${selected.displayName} (simulated).');
+    await _exitVerifyMode(
+      statusMessage: 'Recorded ${selected.displayName} (simulated).',
+    );
   }
 
   Future<void> _processCameraImage(CameraImage image) async {
@@ -1767,7 +1925,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     } else {
       final int requiredHits = math.min(
         templateCount,
-        templateCount >= 6
+        templateCount >= 6 && tuning.minTemplateHits >= 2
             ? math.max(2, tuning.minTemplateHits)
             : tuning.minTemplateHits,
       );
@@ -1775,7 +1933,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         return _MatchResult(
           embedding: embedding,
           similarity: bestTemplate,
-          rejectionReason: 'insufficient-template-agreement ($hitCount/$requiredHits)',
+          rejectionReason:
+              'insufficient-template-agreement ($hitCount/$requiredHits)',
         );
       }
     }
@@ -1820,7 +1979,11 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         ? embedding
         : _averageVectors(_probeHistoryUnit);
 
-    _MatchResult result = _matchEmbeddingAgainstStudent(smoothed, selected, tuning);
+    _MatchResult result = _matchEmbeddingAgainstStudent(
+      smoothed,
+      selected,
+      tuning,
+    );
     List<double> embeddingUsed = smoothed;
     bool usedLegacy = false;
     String? legacyDebug;
@@ -1864,10 +2027,12 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     // If we still can't match, try an unaligned embedding as a compatibility
     // fallback for older enrollments. Throttled to avoid doubling inference
     // cost on every frame.
-    if (sourceImage != null && sourceBbox != null && _shouldTryUnalignedFallback(result)) {
+    if (sourceImage != null &&
+        sourceBbox != null &&
+        _shouldTryUnalignedFallback(result)) {
       try {
-        final List<double> unalignedEmbedding =
-            await _embeddingService.generateEmbedding(sourceImage, sourceBbox);
+        final List<double> unalignedEmbedding = await _embeddingService
+            .generateEmbedding(sourceImage, sourceBbox);
         final _MatchResult unalignedResult = _matchEmbeddingAgainstStudent(
           unalignedEmbedding,
           selected,
@@ -1903,30 +2068,35 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       _pendingStartedAt = null;
 
       final double best = result.similarity ?? double.nan;
-        final String mode = usedLegacy
+      final String mode = usedLegacy
           ? ' (legacy)'
           : (usedUnaligned ? ' (unaligned)' : '');
-        final List<String> debugLines = <String>[];
-        if (legacyDebug != null) debugLines.add(legacyDebug);
-        if (unalignedDebug != null) debugLines.add(unalignedDebug);
-        final String extra = debugLines.isEmpty ? '' : '\n${debugLines.join('\n')}';
+      final List<String> debugLines = <String>[];
+      if (legacyDebug != null) debugLines.add(legacyDebug);
+      if (unalignedDebug != null) debugLines.add(unalignedDebug);
+      final String extra = debugLines.isEmpty
+          ? ''
+          : '\n${debugLines.join('\n')}';
       final String reason = result.rejectionReason == null
           ? ''
           : '\nReason: ${result.rejectionReason}';
       if (best.isFinite) {
-        final bool singleTooWeak =
-            (result.rejectionReason ?? '').startsWith('single-template-too-weak');
+        final bool singleTooWeak = (result.rejectionReason ?? '').startsWith(
+          'single-template-too-weak',
+        );
         final String thresholdLine = singleTooWeak
             ? '(best similarity ${best.toStringAsFixed(2)}, '
-                'required ${tuning.singleTemplateThreshold.toStringAsFixed(2)})'
+                  'required ${tuning.singleTemplateThreshold.toStringAsFixed(2)})'
             : '(best similarity ${best.toStringAsFixed(2)}, '
-                'threshold ${tuning.similarityThreshold.toStringAsFixed(2)})';
+                  'threshold ${tuning.similarityThreshold.toStringAsFixed(2)})';
         _updateStatus(
           'Face detected but does not match ${selected.displayName}.$mode\n'
           '$thresholdLine$reason$extra',
         );
       } else {
-        _updateStatus('Face detected but does not match ${selected.displayName}.');
+        _updateStatus(
+          'Face detected but does not match ${selected.displayName}.',
+        );
       }
       return;
     }
@@ -1984,8 +2154,12 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
     // Only recognize/persist a student once per session.
     if (_capturedStudentIds.contains(candidateId)) {
-      _updateStatus('Already recorded ${selected.displayName} for this session.');
-      await _exitVerifyMode(statusMessage: 'Already recorded ${selected.displayName}.');
+      _updateStatus(
+        'Already recorded ${selected.displayName} for this session.',
+      );
+      await _exitVerifyMode(
+        statusMessage: 'Already recorded ${selected.displayName}.',
+      );
       return;
     }
 
@@ -2192,8 +2366,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     final double singleTemplateThreshold = isVerification
         ? _verifySingleTemplateThreshold
         : _singleTemplateThreshold;
-    final int minTemplateHits =
-        isVerification ? _verifyMinTemplateHits : _minTemplateHits;
+    final int minTemplateHits = isVerification
+        ? _verifyMinTemplateHits
+        : _minTemplateHits;
     final double sweetSingleTemplateThreshold = isVerification
         ? _verifySweetSingleTemplateThreshold
         : _sweetSingleTemplateThreshold;
@@ -2701,12 +2876,16 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       return;
     }
     try {
-      await _firestore.collection('attendanceSessions').doc(sessionId).update(
-        <String, dynamic>{
-          'status': 'completed',
-          'endedAt': FieldValue.serverTimestamp(),
-        },
-      );
+      await _firestore
+          .collection('attendanceSessions')
+          .doc(sessionId)
+          .update(<String, dynamic>{
+            'status': 'completed',
+            'endedAt': FieldValue.serverTimestamp(),
+            'effectiveEndedAt': _isSimulatedSession
+                ? Timestamp.fromDate(_now())
+                : FieldValue.serverTimestamp(),
+          });
       await _upsertSessionPointer(status: 'completed', ended: true);
     } catch (_) {
       // Best-effort update only.
@@ -2856,8 +3035,10 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     final bool inVerify = _viewMode == _AttendanceSessionViewMode.verify;
     final _RecognizedStudent? selected = _selectedStudent;
     final Widget preview = _buildPreviewPlaceholder();
-    final bool showOvalGuide = !kIsWeb && inVerify &&
-      (_cameraController?.value.isInitialized ?? false);
+    final bool showOvalGuide =
+        !kIsWeb &&
+        inVerify &&
+        (_cameraController?.value.isInitialized ?? false);
     final bool endNow = _shouldEndSessionNow();
     final bool canToggleCapture = _recognitionSupported;
     final bool primaryEnabled =
@@ -2964,9 +3145,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                                 borderRadius: BorderRadius.circular(16),
                                 border: Border.all(
                                   color: theme.colorScheme.outlineVariant
-                                      .withValues(
-                                    alpha: 0.35,
-                                  ),
+                                      .withValues(alpha: 0.35),
                                 ),
                               ),
                               child: Padding(
@@ -2975,15 +3154,48 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                                   vertical: 10,
                                 ),
                                 child: ConstrainedBox(
-                                  constraints:
-                                      const BoxConstraints(maxHeight: 132),
-                                  child: SingleChildScrollView(
-                                    child: Text(
-                                      _statusMessage ??
-                                          'Align the student in front of the camera.',
-                                      style: theme.textTheme.bodyMedium,
-                                      softWrap: true,
-                                    ),
+                                  constraints: const BoxConstraints(
+                                    maxHeight: 132,
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: <Widget>[
+                                      Flexible(
+                                        child: SingleChildScrollView(
+                                          child: Text(
+                                            _statusMessage ??
+                                                'Align the student in front of the camera.',
+                                            style: theme.textTheme.bodyMedium,
+                                            softWrap: true,
+                                          ),
+                                        ),
+                                      ),
+                                      if (_scanSimulationEnabled &&
+                                          selected != null &&
+                                          !_openingCamera)
+                                        Padding(
+                                          padding: const EdgeInsets.only(
+                                            top: 10,
+                                          ),
+                                          child: OutlinedButton.icon(
+                                            onPressed:
+                                                _simulateScanForSelectedStudent,
+                                            icon: const Icon(
+                                              Icons.check_circle_outline,
+                                            ),
+                                            label: const Text('Simulate scan'),
+                                            style: OutlinedButton.styleFrom(
+                                              visualDensity:
+                                                  VisualDensity.compact,
+                                              tapTargetSize:
+                                                  MaterialTapTargetSize
+                                                      .shrinkWrap,
+                                            ),
+                                          ),
+                                        ),
+                                    ],
                                   ),
                                 ),
                               ),
@@ -3034,31 +3246,35 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                                         const Divider(height: 1),
                                     itemBuilder:
                                         (BuildContext context, int index) {
-                                      final _RecognizedStudent student =
-                                          roster[index];
-                                      final bool recorded =
-                                          _capturedStudentIds
-                                              .contains(student.userId);
+                                          final _RecognizedStudent student =
+                                              roster[index];
+                                          final bool recorded =
+                                              _capturedStudentIds.contains(
+                                                student.userId,
+                                              );
 
-                                      return ListTile(
-                                        title: Text(student.displayName),
-                                        trailing: recorded
-                                            ? Icon(
-                                                Icons.check_circle,
-                                                color:
-                                                    theme.colorScheme.primary,
-                                              )
-                                            : const Icon(
-                                                Icons.chevron_right,
-                                              ),
-                                        enabled: !recorded &&
-                                            !_initializing &&
-                                            !_isEndingSession,
-                                        onTap: recorded
-                                            ? null
-                                            : () => _enterVerifyMode(student),
-                                      );
-                                    },
+                                          return ListTile(
+                                            title: Text(student.displayName),
+                                            trailing: recorded
+                                                ? Icon(
+                                                    Icons.check_circle,
+                                                    color: theme
+                                                        .colorScheme
+                                                        .primary,
+                                                  )
+                                                : const Icon(
+                                                    Icons.chevron_right,
+                                                  ),
+                                            enabled:
+                                                !recorded &&
+                                                !_initializing &&
+                                                !_isEndingSession,
+                                            onTap: recorded
+                                                ? null
+                                                : () =>
+                                                      _enterVerifyMode(student),
+                                          );
+                                        },
                                   );
                                 },
                               ),
@@ -3136,7 +3352,10 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
             'status': status,
             'scheduledEndAt': Timestamp.fromDate(scheduledEnd),
             'updatedAt': FieldValue.serverTimestamp(),
-            if (ended) 'endedAt': FieldValue.serverTimestamp(),
+            if (ended)
+              'endedAt': FieldValue.serverTimestamp()
+            else
+              'endedAt': FieldValue.delete(),
           }, SetOptions(merge: true));
     } catch (_) {
       // Best-effort only.

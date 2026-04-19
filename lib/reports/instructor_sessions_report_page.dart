@@ -33,6 +33,7 @@ class _InstructorSessionsReportPageState
   );
 
   List<_InstructorSummary> _summaries = <_InstructorSummary>[];
+  int _sessionsTotal = 0;
   int _completedSessionsTotal = 0;
 
   @override
@@ -60,7 +61,9 @@ class _InstructorSessionsReportPageState
 
   (DateTime start, DateTime endExclusive) _rangeWindow() {
     final DateTime start = _dayKey(_range.start);
-    final DateTime endExclusive = _dayKey(_range.end).add(const Duration(days: 1));
+    final DateTime endExclusive = _dayKey(
+      _range.end,
+    ).add(const Duration(days: 1));
     return (start, endExclusive);
   }
 
@@ -86,7 +89,8 @@ class _InstructorSessionsReportPageState
     if (instructorIds.isEmpty) return <String, _InstructorIdentity>{};
 
     const int chunkSize = 10;
-    final Map<String, _InstructorIdentity> out = <String, _InstructorIdentity>{};
+    final Map<String, _InstructorIdentity> out =
+        <String, _InstructorIdentity>{};
 
     final List<String> ids = instructorIds.toList(growable: false);
     for (int i = 0; i < ids.length; i += chunkSize) {
@@ -116,34 +120,87 @@ class _InstructorSessionsReportPageState
     setState(() {
       _loading = true;
       _summaries = <_InstructorSummary>[];
+      _sessionsTotal = 0;
       _completedSessionsTotal = 0;
     });
 
     try {
       final (DateTime start, DateTime endExclusive) = _rangeWindow();
 
-      Query<Map<String, dynamic>> q = _firestore
-          .collection('attendanceSessions')
-          .orderBy('startedAt', descending: true)
-          .where('startedAt', isGreaterThanOrEqualTo: Timestamp.fromDate(start))
-          .where('startedAt', isLessThan: Timestamp.fromDate(endExclusive));
+      final Map<String, QueryDocumentSnapshot<Map<String, dynamic>>> byId =
+          <String, QueryDocumentSnapshot<Map<String, dynamic>>>{};
 
-      QuerySnapshot<Map<String, dynamic>> snap;
-      try {
-        snap = await q.get(const GetOptions(source: Source.server));
-      } catch (_) {
-        snap = await q.get(const GetOptions(source: Source.cache));
+      Future<void> fetchInto(Query<Map<String, dynamic>> q) async {
+        QuerySnapshot<Map<String, dynamic>> snap;
+        try {
+          snap = await q.get(const GetOptions(source: Source.server));
+        } catch (_) {
+          snap = await q.get(const GetOptions(source: Source.cache));
+        }
+        for (final QueryDocumentSnapshot<Map<String, dynamic>> doc
+            in snap.docs) {
+          byId.putIfAbsent(doc.id, () => doc);
+        }
       }
+
+      await fetchInto(
+        _firestore
+            .collection('attendanceSessions')
+            .orderBy('effectiveStartedAt', descending: true)
+            .where(
+              'effectiveStartedAt',
+              isGreaterThanOrEqualTo: Timestamp.fromDate(start),
+            )
+            .where(
+              'effectiveStartedAt',
+              isLessThan: Timestamp.fromDate(endExclusive),
+            ),
+      );
+
+      await fetchInto(
+        _firestore
+            .collection('attendanceSessions')
+            .orderBy('startedAt', descending: true)
+            .where(
+              'startedAt',
+              isGreaterThanOrEqualTo: Timestamp.fromDate(start),
+            )
+            .where('startedAt', isLessThan: Timestamp.fromDate(endExclusive)),
+      );
+
+      final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = byId.values
+          .toList(growable: false);
+      docs.sort((a, b) {
+        DateTime? ts(Map<String, dynamic> data, String key) {
+          final Object? v = data[key];
+          return v is Timestamp ? v.toDate() : null;
+        }
+
+        final Map<String, dynamic> ad = a.data();
+        final Map<String, dynamic> bd = b.data();
+        final DateTime aStarted =
+            ts(ad, 'effectiveStartedAt') ??
+            ts(ad, 'startedAt') ??
+            DateTime(1970);
+        final DateTime bStarted =
+            ts(bd, 'effectiveStartedAt') ??
+            ts(bd, 'startedAt') ??
+            DateTime(1970);
+        return bStarted.compareTo(aStarted);
+      });
 
       final List<_SessionRow> completed = <_SessionRow>[];
-      for (final QueryDocumentSnapshot<Map<String, dynamic>> doc in snap.docs) {
+      final List<_SessionRow> all = <_SessionRow>[];
+      for (final QueryDocumentSnapshot<Map<String, dynamic>> doc in docs) {
         final _SessionRow? row = _SessionRow.fromDoc(doc);
         if (row == null) continue;
-        if (!row.isCompleted) continue;
-        completed.add(row);
+        all.add(row);
+        if (row.isCompleted) {
+          completed.add(row);
+        }
       }
 
-      final Set<String> instructorIds = completed
+      final Set<String> instructorIds = all
           .map((e) => e.instructorId)
           .where((e) => e.trim().isNotEmpty)
           .toSet();
@@ -153,7 +210,7 @@ class _InstructorSessionsReportPageState
 
       final Map<String, List<_SessionRow>> byInstructor =
           <String, List<_SessionRow>>{};
-      for (final _SessionRow row in completed) {
+      for (final _SessionRow row in all) {
         final String key = row.instructorId.trim().isEmpty
             ? '(unknown)'
             : row.instructorId.trim();
@@ -163,9 +220,11 @@ class _InstructorSessionsReportPageState
       final List<_InstructorSummary> summaries = <_InstructorSummary>[];
       byInstructor.forEach((String id, List<_SessionRow> rows) {
         rows.sort((a, b) {
-          final DateTime aEnd = a.endedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-          final DateTime bEnd = b.endedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-          return bEnd.compareTo(aEnd);
+          final DateTime aKey =
+            a.startedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+          final DateTime bKey =
+            b.startedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+          return bKey.compareTo(aKey);
         });
 
         final _InstructorIdentity? ident = identities[id];
@@ -175,7 +234,9 @@ class _InstructorSessionsReportPageState
             .cast<String>()
             .fold<String>('', (prev, e) => prev.isEmpty ? e : prev);
 
-        final String name = ident?.displayName ?? (id == '(unknown)' ? 'Unknown instructor' : id);
+        final String name =
+            ident?.displayName ??
+            (id == '(unknown)' ? 'Unknown instructor' : id);
         final String email = (ident?.email ?? '').trim().isNotEmpty
             ? ident!.email
             : emailFallback;
@@ -193,21 +254,26 @@ class _InstructorSessionsReportPageState
       summaries.sort((a, b) {
         final int byCount = b.completedCount.compareTo(a.completedCount);
         if (byCount != 0) return byCount;
-        return a.instructorName.toLowerCase().compareTo(b.instructorName.toLowerCase());
+        final int byTotal = b.totalCount.compareTo(a.totalCount);
+        if (byTotal != 0) return byTotal;
+        return a.instructorName.toLowerCase().compareTo(
+          b.instructorName.toLowerCase(),
+        );
       });
 
       if (!mounted) return;
       setState(() {
         _summaries = summaries;
+        _sessionsTotal = all.length;
         _completedSessionsTotal = completed.length;
         _loading = false;
       });
     } catch (error) {
       if (!mounted) return;
       setState(() => _loading = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to build report: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to build report: $error')));
     }
   }
 
@@ -228,9 +294,9 @@ class _InstructorSessionsReportPageState
     if (_loading) return;
     final List<_InstructorSummary> summaries = _summaries;
     if (summaries.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No data to export.')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('No data to export.')));
       return;
     }
 
@@ -281,15 +347,17 @@ class _InstructorSessionsReportPageState
     final String csv = rows.map((r) => r.map(esc).join(',')).join('\n');
     final Uint8List bytes = Uint8List.fromList(utf8.encode(csv));
 
-    final String safeRange = _fmtRange(_range).replaceAll(' ', '').replaceAll('→', '-');
+    final String safeRange = _fmtRange(
+      _range,
+    ).replaceAll(' ', '').replaceAll('→', '-');
     final String fileName = 'instructor_sessions_$safeRange.csv';
 
     await saveBytesAsFile(bytes, fileName);
 
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Exported $fileName')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('Exported $fileName')));
   }
 
   @override
@@ -297,9 +365,7 @@ class _InstructorSessionsReportPageState
     final ThemeData theme = Theme.of(context);
 
     if (_checkingAccess) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
     if (!_isAdmin) {
@@ -351,7 +417,9 @@ class _InstructorSessionsReportPageState
                 ),
                 Chip(
                   avatar: const Icon(Icons.fact_check_outlined, size: 18),
-                  label: Text('Completed sessions: $_completedSessionsTotal'),
+                  label: Text(
+                    'Sessions: $_sessionsTotal • Completed: $_completedSessionsTotal',
+                  ),
                 ),
               ],
             ),
@@ -360,7 +428,7 @@ class _InstructorSessionsReportPageState
               const LinearProgressIndicator()
             else if (_summaries.isEmpty)
               Text(
-                'No completed sessions found in this range.',
+                'No sessions found in this range.',
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
@@ -380,8 +448,8 @@ class _InstructorSessionsReportPageState
                           [
                             if (s.instructorEmail.trim().isNotEmpty)
                               s.instructorEmail.trim(),
-                            '${s.completedCount} completed session(s)',
-                            'Last: ${_fmtDateTime(s.lastEndedAt)}',
+                            '${s.totalCount} session(s) • ${s.completedCount} completed',
+                            'Last ended: ${_fmtDateTime(s.lastEndedAt)}',
                           ].join(' • '),
                         ),
                         children: <Widget>[
@@ -405,7 +473,9 @@ class _InstructorSessionsReportPageState
 
                             return ListTile(
                               dense: true,
-                              title: Text(top.isEmpty ? 'Session ${sess.sessionId}' : top),
+                              title: Text(
+                                top.isEmpty ? 'Session ${sess.sessionId}' : top,
+                              ),
                               subtitle: Text(bottom),
                               trailing: Text(
                                 sess.status,
@@ -456,8 +526,8 @@ class _InstructorIdentity {
       }
     }
 
-    final String email = ((data['Email'] as String?) ?? (data['email'] as String?) ?? '')
-        .trim();
+    final String email =
+        ((data['Email'] as String?) ?? (data['email'] as String?) ?? '').trim();
 
     return _InstructorIdentity(
       displayName: bestName.isEmpty ? doc.id : bestName,
@@ -479,17 +549,19 @@ class _InstructorSummary {
   final String instructorEmail;
   final List<_SessionRow> sessions;
 
-  int get completedCount => sessions.length;
+  int get totalCount => sessions.length;
+
+  int get completedCount => sessions.where((e) => e.isCompleted).length;
 
   DateTime? get lastEndedAt {
     if (sessions.isEmpty) return null;
-    return sessions
-        .map((e) => e.endedAt)
-        .whereType<DateTime>()
-        .fold<DateTime?>(null, (prev, dt) {
-      if (prev == null) return dt;
-      return dt.isAfter(prev) ? dt : prev;
-    });
+    return sessions.map((e) => e.endedAt).whereType<DateTime>().fold<DateTime?>(
+      null,
+      (prev, dt) {
+        if (prev == null) return dt;
+        return dt.isAfter(prev) ? dt : prev;
+      },
+    );
   }
 }
 
@@ -554,8 +626,8 @@ class _SessionRow {
       instructorId: (data['instructorId']?.toString() ?? '').trim(),
       instructorEmail: (data['instructorEmail']?.toString() ?? '').trim(),
       status: status,
-      startedAt: ts(data['startedAt']),
-      endedAt: ts(data['endedAt']),
+      startedAt: ts(data['effectiveStartedAt']) ?? ts(data['startedAt']),
+      endedAt: ts(data['effectiveEndedAt']) ?? ts(data['endedAt']),
     );
   }
 }

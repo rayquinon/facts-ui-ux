@@ -66,6 +66,73 @@ class _InstructorPageState extends State<InstructorPage> {
 
   static const String _kSessionPointerCollection = 'attendanceSessionPointers';
 
+  Future<bool> _confirmReopenCompletedSession(
+    BuildContext context, {
+    required bool expired,
+  }) async {
+    final bool? ok = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext dialogContext) => AlertDialog(
+        title: const Text('Reopen completed session?'),
+        content: Text(
+          [
+            'This session is marked as completed.',
+            'Existing recorded attendance will be kept.',
+            if (expired)
+              'Note: your simulated time is past the scheduled end, so it may auto-end immediately.',
+          ].join('\n\n'),
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Reopen'),
+          ),
+        ],
+      ),
+    );
+    return ok == true;
+  }
+
+  Future<bool> _reopenSessionBestEffort({
+    required String sessionId,
+    required String pointerId,
+  }) async {
+    if (!_simulationEnabled) return false;
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('attendanceSessions')
+          .doc(sessionId)
+          .update(<String, dynamic>{
+            'status': 'active',
+            'resumedAt': FieldValue.serverTimestamp(),
+            'endedAt': FieldValue.delete(),
+            'effectiveEndedAt': FieldValue.delete(),
+          });
+    } catch (_) {
+      return false;
+    }
+
+    try {
+      await FirebaseFirestore.instance
+          .collection(_kSessionPointerCollection)
+          .doc(pointerId)
+          .set(<String, dynamic>{
+            'status': 'active',
+            'endedAt': FieldValue.delete(),
+            'updatedAt': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+    } catch (_) {
+      // Best-effort only.
+    }
+
+    return true;
+  }
+
   String _dateKey(DateTime dt) {
     final String y = dt.year.toString().padLeft(4, '0');
     final String m = dt.month.toString().padLeft(2, '0');
@@ -1074,20 +1141,85 @@ class _InstructorPageState extends State<InstructorPage> {
     final Duration? simulatedClockOffset = _simulationEnabled
         ? _simulatedTime.difference(launchNow)
         : null;
-    final AttendanceSessionConfig config = AttendanceSessionConfig(
-      classId: schedule.classId,
-      subjectCode: schedule.subjectCode,
-      subjectName: schedule.subjectName,
-      section: schedule.section,
-      term: schedule.term,
-      location: schedule.location,
-      dayOfWeek: schedule.dayOfWeek,
-      start: schedule.start,
-      end: schedule.end,
-      simulatedClockOffset: simulatedClockOffset,
-      resumeSessionId: resumeSessionId,
-    );
+
     try {
+      String? effectiveResumeSessionId = resumeSessionId;
+      final String? pointerId = _pointerIdForSchedule(
+        schedule: schedule,
+        activeTime: effectiveNow,
+      );
+
+      if (pointerId != null) {
+        DocumentSnapshot<Map<String, dynamic>>? pointerSnap;
+        try {
+          pointerSnap = await FirebaseFirestore.instance
+              .collection(_kSessionPointerCollection)
+              .doc(pointerId)
+              .get(const GetOptions(source: Source.server))
+              .timeout(const Duration(seconds: 3));
+        } catch (_) {
+          try {
+            pointerSnap = await FirebaseFirestore.instance
+                .collection(_kSessionPointerCollection)
+                .doc(pointerId)
+                .get(const GetOptions(source: Source.cache))
+                .timeout(const Duration(seconds: 2));
+          } catch (_) {
+            pointerSnap = null;
+          }
+        }
+
+        final Map<String, dynamic>? data = pointerSnap?.data();
+        final String status = (data?['status'] as String?)?.toLowerCase() ?? '';
+        final String sessionId = (data?['sessionId'] as String?)?.trim() ?? '';
+        final Timestamp? scheduledEndTs = data?['scheduledEndAt'] as Timestamp?;
+        final DateTime? scheduledEnd = scheduledEndTs?.toDate();
+
+        final bool expired =
+            scheduledEnd != null &&
+            (effectiveNow.isAfter(scheduledEnd) ||
+                effectiveNow.isAtSameMomentAs(scheduledEnd));
+        final bool resumable =
+            sessionId.isNotEmpty &&
+            (status == 'active' || status == 'paused') &&
+            !expired;
+
+        if (expired &&
+            sessionId.isNotEmpty &&
+            status.isNotEmpty &&
+            status != 'completed') {
+          await _completeExpiredSessionBestEffort(
+            sessionId: sessionId,
+            pointerId: pointerId,
+          );
+          if (!mounted) return;
+          messenger.showSnackBar(
+            const SnackBar(
+              content: Text('Previous session ended automatically.'),
+            ),
+          );
+          return;
+        }
+
+        if (resumable) {
+          effectiveResumeSessionId = sessionId;
+        }
+      }
+
+      final AttendanceSessionConfig config = AttendanceSessionConfig(
+        classId: schedule.classId,
+        subjectCode: schedule.subjectCode,
+        subjectName: schedule.subjectName,
+        section: schedule.section,
+        term: schedule.term,
+        location: schedule.location,
+        dayOfWeek: schedule.dayOfWeek,
+        start: schedule.start,
+        end: schedule.end,
+        simulatedClockOffset: simulatedClockOffset,
+        resumeSessionId: effectiveResumeSessionId,
+      );
+
       final bool? completed = await navigator.push<bool?>(
         MaterialPageRoute<bool?>(
           builder: (BuildContext context) =>
@@ -1746,6 +1878,11 @@ class _InstructorPageState extends State<InstructorPage> {
                               (status == 'active' || status == 'paused') &&
                               !expired;
 
+                            final bool reopenable =
+                              _simulationEnabled &&
+                              sessionId.isNotEmpty &&
+                              status == 'completed';
+
                           if (expired &&
                               sessionId.isNotEmpty &&
                               status.isNotEmpty &&
@@ -1760,19 +1897,57 @@ class _InstructorPageState extends State<InstructorPage> {
 
                           final String buttonLabel = _isLaunchingSession
                               ? 'Launching...'
-                              : (resumable
-                                    ? 'Continue Session'
-                                    : 'Start recognition session');
+                            : (resumable
+                              ? 'Continue Session'
+                              : (reopenable
+                                ? 'Reopen session'
+                                : 'Start recognition session'));
 
                           return FilledButton.icon(
                             onPressed: _isLaunchingSession
                                 ? null
-                                : () => _startRecognitionSession(
-                                    activeSchedule,
-                                    resumeSessionId: resumable
-                                        ? sessionId
-                                        : null,
-                                  ),
+                                : () async {
+                                    if (reopenable) {
+                                      final bool confirmed =
+                                          await _confirmReopenCompletedSession(
+                                            context,
+                                            expired: expired,
+                                          );
+                                      if (!confirmed || !mounted) return;
+
+                                      setState(() => _isLaunchingSession = true);
+                                      final bool reopened =
+                                          await _reopenSessionBestEffort(
+                                            sessionId: sessionId,
+                                            pointerId: pointerId,
+                                          );
+                                      if (!mounted) return;
+                                      setState(() => _isLaunchingSession = false);
+
+                                      if (!reopened) {
+                                        ScaffoldMessenger.of(this.context)
+                                            .showSnackBar(
+                                          const SnackBar(
+                                            content: Text(
+                                              'Failed to reopen session. Check your connection and try again.',
+                                            ),
+                                          ),
+                                        );
+                                        return;
+                                      }
+
+                                      await _startRecognitionSession(
+                                        activeSchedule,
+                                        resumeSessionId: sessionId,
+                                      );
+                                      return;
+                                    }
+
+                                    await _startRecognitionSession(
+                                      activeSchedule,
+                                      resumeSessionId: resumable ? sessionId : null,
+                                    );
+                                  },
                             icon: _isLaunchingSession
                                 ? const SizedBox(
                                     width: 18,
@@ -1784,7 +1959,9 @@ class _InstructorPageState extends State<InstructorPage> {
                                 : Icon(
                                     resumable
                                         ? Icons.play_circle_outline
-                                        : Icons.play_arrow_rounded,
+                                        : (reopenable
+                                              ? Icons.replay_circle_filled_outlined
+                                              : Icons.play_arrow_rounded),
                                   ),
                             label: Text(buttonLabel),
                           );

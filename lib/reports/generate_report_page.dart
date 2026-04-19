@@ -623,22 +623,30 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
         range.end,
       ).add(const Duration(days: 1));
 
-      final QuerySnapshot<Map<String, dynamic>> sessionsSnapshot =
-          await _firestore
-              .collection('attendanceSessions')
-              .where('classId', isEqualTo: classId)
-              .where(
-                'startedAt',
-                isGreaterThanOrEqualTo: Timestamp.fromDate(rangeStart),
-              )
-              .where(
-                'startedAt',
-                isLessThan: Timestamp.fromDate(rangeEndExclusive),
-              )
-              .get();
+      final Map<String, QueryDocumentSnapshot<Map<String, dynamic>>> byId =
+          <String, QueryDocumentSnapshot<Map<String, dynamic>>>{};
+
+      Future<void> fetch(String field) async {
+        final QuerySnapshot<Map<String, dynamic>> snap = await _firestore
+            .collection('attendanceSessions')
+            .where('classId', isEqualTo: classId)
+            .where(
+              field,
+              isGreaterThanOrEqualTo: Timestamp.fromDate(rangeStart),
+            )
+            .where(field, isLessThan: Timestamp.fromDate(rangeEndExclusive))
+            .get();
+        for (final QueryDocumentSnapshot<Map<String, dynamic>> doc
+            in snap.docs) {
+          byId.putIfAbsent(doc.id, () => doc);
+        }
+      }
+
+      await fetch('effectiveStartedAt');
+      await fetch('startedAt');
 
       return _mostCommonNonEmpty(
-        sessionsSnapshot.docs
+        byId.values
             .map((doc) => doc.data()['instructorId'] as String?)
             .whereType<String>()
             .toList(),
@@ -810,22 +818,34 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
     final DateTime rangeEndExclusive = _dayKey(
       range.end,
     ).add(const Duration(days: 1));
-    final Query<Map<String, dynamic>> query = _firestore
-        .collection('attendanceSessions')
-        .where('classId', isEqualTo: classId)
-        .where(
-          'startedAt',
-          isGreaterThanOrEqualTo: Timestamp.fromDate(rangeStart),
-        )
-        .where('startedAt', isLessThan: Timestamp.fromDate(rangeEndExclusive));
-    final QuerySnapshot<Map<String, dynamic>> sessionsSnapshot = await query
-        .get();
+
+    final Map<String, QueryDocumentSnapshot<Map<String, dynamic>>>
+    sessionsById = <String, QueryDocumentSnapshot<Map<String, dynamic>>>{};
+
+    Future<void> fetchSessions(String field) async {
+      final Query<Map<String, dynamic>> query = _firestore
+          .collection('attendanceSessions')
+          .where('classId', isEqualTo: classId)
+          .where(field, isGreaterThanOrEqualTo: Timestamp.fromDate(rangeStart))
+          .where(field, isLessThan: Timestamp.fromDate(rangeEndExclusive));
+      final QuerySnapshot<Map<String, dynamic>> snap = await query.get();
+      for (final QueryDocumentSnapshot<Map<String, dynamic>> doc in snap.docs) {
+        sessionsById.putIfAbsent(doc.id, () => doc);
+      }
+    }
+
+    // Prefer simulated/effective timestamps when present, but keep legacy
+    // sessions (which only have startedAt) visible via the fallback query.
+    await fetchSessions('effectiveStartedAt');
+    await fetchSessions('startedAt');
+
     final List<QueryDocumentSnapshot<Map<String, dynamic>>> sessions =
-        sessionsSnapshot.docs;
+        sessionsById.values.toList(growable: false);
     await Future.wait(
       sessions.map((QueryDocumentSnapshot<Map<String, dynamic>> doc) async {
         final Map<String, dynamic> data = doc.data();
         final Timestamp? startedAt =
+            (data['effectiveStartedAt'] as Timestamp?) ??
             (data['startedAt'] as Timestamp?) ??
             (data['createdAt'] as Timestamp?);
         if (startedAt == null) {

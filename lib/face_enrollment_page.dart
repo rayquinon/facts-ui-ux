@@ -133,18 +133,14 @@ class FaceEnrollmentPage extends StatefulWidget {
 class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
   static const VpsEmbeddingsApiClient _vpsClient = VpsEmbeddingsApiClient();
 
-  // Capture multiple embeddings per pose and fuse them into a single template
-  // per pose (3 captures per phase × 7 phases => 7 stored templates).
-  static const int _capturesPerPhase = 3;
+  // Enrollment is tuned for 1:1 verification.
+  // Capture frontal-only templates at two distances so verify is reliable for
+  // both mid-range and close-range scans.
+  static const int _capturesPerPhase = 5;
   static const Duration _kPhaseCompleteHold = Duration(milliseconds: 1200);
   static final List<_OrientationPhase> _phaseOrder = <_OrientationPhase>[
-    _OrientationPhase.front,
-    _OrientationPhase.left,
-    _OrientationPhase.right,
-    _OrientationPhase.up,
-    _OrientationPhase.down,
-    _OrientationPhase.far,
-    _OrientationPhase.near,
+    _OrientationPhase.far, // MID range
+    _OrientationPhase.near, // CLOSE range
   ];
 
   CameraController? _cameraController;
@@ -579,6 +575,17 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
             return;
           }
 
+          // Frontal-only: skip captures when the face pose is extreme.
+          final double yaw = face.headEulerAngleY ?? 0.0;
+          final double pitch = face.headEulerAngleX ?? 0.0;
+          const double maxYaw = 22;
+          const double maxPitch = 22;
+          if (yaw.abs() > maxYaw || pitch.abs() > maxPitch) {
+            _lastBurstCaptureAt = now;
+            _setStatus('Face forward and hold still.', quality: 'Not frontal');
+            return;
+          }
+
           final Rect embeddingBbox = _mapMlKitBboxToRaw(
             bbox,
             rotationCompensation: _lastRotationCompensation,
@@ -773,18 +780,18 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
         case _GuideMatch.tooSmall:
           _statusMessage = switch (phase) {
             _OrientationPhase.far =>
-              'You are too far. Move a bit closer for the FAR distance capture.',
+              'You are too far. Move a bit closer for the MID range capture.',
             _OrientationPhase.near =>
-              'Move closer so your face fills more of the oval (NEAR capture).',
+              'Move closer so your face fills more of the oval (CLOSE capture).',
             _ => 'Move closer so your face fills more of the oval.',
           };
           break;
         case _GuideMatch.tooLarge:
           _statusMessage = switch (phase) {
             _OrientationPhase.far =>
-              'Move farther so your face is smaller (FAR capture).',
+              'You are too close for MID range. Move slightly farther.',
             _OrientationPhase.near =>
-              'You are too close. Move slightly farther for the NEAR capture.',
+              'You are too close. Move slightly farther for the CLOSE capture.',
             _ => 'Move farther so your face fits inside the oval.',
           };
           break;
@@ -844,7 +851,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
 
     // Size gating tuned for MLKit face boxes (more tolerant than a full-head guide).
     // For distance-specific phases, we narrow the accepted size range so we
-    // intentionally capture both a farther and a closer template.
+    // intentionally capture both a mid-range and a close-range template.
     double minArea = _kMinFaceAreaVsGuide;
     double maxArea = _kMaxFaceAreaVsGuide;
     double minW = _kMinFaceWidthVsGuide;
@@ -854,16 +861,16 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
 
     switch (phase) {
       case _OrientationPhase.far:
-        // Farther from camera: require the face to be smaller than normal.
-        minArea = 0.06;
-        maxArea = 0.25;
-        minW = 0.12;
-        minH = 0.12;
-        maxW = 0.60;
-        maxH = 0.60;
+        // MID range: require a moderate face size.
+        minArea = 0.10;
+        maxArea = 0.28;
+        minW = 0.18;
+        minH = 0.18;
+        maxW = 0.68;
+        maxH = 0.68;
         break;
       case _OrientationPhase.near:
-        // Closer to camera: require the face to be larger than normal.
+        // CLOSE range: require the face to be larger than normal.
         minArea = 0.18;
         maxArea = _kMaxFaceAreaVsGuide;
         minW = 0.28;
@@ -963,8 +970,8 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       _OrientationPhase.right => 'Next: Turn Right',
       _OrientationPhase.up => 'Next: Tilt Up',
       _OrientationPhase.down => 'Next: Tilt Down',
-      _OrientationPhase.far => 'Next: FAR Distance',
-      _OrientationPhase.near => 'Next: NEAR Distance',
+      _OrientationPhase.far => 'Next: MID Distance',
+      _OrientationPhase.near => 'Next: CLOSE Distance',
       _OrientationPhase.front => 'Next: Face Forward',
     };
 
@@ -978,9 +985,9 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       _OrientationPhase.down =>
         'Tilt your chin slightly DOWN (look a bit lower) while keeping your face inside the oval.',
       _OrientationPhase.far =>
-        'Step back a bit so your face looks smaller inside the oval. When ready, tap Capture and hold still for 3 shots.',
+        'Hold the phone at about arm\'s length (or slightly bent arm) so your face is a moderate size in the oval. When ready, tap Capture and hold still for $_capturesPerPhase shots.',
       _OrientationPhase.near =>
-        'Move closer so your face fills more of the oval. When ready, tap Capture and hold still for 3 shots.',
+        'Move closer so your face fills more of the oval. When ready, tap Capture and hold still for $_capturesPerPhase shots.',
       _OrientationPhase.front => 'Face forward and stay centered in the oval.',
     };
 
@@ -1000,7 +1007,9 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
               const SizedBox(height: 8),
               const Text('• Keep eyes on the camera'),
               const SizedBox(height: 4),
-              const Text('• Tap Capture, then hold still for 3 shots'),
+              Text(
+                '• Tap Capture, then hold still for $_capturesPerPhase shots',
+              ),
               const SizedBox(height: 4),
               const Text('• Avoid strong backlight'),
             ],
@@ -1049,9 +1058,9 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       case _OrientationPhase.down:
         return 'Tilt slightly down';
       case _OrientationPhase.far:
-        return 'Move farther (far distance)';
+        return 'MID distance (arm\'s length)';
       case _OrientationPhase.near:
-        return 'Move closer (near distance)';
+        return 'CLOSE distance (move closer)';
     }
   }
 
@@ -1314,35 +1323,32 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       final Map<_OrientationPhase, List<List<double>>> selectedByPhase =
           _selectRepresentativeEmbeddingsByPhase(perPhase: _capturesPerPhase);
 
-      // Fuse each pose's captures into a single unit template.
-      final List<List<double>> fusedTemplates = <List<double>>[];
+      // Store multiple frontal-only templates (mid + close). Keeping multiple
+      // templates preserves small variations and reduces false negatives in 1:1
+      // verification.
+      final List<List<double>> templates = <List<double>>[];
       for (final _OrientationPhase phase in _phaseOrder) {
         final List<List<double>> vectors =
             selectedByPhase[phase] ?? <List<double>>[];
         if (vectors.isEmpty) continue;
 
-        final List<List<double>> normalized = vectors
-            .map(_l2NormalizeVector)
-            .where((List<double> v) => v.isNotEmpty)
-            .toList(growable: false);
-        if (normalized.isEmpty) continue;
-
-        final List<double> averaged = _averageVectors(normalized);
-        final List<double> fused = _l2NormalizeVector(averaged);
-        if (fused.isNotEmpty) {
-          fusedTemplates.add(fused);
+        for (final List<double> vector in vectors) {
+          final List<double> unit = _l2NormalizeVector(vector);
+          if (unit.isNotEmpty) {
+            templates.add(unit);
+          }
         }
       }
 
-      final List<List<double>> vectorsToCombine = fusedTemplates.isNotEmpty
-          ? fusedTemplates
+      final List<List<double>> vectorsToCombine = templates.isNotEmpty
+          ? templates
           : <List<double>>[_l2NormalizeVector(embedding)];
       final List<double> averagedAll = _averageVectors(vectorsToCombine);
       final List<double> payloadSingle = _l2NormalizeVector(averagedAll);
 
       await _vpsClient.putEmbeddingsForUid(
         user.uid,
-        embeddings: fusedTemplates,
+        embeddings: templates,
         embedding: payloadSingle,
         model: 'onnx_v1',
         forceRefreshToken: true,
@@ -1374,16 +1380,16 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
           _phaseEmbeddings[phase] ?? <List<double>>[];
       if (bucket.isEmpty) continue;
 
+      final int want = math.min(perPhase, bucket.length);
       final List<int> indices = <int>[];
-      if (perPhase <= 1 || bucket.length == 1) {
+      if (want <= 1 || bucket.length == 1) {
         indices.add(0);
-      } else if (perPhase == 2) {
-        indices.add(0);
-        indices.add(bucket.length - 1);
       } else {
-        indices.add(0);
-        indices.add(bucket.length ~/ 2);
-        indices.add(bucket.length - 1);
+        final int maxIndex = bucket.length - 1;
+        for (int k = 0; k < want; k++) {
+          final double t = want == 1 ? 0 : (k / (want - 1));
+          indices.add((t * maxIndex).round());
+        }
       }
 
       final Set<int> uniq = indices

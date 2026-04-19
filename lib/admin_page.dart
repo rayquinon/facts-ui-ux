@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -3656,39 +3655,37 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     final String q = _searchQuery;
     final String? sectionFilter = _selectedStudentSectionFilter;
 
-    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
-        _loadedUserDocs
-            .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-              final Map<String, dynamic> data = _patchedUserData(doc);
-              return !_isAdminAccount(doc.id, data);
-            })
-            .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-              final Map<String, dynamic> data = _patchedUserData(doc);
-              final String role = ((data['role'] as String?) ?? '')
-                  .toLowerCase();
-              if (role == 'student') {
-                return _showStudents;
-              }
-              if (role == 'instructor') {
-                return _showInstructors;
-              }
-              return true;
-            })
-            .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-              if (sectionFilter == null || sectionFilter.isEmpty) return true;
-              final Map<String, dynamic> data = _patchedUserData(doc);
-              final String role = ((data['role'] as String?) ?? '')
-                  .toLowerCase();
-              if (role != 'student') return true;
-              final String section = _resolveStudentSection(data);
-              return section == sectionFilter;
-            })
-            .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-              if (q.isEmpty) return true;
-              final Map<String, dynamic> data = _patchedUserData(doc);
-              return _buildSearchHaystack(data, doc.id).contains(q);
-            })
-            .toList(growable: true);
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>>
+    docs = _loadedUserDocs
+        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+          final Map<String, dynamic> data = _patchedUserData(doc);
+          return !_isAdminAccount(doc.id, data);
+        })
+        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+          final Map<String, dynamic> data = _patchedUserData(doc);
+          final String role = ((data['role'] as String?) ?? '').toLowerCase();
+          if (role == 'student') {
+            return _showStudents;
+          }
+          if (role == 'instructor') {
+            return _showInstructors;
+          }
+          return true;
+        })
+        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+          if (sectionFilter == null || sectionFilter.isEmpty) return true;
+          final Map<String, dynamic> data = _patchedUserData(doc);
+          final String role = ((data['role'] as String?) ?? '').toLowerCase();
+          if (role != 'student') return true;
+          final String section = _resolveStudentSection(data);
+          return section == sectionFilter;
+        })
+        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+          if (q.isEmpty) return true;
+          final Map<String, dynamic> data = _patchedUserData(doc);
+          return _buildSearchHaystack(data, doc.id).contains(q);
+        })
+        .toList(growable: true);
 
     docs.sort((a, b) {
       final Map<String, dynamic> dataA = _patchedUserData(a);
@@ -3831,8 +3828,9 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     });
 
     try {
-      final QuerySnapshot<Map<String, dynamic>> snapshot =
-          await _firestore.collection('subjects').get();
+      final QuerySnapshot<Map<String, dynamic>> snapshot = await _firestore
+          .collection('subjects')
+          .get();
       final Set<String> uniqueSections = <String>{};
       for (final QueryDocumentSnapshot<Map<String, dynamic>> doc
           in snapshot.docs) {
@@ -3855,8 +3853,7 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
           _selectedStudentSectionFilter = null;
         }
         if (_availableSections.isEmpty) {
-          _sectionsError =
-              'No sections found. Add sections to subjects first.';
+          _sectionsError = 'No sections found. Add sections to subjects first.';
         }
       });
     } catch (error) {
@@ -4425,7 +4422,9 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     if (role == 'instructor' && !_showInstructors) return false;
 
     final String? sectionFilter = _selectedStudentSectionFilter;
-    if (sectionFilter != null && sectionFilter.isNotEmpty && role == 'student') {
+    if (sectionFilter != null &&
+        sectionFilter.isNotEmpty &&
+        role == 'student') {
       final String section = _resolveStudentSection(data);
       if (section != sectionFilter) return false;
     }
@@ -5433,23 +5432,19 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                       ..._availableSections.map(
                         (String section) => DropdownMenuItem<String?>(
                           value: section,
-                          child: Text(
-                            section,
-                            overflow: TextOverflow.ellipsis,
-                          ),
+                          child: Text(section, overflow: TextOverflow.ellipsis),
                         ),
                       ),
                     ],
-                    onChanged:
-                        (_loadingSections || _availableSections.isEmpty)
-                            ? null
-                            : (String? value) {
-                                setState(() {
-                                  _selectedStudentSectionFilter = value;
-                                  _resetUsersPagination();
-                                });
-                                _refreshUsers();
-                              },
+                    onChanged: (_loadingSections || _availableSections.isEmpty)
+                        ? null
+                        : (String? value) {
+                            setState(() {
+                              _selectedStudentSectionFilter = value;
+                              _resetUsersPagination();
+                            });
+                            _refreshUsers();
+                          },
                   ),
                 ),
                 const SizedBox(height: 8),
@@ -5768,7 +5763,10 @@ class _AttendanceSessionsPanelState extends State<_AttendanceSessionsPanel> {
   bool _loading = false;
   bool _loadingMore = false;
   bool _hasMore = true;
-  QueryDocumentSnapshot<Map<String, dynamic>>? _lastDoc;
+  QueryDocumentSnapshot<Map<String, dynamic>>? _lastEffectiveDoc;
+  QueryDocumentSnapshot<Map<String, dynamic>>? _lastStartedDoc;
+  bool _hasMoreEffective = true;
+  bool _hasMoreStarted = true;
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _docs =
       <QueryDocumentSnapshot<Map<String, dynamic>>>[];
 
@@ -5845,25 +5843,164 @@ class _AttendanceSessionsPanelState extends State<_AttendanceSessionsPanel> {
     super.dispose();
   }
 
-  Query<Map<String, dynamic>> _buildQuery() {
+  DateTime? _tsToDate(Object? v) {
+    if (v is Timestamp) return v.toDate();
+    return null;
+  }
+
+  DateTime _effectiveStartedAtForDoc(
+    QueryDocumentSnapshot<Map<String, dynamic>> doc,
+  ) {
+    final Map<String, dynamic> data = doc.data();
+    return _tsToDate(data['effectiveStartedAt']) ??
+        _tsToDate(data['startedAt']) ??
+        _tsToDate(data['createdAt']) ??
+        DateTime.fromMillisecondsSinceEpoch(0);
+  }
+
+  void _sortDocsInPlace(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
+    docs.sort((a, b) {
+      final DateTime ad = _effectiveStartedAtForDoc(a);
+      final DateTime bd = _effectiveStartedAtForDoc(b);
+      return bd.compareTo(ad);
+    });
+  }
+
+  Query<Map<String, dynamic>> _buildQueryForField(
+    String field, {
+    required int limit,
+    required (DateTime start, DateTime endExclusive)? window,
+    QueryDocumentSnapshot<Map<String, dynamic>>? startAfter,
+  }) {
     Query<Map<String, dynamic>> q = _firestore
         .collection('attendanceSessions')
-        .orderBy('startedAt', descending: true);
+        .orderBy(field, descending: true);
 
-    final (DateTime start, DateTime endExclusive)? window =
-        _selectedStartedAtWindow();
     if (window != null) {
       q = q
-          .where(
+          .where(field, isGreaterThanOrEqualTo: Timestamp.fromDate(window.$1))
+          .where(field, isLessThan: Timestamp.fromDate(window.$2));
+    }
+    if (startAfter != null) {
+      q = q.startAfterDocument(startAfter);
+    }
+    return q.limit(limit);
+  }
+
+  Future<void> _fetchNextPage({required bool reset}) async {
+    final (DateTime start, DateTime endExclusive)? window =
+        _selectedStartedAtWindow();
+
+    // For "All time", keep the legacy startedAt pagination (it includes every
+    // doc). Date-filtered views use effectiveStartedAt first, with startedAt as
+    // a legacy fallback for old sessions.
+    if (window == null) {
+      final QuerySnapshot<Map<String, dynamic>> snap =
+          await _buildQueryForField(
             'startedAt',
-            isGreaterThanOrEqualTo: Timestamp.fromDate(window.$1),
-          )
-          .where('startedAt', isLessThan: Timestamp.fromDate(window.$2));
+            limit: _pageSize,
+            window: null,
+            startAfter: reset ? null : _lastStartedDoc,
+          ).get(const GetOptions(source: Source.server));
+      final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = snap.docs;
+      final List<QueryDocumentSnapshot<Map<String, dynamic>>> merged = reset
+          ? <QueryDocumentSnapshot<Map<String, dynamic>>>[]
+          : List.of(_docs);
+      final Map<String, QueryDocumentSnapshot<Map<String, dynamic>>> byId =
+          <String, QueryDocumentSnapshot<Map<String, dynamic>>>{
+            for (final d in merged) d.id: d,
+          };
+      for (final d in docs) {
+        byId[d.id] = d;
+      }
+      final List<QueryDocumentSnapshot<Map<String, dynamic>>> out = byId.values
+          .toList(growable: false);
+      _sortDocsInPlace(out);
+
+      if (!mounted) return;
+      setState(() {
+        _docs = out;
+        _lastStartedDoc = docs.isEmpty ? _lastStartedDoc : docs.last;
+        _hasMoreStarted = docs.length == _pageSize;
+        _hasMore = _hasMoreStarted;
+      });
+      return;
     }
-    if (_lastDoc != null) {
-      q = q.startAfterDocument(_lastDoc!);
+
+    QuerySnapshot<Map<String, dynamic>> effectiveSnap;
+    QuerySnapshot<Map<String, dynamic>> startedSnap;
+    try {
+      effectiveSnap = await _buildQueryForField(
+        'effectiveStartedAt',
+        limit: _pageSize,
+        window: window,
+        startAfter: reset ? null : _lastEffectiveDoc,
+      ).get(const GetOptions(source: Source.server));
+    } catch (_) {
+      effectiveSnap = await _buildQueryForField(
+        'effectiveStartedAt',
+        limit: _pageSize,
+        window: window,
+        startAfter: reset ? null : _lastEffectiveDoc,
+      ).get(const GetOptions(source: Source.cache));
     }
-    return q.limit(_pageSize);
+
+    try {
+      startedSnap = await _buildQueryForField(
+        'startedAt',
+        limit: _pageSize,
+        window: window,
+        startAfter: reset ? null : _lastStartedDoc,
+      ).get(const GetOptions(source: Source.server));
+    } catch (_) {
+      startedSnap = await _buildQueryForField(
+        'startedAt',
+        limit: _pageSize,
+        window: window,
+        startAfter: reset ? null : _lastStartedDoc,
+      ).get(const GetOptions(source: Source.cache));
+    }
+
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> effectiveDocs =
+        effectiveSnap.docs;
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> startedDocs =
+        startedSnap.docs;
+
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> merged = reset
+        ? <QueryDocumentSnapshot<Map<String, dynamic>>>[]
+        : List.of(_docs);
+    final Map<String, QueryDocumentSnapshot<Map<String, dynamic>>> byId =
+        <String, QueryDocumentSnapshot<Map<String, dynamic>>>{
+          for (final d in merged) d.id: d,
+        };
+
+    // Prefer docs from the effective query when duplicates exist.
+    for (final d in startedDocs) {
+      byId.putIfAbsent(d.id, () => d);
+    }
+    for (final d in effectiveDocs) {
+      byId[d.id] = d;
+    }
+
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> out = byId.values
+        .toList(growable: false);
+    _sortDocsInPlace(out);
+
+    if (!mounted) return;
+    setState(() {
+      _docs = out;
+      _lastEffectiveDoc = effectiveDocs.isEmpty
+          ? _lastEffectiveDoc
+          : effectiveDocs.last;
+      _lastStartedDoc = startedDocs.isEmpty
+          ? _lastStartedDoc
+          : startedDocs.last;
+      _hasMoreEffective = effectiveDocs.length == _pageSize;
+      _hasMoreStarted = startedDocs.length == _pageSize;
+      _hasMore = _hasMoreEffective || _hasMoreStarted;
+    });
   }
 
   Future<void> _pickCustomRange() async {
@@ -5896,22 +6033,16 @@ class _AttendanceSessionsPanelState extends State<_AttendanceSessionsPanel> {
       _loading = true;
       _loadingMore = false;
       _hasMore = true;
-      _lastDoc = null;
+      _lastEffectiveDoc = null;
+      _lastStartedDoc = null;
+      _hasMoreEffective = true;
+      _hasMoreStarted = true;
       _docs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
       _selectedIds.clear();
     });
 
     try {
-      final QuerySnapshot<Map<String, dynamic>> snap = await _buildQuery().get(
-        const GetOptions(source: Source.server),
-      );
-      final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = snap.docs;
-      if (!mounted) return;
-      setState(() {
-        _docs = docs;
-        _lastDoc = docs.isEmpty ? null : docs.last;
-        _hasMore = docs.length == _pageSize;
-      });
+      await _fetchNextPage(reset: true);
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -6096,22 +6227,20 @@ class _AttendanceSessionsPanelState extends State<_AttendanceSessionsPanel> {
     }
   }
 
-  Query<Map<String, dynamic>> _buildBulkScanQuery({
+  Query<Map<String, dynamic>> _buildBulkScanQueryForField({
+    required String field,
     QueryDocumentSnapshot<Map<String, dynamic>>? startAfter,
   }) {
     Query<Map<String, dynamic>> q = _firestore
         .collection('attendanceSessions')
-        .orderBy('startedAt', descending: true);
+        .orderBy(field, descending: true);
 
     final (DateTime start, DateTime endExclusive)? window =
         _selectedStartedAtWindow();
     if (window != null) {
       q = q
-          .where(
-            'startedAt',
-            isGreaterThanOrEqualTo: Timestamp.fromDate(window.$1),
-          )
-          .where('startedAt', isLessThan: Timestamp.fromDate(window.$2));
+          .where(field, isGreaterThanOrEqualTo: Timestamp.fromDate(window.$1))
+          .where(field, isLessThan: Timestamp.fromDate(window.$2));
     }
 
     if (startAfter != null) {
@@ -6171,45 +6300,58 @@ class _AttendanceSessionsPanelState extends State<_AttendanceSessionsPanel> {
                         started = true;
                         unawaited(() async {
                           final List<String> buffer = <String>[];
-                          QueryDocumentSnapshot<Map<String, dynamic>>? last;
+                          final Set<String> seen = <String>{};
 
-                          while (true) {
-                            final QuerySnapshot<Map<String, dynamic>> snap =
-                                await _buildBulkScanQuery(
-                                  startAfter: last,
-                                ).get(const GetOptions(source: Source.server));
-                            if (snap.docs.isEmpty) break;
-
-                            for (final QueryDocumentSnapshot<
-                                  Map<String, dynamic>
-                                >
-                                doc
-                                in snap.docs) {
-                              scanned++;
-                              if (_matchesClientFilters(doc)) {
-                                buffer.add(doc.id);
-                                matched++;
-                                if (buffer.length >= _bulkChunkSize) {
-                                  final ({int deletedCount, int failedCount})
-                                  res = await _deleteIdsInChunks(
-                                    List<String>.from(buffer),
+                          Future<void> scanField(String field) async {
+                            QueryDocumentSnapshot<Map<String, dynamic>>? last;
+                            while (true) {
+                              final QuerySnapshot<Map<String, dynamic>> snap =
+                                  await _buildBulkScanQueryForField(
+                                    field: field,
+                                    startAfter: last,
+                                  ).get(
+                                    const GetOptions(source: Source.server),
                                   );
-                                  deleted += res.deletedCount;
-                                  failed += res.failedCount;
-                                  buffer.clear();
-                                  if (!dialogContext.mounted) return;
-                                  set(() {});
-                                }
-                              }
-                              if (!dialogContext.mounted) return;
-                              if (scanned % 50 == 0) set(() {});
-                            }
+                              if (snap.docs.isEmpty) break;
 
-                            last = snap.docs.last;
-                            if (!dialogContext.mounted) return;
-                            set(() {});
-                            if (snap.size < _bulkScanPageSize) break;
+                              for (final QueryDocumentSnapshot<
+                                    Map<String, dynamic>
+                                  >
+                                  doc
+                                  in snap.docs) {
+                                if (seen.contains(doc.id)) {
+                                  continue;
+                                }
+                                seen.add(doc.id);
+                                scanned++;
+                                if (_matchesClientFilters(doc)) {
+                                  buffer.add(doc.id);
+                                  matched++;
+                                  if (buffer.length >= _bulkChunkSize) {
+                                    final ({int deletedCount, int failedCount})
+                                    res = await _deleteIdsInChunks(
+                                      List<String>.from(buffer),
+                                    );
+                                    deleted += res.deletedCount;
+                                    failed += res.failedCount;
+                                    buffer.clear();
+                                    if (!dialogContext.mounted) return;
+                                    set(() {});
+                                  }
+                                }
+                                if (!dialogContext.mounted) return;
+                                if (scanned % 50 == 0) set(() {});
+                              }
+
+                              last = snap.docs.last;
+                              if (!dialogContext.mounted) return;
+                              set(() {});
+                              if (snap.size < _bulkScanPageSize) break;
+                            }
                           }
+
+                          await scanField('effectiveStartedAt');
+                          await scanField('startedAt');
 
                           if (buffer.isNotEmpty) {
                             final ({int deletedCount, int failedCount}) res =
@@ -6274,19 +6416,7 @@ class _AttendanceSessionsPanelState extends State<_AttendanceSessionsPanel> {
     if (_loadingMore || _loading || !_hasMore) return;
     setState(() => _loadingMore = true);
     try {
-      final QuerySnapshot<Map<String, dynamic>> snap = await _buildQuery().get(
-        const GetOptions(source: Source.server),
-      );
-      final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = snap.docs;
-      if (!mounted) return;
-      setState(() {
-        _docs = <QueryDocumentSnapshot<Map<String, dynamic>>>[
-          ..._docs,
-          ...docs,
-        ];
-        _lastDoc = docs.isEmpty ? _lastDoc : docs.last;
-        _hasMore = docs.length == _pageSize;
-      });
+      await _fetchNextPage(reset: false);
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -6638,7 +6768,9 @@ class _AttendanceSessionsPanelState extends State<_AttendanceSessionsPanel> {
                       final String status =
                           (data['status']?.toString().toLowerCase() ?? '');
                       final String startedAt = _formatTimestamp(
-                        data['startedAt'] ?? data['createdAt'],
+                        data['effectiveStartedAt'] ??
+                            data['startedAt'] ??
+                            data['createdAt'],
                       );
                       final String instructorEmail =
                           (data['instructorEmail'] as String?) ?? '';
@@ -6720,6 +6852,199 @@ class _AttendanceSessionDetailsDialog extends StatelessWidget {
 
   final String sessionId;
   final DocumentReference<Map<String, dynamic>> sessionRef;
+
+  String _dateKey(DateTime dt) {
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${dt.year}-${two(dt.month)}-${two(dt.day)}';
+  }
+
+  Future<DocumentSnapshot<Map<String, dynamic>>?> _getSessionSnapBestEffort()
+  async {
+    try {
+      return await sessionRef.get(const GetOptions(source: Source.server));
+    } catch (_) {
+      try {
+        return await sessionRef.get(const GetOptions(source: Source.cache));
+      } catch (_) {
+        return null;
+      }
+    }
+  }
+
+  bool _isSimulatedSession(Map<String, dynamic> data) {
+    return data['effectiveDateKey'] is String ||
+        data['simulatedClockOffsetMs'] != null;
+  }
+
+  String? _pointerIdFromSessionData(Map<String, dynamic> data) {
+    final String instructorId = (data['instructorId'] as String?)?.trim() ?? '';
+    final String classId = (data['classId'] as String?)?.trim() ?? '';
+    String dateKey = (data['effectiveDateKey'] as String?)?.trim() ?? '';
+
+    if (dateKey.isEmpty) {
+      final Timestamp? effectiveStartedAt = data['effectiveStartedAt'] is Timestamp
+          ? (data['effectiveStartedAt'] as Timestamp)
+          : null;
+      if (effectiveStartedAt != null) {
+        dateKey = _dateKey(effectiveStartedAt.toDate());
+      }
+    }
+
+    if (instructorId.isEmpty || classId.isEmpty || dateKey.isEmpty) return null;
+    return '${instructorId}_${classId}_$dateKey';
+  }
+
+  Future<void> _completeSession(BuildContext context) async {
+    final NavigatorState navigator = Navigator.of(context);
+    final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext dialogContext) => AlertDialog(
+        title: const Text('End this session?'),
+        content: const Text(
+          'This will mark the session as completed. Existing attendance records will remain.',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('End session'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+
+    final DocumentSnapshot<Map<String, dynamic>>? snap =
+        await _getSessionSnapBestEffort();
+    final Map<String, dynamic>? data = snap?.data();
+    if (data == null) {
+      messenger.showSnackBar(const SnackBar(content: Text('Session not found.')));
+      return;
+    }
+
+    if (!_isSimulatedSession(data)) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Ending sessions from admin is only enabled for simulated sessions.'),
+        ),
+      );
+      return;
+    }
+
+    final Timestamp? scheduledEndAt =
+        data['scheduledEndAt'] is Timestamp ? (data['scheduledEndAt'] as Timestamp) : null;
+
+    try {
+      await sessionRef.update(<String, dynamic>{
+        'status': 'completed',
+        'endedAt': FieldValue.serverTimestamp(),
+        'effectiveEndedAt': scheduledEndAt ?? FieldValue.serverTimestamp(),
+      });
+    } catch (error) {
+      messenger.showSnackBar(SnackBar(content: Text('Failed to end: $error')));
+      return;
+    }
+
+    final String? pointerId = _pointerIdFromSessionData(data);
+    if (pointerId != null) {
+      try {
+        await FirebaseFirestore.instance
+            .collection('attendanceSessionPointers')
+            .doc(pointerId)
+            .set(<String, dynamic>{
+              'status': 'completed',
+              'endedAt': FieldValue.serverTimestamp(),
+              'updatedAt': FieldValue.serverTimestamp(),
+            }, SetOptions(merge: true));
+      } catch (_) {
+        // Best-effort only.
+      }
+    }
+
+    if (!context.mounted) return;
+    navigator.pop();
+    messenger.showSnackBar(const SnackBar(content: Text('Session ended.')));
+  }
+
+  Future<void> _reopenSession(BuildContext context) async {
+    final NavigatorState navigator = Navigator.of(context);
+    final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext dialogContext) => AlertDialog(
+        title: const Text('Reopen this session?'),
+        content: const Text(
+          'This session is marked completed. Reopening keeps existing attendance records and makes the session active again.',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Reopen'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+
+    final DocumentSnapshot<Map<String, dynamic>>? snap =
+        await _getSessionSnapBestEffort();
+    final Map<String, dynamic>? data = snap?.data();
+    if (data == null) {
+      messenger.showSnackBar(const SnackBar(content: Text('Session not found.')));
+      return;
+    }
+
+    if (!_isSimulatedSession(data)) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Reopening sessions is only enabled for simulated sessions.'),
+        ),
+      );
+      return;
+    }
+
+    try {
+      await sessionRef.update(<String, dynamic>{
+        'status': 'active',
+        'resumedAt': FieldValue.serverTimestamp(),
+        'endedAt': FieldValue.delete(),
+        'effectiveEndedAt': FieldValue.delete(),
+      });
+    } catch (error) {
+      messenger.showSnackBar(SnackBar(content: Text('Failed to reopen: $error')));
+      return;
+    }
+
+    final String? pointerId = _pointerIdFromSessionData(data);
+    if (pointerId != null) {
+      try {
+        await FirebaseFirestore.instance
+            .collection('attendanceSessionPointers')
+            .doc(pointerId)
+            .set(<String, dynamic>{
+              'status': 'active',
+              'endedAt': FieldValue.delete(),
+              'updatedAt': FieldValue.serverTimestamp(),
+            }, SetOptions(merge: true));
+      } catch (_) {
+        // Best-effort only.
+      }
+    }
+
+    if (!context.mounted) return;
+    navigator.pop();
+    messenger.showSnackBar(const SnackBar(content: Text('Session reopened.')));
+  }
 
   Future<void> _deleteSession(BuildContext context) async {
     final NavigatorState navigator = Navigator.of(context);
@@ -6816,30 +7141,6 @@ class _AttendanceSessionDetailsDialog extends StatelessWidget {
     return '$base:${two(dt.second)}';
   }
 
-  Object? _jsonFriendly(Object? value, {required int depth}) {
-    if (value == null) return null;
-    if (value is String || value is num || value is bool) return value;
-    if (value is Timestamp) return value.toDate().toIso8601String();
-    if (value is GeoPoint) {
-      return <String, Object?>{'lat': value.latitude, 'lng': value.longitude};
-    }
-    if (value is DocumentReference) return value.path;
-    if (depth <= 0) return value.toString();
-    if (value is Map) {
-      final Map<String, Object?> out = <String, Object?>{};
-      value.forEach((dynamic k, dynamic v) {
-        out[k.toString()] = _jsonFriendly(v, depth: depth - 1);
-      });
-      return out;
-    }
-    if (value is Iterable) {
-      return value
-          .map((Object? v) => _jsonFriendly(v, depth: depth - 1))
-          .toList(growable: false);
-    }
-    return value.toString();
-  }
-
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
@@ -6910,6 +7211,12 @@ class _AttendanceSessionDetailsDialog extends StatelessWidget {
                       tooltip: 'Actions',
                       onSelected: (String v) {
                         switch (v) {
+                          case 'complete':
+                            _completeSession(context);
+                            break;
+                          case 'reopen':
+                            _reopenSession(context);
+                            break;
                           case 'delete':
                             _deleteSession(context);
                             break;
@@ -6917,6 +7224,23 @@ class _AttendanceSessionDetailsDialog extends StatelessWidget {
                       },
                       itemBuilder: (BuildContext context) {
                         return <PopupMenuEntry<String>>[
+                          const PopupMenuItem<String>(
+                            value: 'complete',
+                            child: ListTile(
+                              dense: true,
+                              leading: Icon(Icons.stop_circle_outlined),
+                              title: Text('End session (simulated only)'),
+                            ),
+                          ),
+                          const PopupMenuItem<String>(
+                            value: 'reopen',
+                            child: ListTile(
+                              dense: true,
+                              leading: Icon(Icons.replay_circle_filled_outlined),
+                              title: Text('Reopen session (simulated only)'),
+                            ),
+                          ),
+                          const PopupMenuDivider(),
                           const PopupMenuItem<String>(
                             value: 'delete',
                             child: ListTile(
@@ -6978,14 +7302,6 @@ class _AttendanceSessionDetailsDialog extends StatelessWidget {
               return const Center(child: Text('Session not found.'));
             }
 
-            final Map<String, Object?> jsonSafe =
-                (_jsonFriendly(data, depth: 5) as Map?)
-                    ?.cast<String, Object?>() ??
-                <String, Object?>{};
-            final String pretty = const JsonEncoder.withIndent(
-              '  ',
-            ).convert(jsonSafe);
-
             String s(String key) => (data[key] as String?) ?? '';
             final String subject = [
               s('subjectCode'),
@@ -6994,8 +7310,14 @@ class _AttendanceSessionDetailsDialog extends StatelessWidget {
             final String status = (data['status']?.toString() ?? '').trim();
             final String instructorEmail =
                 (data['instructorEmail'] as String?) ?? '';
-            final String startedAt = _fmtTs(data['startedAt'] as Timestamp?);
-            final String endedAt = _fmtTs(data['endedAt'] as Timestamp?);
+            final String startedAt = _fmtTs(
+              (data['effectiveStartedAt'] as Timestamp?) ??
+                  (data['startedAt'] as Timestamp?),
+            );
+            final String endedAt = _fmtTs(
+              (data['effectiveEndedAt'] as Timestamp?) ??
+                  (data['endedAt'] as Timestamp?),
+            );
 
             return Padding(
               padding: const EdgeInsets.all(16),
@@ -7036,35 +7358,6 @@ class _AttendanceSessionDetailsDialog extends StatelessWidget {
                       'End time:   $endedAt',
                       style: theme.textTheme.bodyMedium,
                     ),
-                  const SizedBox(height: 16),
-                  ExpansionTile(
-                    tilePadding: EdgeInsets.zero,
-                    title: Text(
-                      'Advanced (technical)',
-                      style: theme.textTheme.labelLarge?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    subtitle: const Text('For troubleshooting only'),
-                    children: <Widget>[
-                      const SizedBox(height: 8),
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: theme.colorScheme.surfaceContainerHighest,
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: SelectableText(
-                          pretty,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            fontFamily: 'monospace',
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                    ],
-                  ),
                 ],
               ),
             );
