@@ -6,7 +6,39 @@ class UserRoleService {
   static const String _studentIdIndexCollection = 'studentIdIndex';
   static final Map<String, String?> _roleCache = <String, String?>{};
 
-  static String normalizeStudentId(String raw) => raw.trim().toUpperCase();
+  static String normalizeStudentId(String raw) {
+    String value = raw.trim().toUpperCase();
+    // Remove whitespace.
+    value = value.replaceAll(RegExp(r'\s+'), '');
+
+    // Normalize common dash characters to ASCII hyphen.
+    // (Copy/paste from docs/messages can introduce these.)
+    value = value
+        .replaceAll('\u2010', '-')
+        .replaceAll('\u2011', '-')
+        .replaceAll('\u2012', '-')
+        .replaceAll('\u2013', '-')
+        .replaceAll('\u2014', '-')
+        .replaceAll('\u2015', '-')
+        .replaceAll('\u2212', '-');
+
+    // Collapse repeated hyphens.
+    value = value.replaceAll(RegExp(r'-{2,}'), '-');
+    return value;
+  }
+
+  static bool isValidStudentIdFormat(String raw) {
+    final String v = normalizeStudentId(raw);
+    // Regular: 10 digits (example: 2024303234)
+    if (RegExp(r'^\d{10}$').hasMatch(v)) {
+      return true;
+    }
+    // Irregular: year level prefix + hyphen + digits (example: 2-303234)
+    if (RegExp(r'^[234]-\d{4,}$').hasMatch(v)) {
+      return true;
+    }
+    return false;
+  }
 
   static String? _inferRoleFromProfile(Map<String, dynamic>? data) {
     if (data == null) return null;
@@ -104,6 +136,15 @@ class UserRoleService {
         plugin: 'cloud_firestore',
         code: 'invalid-student-id',
         message: 'Student ID is required.',
+      );
+    }
+
+    if (!isValidStudentIdFormat(normalizedId)) {
+      throw FirebaseException(
+        plugin: 'cloud_firestore',
+        code: 'invalid-student-id',
+        message:
+            'Invalid Student ID format. Use 10 digits (e.g. 2024303234) or irregular format like 2-303234, 3-303234, 4-303234.',
       );
     }
     final FirebaseFirestore firestore = FirebaseFirestore.instance;

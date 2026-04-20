@@ -1438,6 +1438,127 @@ async function deleteAttendanceSessionById({ db, sessionId }) {
   return { deleted: true };
 }
 
+function normalizeStatus(raw) {
+  return typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+}
+
+function safeDateKeyFromSession(session) {
+  const raw =
+    (typeof session.effectiveDateKey === 'string' && session.effectiveDateKey.trim())
+      ? session.effectiveDateKey.trim()
+      : (typeof session.dateKey === 'string' ? session.dateKey.trim() : '');
+  return isValidDateKey(raw) ? raw : null;
+}
+
+function clampDown(value) {
+  return Math.max(0, clampInt(value, 0));
+}
+
+function decrementDocFields({ current, status, minutesLate, minutesAbsent, legacy = false }) {
+  const updates = {};
+
+  const presentKey = legacy ? 'present' : 'presentCount';
+  const lateKey = legacy ? 'late' : 'lateCount';
+  const absentKey = legacy ? 'absent' : 'absentCount';
+
+  if (status === 'present') {
+    if (presentKey in current) {
+      updates[presentKey] = Math.max(0, clampInt(current[presentKey], 0) - 1);
+    }
+  } else if (status === 'late') {
+    if (lateKey in current) {
+      updates[lateKey] = Math.max(0, clampInt(current[lateKey], 0) - 1);
+    }
+    if ('lateMinutes' in current) {
+      updates.lateMinutes = Math.max(0, clampInt(current.lateMinutes, 0) - clampInt(minutesLate, 0));
+    }
+  } else if (status === 'absent') {
+    if (absentKey in current) {
+      updates[absentKey] = Math.max(0, clampInt(current[absentKey], 0) - 1);
+    }
+    if ('absentMinutes' in current) {
+      updates.absentMinutes = Math.max(0, clampInt(current.absentMinutes, 0) - clampInt(minutesAbsent, 0));
+    }
+  }
+
+  return updates;
+}
+
+async function rollbackAttendanceDerivedDataForSession({ db, sessionId }) {
+  const sessionRef = db.collection('attendanceSessions').doc(sessionId);
+  const sessionSnap = await sessionRef.get();
+  if (!sessionSnap.exists) {
+    return { ok: true, rolledBack: false, reason: 'not-found' };
+  }
+  const session = sessionSnap.data() || {};
+  const classId = typeof session.classId === 'string' ? session.classId.trim() : '';
+  if (!classId) {
+    return { ok: true, rolledBack: false, reason: 'missing-classId' };
+  }
+
+  const dateKey = safeDateKeyFromSession(session);
+  if (!dateKey) {
+    return { ok: true, rolledBack: false, reason: 'missing-dateKey' };
+  }
+
+  const attendeesSnap = await sessionRef.collection('attendees').get();
+  if (attendeesSnap.empty) {
+    return { ok: true, rolledBack: false, reason: 'no-attendees' };
+  }
+
+  let touchedStats = 0;
+  let touchedDaily = 0;
+
+  for (const doc of attendeesSnap.docs) {
+    const studentId = doc.id;
+    const data = doc.data() || {};
+    const status = normalizeStatus(data.status);
+    if (status !== 'present' && status !== 'late' && status !== 'absent') {
+      continue;
+    }
+    const minutesLate = clampInt(data.minutesLate, 0);
+    const minutesAbsent = clampInt(data.minutesAbsent, 0);
+
+    // Roll back totals stored under: classes/{classId}/attendanceStats/{studentId}
+    const statsRef = db.collection('classes').doc(classId).collection('attendanceStats').doc(studentId);
+    const statsSnap = await statsRef.get();
+    if (statsSnap.exists) {
+      const current = statsSnap.data() || {};
+
+      // Support both legacy (present/late/absent) and current (*Count) schemas.
+      const updates = {
+        ...decrementDocFields({ current, status, minutesLate, minutesAbsent, legacy: false }),
+        ...decrementDocFields({ current, status, minutesLate, minutesAbsent, legacy: true }),
+      };
+
+      if (Object.keys(updates).length) {
+        await statsRef.set(updates, { merge: true });
+        touchedStats += 1;
+      }
+    }
+
+    // Roll back per-day rollups stored under: classes/{classId}/students/{studentId}/daily/{dateKey}
+    const dailyRef = db
+      .collection('classes')
+      .doc(classId)
+      .collection('students')
+      .doc(studentId)
+      .collection('daily')
+      .doc(dateKey);
+    const dailySnap = await dailyRef.get();
+    if (dailySnap.exists) {
+      const current = dailySnap.data() || {};
+      const updates = decrementDocFields({ current, status, minutesLate, minutesAbsent, legacy: false });
+      if (Object.keys(updates).length) {
+        await dailyRef.set({ ...updates, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+        touchedDaily += 1;
+      }
+    }
+  }
+
+  return { ok: true, rolledBack: true, classId, dateKey, touchedStats, touchedDaily };
+}
+
 exports.adminDeleteAttendanceSession = onCall({ cors: true, timeoutSeconds: 300 }, async (request) => {
   requireAdmin(request);
   const sessionId = request.data && request.data.sessionId ? String(request.data.sessionId) : '';
@@ -1447,8 +1568,11 @@ exports.adminDeleteAttendanceSession = onCall({ cors: true, timeoutSeconds: 300 
 
   const db = getFirestore();
   try {
+    // Ensure derived aggregates are rolled back so students don't keep
+    // showing present/late/absent after deleting a session.
+    const rollback = await rollbackAttendanceDerivedDataForSession({ db, sessionId });
     const res = await deleteAttendanceSessionById({ db, sessionId });
-    return { ok: true, ...res };
+    return { ok: true, ...res, rollback };
   } catch (error) {
     throw toHttpsError('Delete attendance session', error);
   }

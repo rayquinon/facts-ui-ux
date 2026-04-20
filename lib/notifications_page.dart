@@ -204,8 +204,6 @@ class _NotificationsPageState extends State<NotificationsPage> {
 
         return _NotificationDialogDetails(
           rows: <_KeyValueRow>[
-            _KeyValueRow('Notification ID', notificationId),
-            _KeyValueRow('Type', type),
             _KeyValueRow('Request ID', requestId),
             if (studentName.isNotEmpty) _KeyValueRow('Student', studentName),
             if (studentSection.isNotEmpty)
@@ -275,8 +273,6 @@ class _NotificationsPageState extends State<NotificationsPage> {
 
         return _NotificationDialogDetails(
           rows: <_KeyValueRow>[
-            _KeyValueRow('Notification ID', notificationId),
-            _KeyValueRow('Type', type),
             if (subjectLabel.isNotEmpty) _KeyValueRow('Subject', subjectLabel),
             if (instructorName.isNotEmpty)
               _KeyValueRow('Instructor', instructorName),
@@ -287,9 +283,6 @@ class _NotificationsPageState extends State<NotificationsPage> {
               _KeyValueRow('Total Absences', _humanizeMinutes(absentMinutes)),
             if (thresholdMinutes != null)
               _KeyValueRow('Threshold', _humanizeMinutes(thresholdMinutes)),
-            if (classId.isNotEmpty) _KeyValueRow('Class ID', classId),
-            if (type == 'student_absence_threshold' && studentId.isNotEmpty)
-              _KeyValueRow('Student ID', studentId),
           ],
         );
       }
@@ -297,25 +290,37 @@ class _NotificationsPageState extends State<NotificationsPage> {
       // Unknown type: show payload.
       return _NotificationDialogDetails(
         rows: <_KeyValueRow>[
-          _KeyValueRow('Notification ID', notificationId),
-          _KeyValueRow('Type', type),
           ..._payloadRows(payload),
         ],
       );
     } catch (_) {
       return _NotificationDialogDetails(
         rows: <_KeyValueRow>[
-          _KeyValueRow('Notification ID', notificationId),
-          _KeyValueRow('Type', type),
           ..._payloadRows(payload),
         ],
       );
     }
   }
 
+  static const Set<String> _hiddenPayloadKeys = <String>{
+    'classid',
+    'class_id',
+    'userid',
+    'user_id',
+    'studentid',
+    'student_id',
+    'notificationid',
+    'notification_id',
+    'type',
+  };
+
   static List<_KeyValueRow> _payloadRows(Map<String, dynamic> payload) {
     if (payload.isEmpty) return const <_KeyValueRow>[];
-    final List<String> keys = payload.keys.map((k) => k.toString()).toList()..sort();
+    final List<String> keys = payload.keys
+        .map((k) => k.toString())
+        .where((k) => !_hiddenPayloadKeys.contains(k.toLowerCase()))
+        .toList()
+      ..sort();
     return keys
         .map((k) => _KeyValueRow(k, (payload[k] ?? '').toString()))
         .toList(growable: false);
@@ -432,8 +437,6 @@ class _NotificationsPageState extends State<NotificationsPage> {
                   trailing: isUnread
                       ? Icon(
                           Icons.circle,
-                          size: 10,
-                          color: Theme.of(context).colorScheme.primary,
                         )
                       : null,
                   onTap: () async {
@@ -503,8 +506,6 @@ class _NotificationsPageState extends State<NotificationsPage> {
                                       },
                                     ),
                                   ],
-
-                                  const SizedBox(height: 16),
                                   FutureBuilder<_NotificationDialogDetails>(
                                     future: _loadNotificationDetails(
                                       type: type,
@@ -515,27 +516,39 @@ class _NotificationsPageState extends State<NotificationsPage> {
                                       BuildContext context,
                                       AsyncSnapshot<_NotificationDialogDetails> snapshot,
                                     ) {
-                                      if (snapshot.connectionState == ConnectionState.waiting) {
+                                      if (snapshot.connectionState ==
+                                          ConnectionState.waiting) {
                                         return const Padding(
-                                          padding: EdgeInsets.only(top: 4),
+                                          padding: EdgeInsets.only(top: 8),
                                           child: LinearProgressIndicator(),
                                         );
                                       }
-                                      final _NotificationDialogDetails? details = snapshot.data;
-                                      final List<_KeyValueRow> rows = details?.rows ?? const <_KeyValueRow>[];
+
+                                      final _NotificationDialogDetails? details =
+                                          snapshot.data;
+                                      final List<_KeyValueRow> rows =
+                                          details?.rows ?? const <_KeyValueRow>[];
                                       if (rows.isEmpty) {
                                         return const SizedBox.shrink();
                                       }
-                                      return Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: rows
-                                            .map(
-                                              (_KeyValueRow r) => Padding(
-                                                padding: const EdgeInsets.only(top: 6),
-                                                child: Text('${r.key}: ${r.value}'),
-                                              ),
-                                            )
-                                            .toList(growable: false),
+
+                                      return Padding(
+                                        padding: const EdgeInsets.only(top: 12),
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: rows
+                                              .map(
+                                                (_KeyValueRow r) => Padding(
+                                                  padding:
+                                                      const EdgeInsets.only(top: 6),
+                                                  child: Text(
+                                                    '${r.key}: ${r.value}',
+                                                  ),
+                                                ),
+                                              )
+                                              .toList(growable: false),
+                                        ),
                                       );
                                     },
                                   ),

@@ -401,6 +401,15 @@ class _SignUpPageState extends State<SignUpPage> {
 
       final User? user = credential.user;
       if (user != null) {
+        // Ensure a fresh ID token is available before any Firestore writes.
+        // Without this, some devices can hit a transient permission-denied
+        // immediately after account creation.
+        try {
+          await user.getIdToken(true);
+        } catch (_) {
+          // Best-effort.
+        }
+
         // Best-effort: profile data lives in Firestore; don't block signup if
         // updating Auth displayName fails.
         try {
@@ -534,8 +543,11 @@ class _SignUpPageState extends State<SignUpPage> {
         await FirebaseAuth.instance.signOut();
       }
 
+      final String code = error.code.toLowerCase();
       final String message = error.code == 'student-id-already-in-use'
           ? 'That Student ID is already registered. Please check your ID or contact support.'
+          : (!isInstructor && code == 'permission-denied')
+          ? 'Sign-up failed. That Student ID may already be registered (or sign-up is not permitted). Please double-check your Student ID or contact support.'
           : 'Sign-up failed. ${error.message ?? error.code}';
       messenger.showSnackBar(
         SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
@@ -874,10 +886,13 @@ class _SignUpPageState extends State<SignUpPage> {
                           const SizedBox(height: 16),
                           TextFormField(
                             controller: _studentIdController,
-                            keyboardType: TextInputType.number,
+                            keyboardType: TextInputType.text,
                             textInputAction: TextInputAction.next,
                             inputFormatters: <TextInputFormatter>[
-                              FilteringTextInputFormatter.digitsOnly,
+                              // Allow regular IDs like 2024303234 and irregular IDs like 2-303234.
+                              FilteringTextInputFormatter.allow(
+                                RegExp(r'[0-9\-\s]'),
+                              ),
                             ],
                             decoration: const InputDecoration(
                               labelText: 'Student ID',
@@ -886,12 +901,13 @@ class _SignUpPageState extends State<SignUpPage> {
                               ),
                             ),
                             validator: (String? value) {
-                              final String trimmed = (value ?? '').trim();
+                              final String raw = (value ?? '');
+                              final String trimmed = raw.trim();
                               if (trimmed.isEmpty) {
                                 return 'Please enter your student ID';
                               }
-                              if (int.tryParse(trimmed) == null) {
-                                return 'Student ID must contain digits only';
+                              if (!UserRoleService.isValidStudentIdFormat(raw)) {
+                                return 'Use 10 digits (e.g. 2024303234) or irregular format like 2-303234';
                               }
                               return null;
                             },

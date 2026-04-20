@@ -3453,7 +3453,21 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     } catch (_) {
       // Best-effort update only.
     } finally {
-      await _markUncapturedStudentsAbsent();
+      // Important: only auto-mark absences when the session actually ran
+      // within the scheduled window. If the instructor starts a session
+      // outside the schedule (often for testing), the primary action can be
+      // "End session now" immediately; auto-marking everyone absent in that
+      // scenario creates misleading pre-filled attendance stats.
+      final DateTime? startedAt = _sessionStartedAt;
+      final DateTime? scheduledEnd = _scheduledEndAt;
+      final bool startedOutsideWindow =
+          startedAt != null && scheduledEnd != null &&
+          (startedAt.isAfter(scheduledEnd) ||
+              startedAt.isAtSameMomentAs(scheduledEnd));
+
+      if (!_isSimulatedSession && !startedOutsideWindow) {
+        await _markUncapturedStudentsAbsent();
+      }
       _sessionClosed = true;
     }
   }
