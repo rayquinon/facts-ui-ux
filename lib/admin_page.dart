@@ -40,7 +40,7 @@ class AdminPage extends StatefulWidget {
 }
 
 class _AdminPageState extends State<AdminPage> {
-  final _AdminSection _selectedSection = _AdminSection.overview;
+  _AdminSection _selectedSection = _AdminSection.overview;
   late Future<_AdminOverviewStats> _overviewFuture;
   final ExcuseRequestService _excuseService = ExcuseRequestService();
   bool _isApprovingExcuse = false;
@@ -121,7 +121,8 @@ class _AdminPageState extends State<AdminPage> {
   Widget _buildAdminDrawer() {
     return Drawer(
       child: SafeArea(
-        child: Column(
+        child: ListView(
+          padding: EdgeInsets.zero,
           children: <Widget>[
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
@@ -141,90 +142,98 @@ class _AdminPageState extends State<AdminPage> {
                     onPressed: () => Navigator.of(context).pop(),
                     icon: const Icon(Icons.close),
                   ),
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-                    child: Text(
-                      'Admin Actions',
-                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                        fontWeight: FontWeight.w700,
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ),
-                  ListTile(
-                    leading: const Icon(Icons.description_outlined),
-                    title: const Text('Edit Report Header Details'),
-                    onTap: () async {
-                      Navigator.of(context).pop();
-                      await showDialog<void>(
-                        context: context,
-                        builder: (BuildContext context) =>
-                            const _AttendanceReportTemplateMetaDialog(),
-                      );
-                    },
-                  ),
-                  ListTile(
-                    leading: const Icon(Icons.insights_outlined),
-                    title: const Text('Generate Attendance Reports'),
-                    onTap: () {
-                      Navigator.of(context).pop();
-                      Navigator.of(
-                        context,
-                      ).pushNamed(GenerateReportPage.routeName);
-                    },
-                  ),
-                  ListTile(
-                    leading: const Icon(Icons.analytics_outlined),
-                    title: const Text('Analytics'),
-                    onTap: () {
-                      Navigator.of(context).pop();
-                      Navigator.of(context).push(
-                        MaterialPageRoute<void>(
-                          builder: (BuildContext context) =>
-                              const AnalyticsClassPickerPage(
-                                viewerRole: AnalyticsViewerRole.admin,
-                              ),
-                        ),
-                      );
-                    },
-                  ),
-                  ListTile(
-                    leading: const Icon(Icons.event_busy_outlined),
-                    title: const Text('Calendar Overrides'),
-                    onTap: () {
-                      Navigator.of(context).pop();
-                      Navigator.of(context).push(
-                        MaterialPageRoute<void>(
-                          builder: (BuildContext context) =>
-                              const AttendanceCalendarOverridesPage(),
-                          settings: const RouteSettings(
-                            name: AttendanceCalendarOverridesPage.routeName,
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                  ListTile(
-                    leading: const Icon(Icons.fact_check_outlined),
-                    title: const Text('Instructor Sessions Report'),
-                    onTap: () {
-                      Navigator.of(context).pop();
-                      Navigator.of(
-                        context,
-                      ).pushNamed(InstructorSessionsReportPage.routeName);
-                    },
-                  ),
-                  const Divider(height: 1),
-                  ListTile(
-                    leading: const Icon(Icons.logout),
-                    title: const Text('Sign out'),
-                    onTap: () async {
-                      Navigator.of(context).pop();
-                      await _handleSignOut();
-                    },
-                  ),
                 ],
               ),
+            ),
+            for (final _SectionNavItem item in _navItems)
+              ListTile(
+                leading: Icon(item.icon),
+                title: Text(item.label),
+                selected: item.section == _selectedSection,
+                onTap: () {
+                  Navigator.of(context).pop();
+                  setState(() => _selectedSection = item.section);
+                },
+              ),
+            const Divider(height: 24),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+              child: Text(
+                'Admin Actions',
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.description_outlined),
+              title: const Text('Edit Report Header Details'),
+              onTap: () async {
+                Navigator.of(context).pop();
+                await showDialog<void>(
+                  context: context,
+                  builder: (BuildContext context) =>
+                      const _AttendanceReportTemplateMetaDialog(),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.insights_outlined),
+              title: const Text('Generate Attendance Reports'),
+              onTap: () {
+                Navigator.of(context).pop();
+                Navigator.of(context).pushNamed(GenerateReportPage.routeName);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.analytics_outlined),
+              title: const Text('Analytics'),
+              onTap: () {
+                Navigator.of(context).pop();
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (BuildContext context) =>
+                        const AnalyticsClassPickerPage(
+                          viewerRole: AnalyticsViewerRole.admin,
+                        ),
+                  ),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.event_busy_outlined),
+              title: const Text('Calendar Overrides'),
+              onTap: () {
+                Navigator.of(context).pop();
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (BuildContext context) =>
+                        const AttendanceCalendarOverridesPage(),
+                    settings: const RouteSettings(
+                      name: AttendanceCalendarOverridesPage.routeName,
+                    ),
+                  ),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.fact_check_outlined),
+              title: const Text('Instructor Sessions Report'),
+              onTap: () {
+                Navigator.of(context).pop();
+                Navigator.of(context)
+                    .pushNamed(InstructorSessionsReportPage.routeName);
+              },
+            ),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.logout),
+              title: const Text('Sign out'),
+              onTap: () async {
+                Navigator.of(context).pop();
+                await _handleSignOut();
+              },
             ),
           ],
         ),

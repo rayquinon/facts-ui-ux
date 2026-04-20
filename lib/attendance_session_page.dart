@@ -796,9 +796,116 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   Future<void> _ensureSessionDocumentBestEffort() async {
     try {
       // Time-box this so offline sessions don't hang camera startup.
-      await _ensureSessionDocument().timeout(const Duration(seconds: 3));
+      // IMPORTANT: When offline, attempting a server read first can consume the
+      // whole time budget and prevent local session creation. If that happens,
+      // _sessionDocId remains null and captures are never queued for sync.
+      //
+      // Do a fast offline-first upsert (cache/local only) so the session exists
+      // immediately, then best-effort reconcile with the server in the
+      // background.
+      await _ensureSessionDocumentOfflineFirst().timeout(
+        const Duration(seconds: 2),
+      );
+      unawaited(() async {
+        try {
+          await _ensureSessionDocument();
+        } catch (_) {
+          // Best-effort only.
+        }
+      }());
     } catch (_) {
       // Offline or slow network: skip for now.
+    }
+  }
+
+  Future<void> _ensureSessionDocumentOfflineFirst() async {
+    if (_sessionDocId != null) return;
+
+    // Anchor the pointer ID to the date at session launch (supports simulation).
+    _sessionPointerDateKey ??= _dateKey(_now());
+
+    final User? user = FirebaseAuth.instance.currentUser;
+    final String? uid = user?.uid;
+    if (uid == null || uid.isEmpty) {
+      throw StateError('Not signed in.');
+    }
+
+    final DateTime now = _now();
+    final String dateKey = _sessionPointerDateKey ?? _dateKey(now);
+    final String canonicalSessionId = _buildCanonicalSessionId(
+      instructorId: uid,
+      classId: widget.config.classId,
+      dateKey: dateKey,
+      scheduleKey: widget.config.scheduleKey,
+    );
+
+    final DateTime scheduledStart = _dateWithTime(now, widget.config.start);
+    DateTime scheduledEnd = _dateWithTime(now, widget.config.end);
+    if (scheduledEnd.isBefore(scheduledStart)) {
+      scheduledEnd = scheduledEnd.add(const Duration(days: 1));
+    }
+    _scheduledEndAt = scheduledEnd;
+
+    final DocumentReference<Map<String, dynamic>> canonicalRef = _firestore
+        .collection('attendanceSessions')
+        .doc(canonicalSessionId);
+
+    // Cache/local-only probe: if we already have a local copy, reuse it.
+    try {
+      final DocumentSnapshot<Map<String, dynamic>> snap = await canonicalRef
+          .get(const GetOptions(source: Source.cache))
+          .timeout(const Duration(milliseconds: 500));
+      if (snap.exists) {
+        _sessionDocId = canonicalSessionId;
+        _applySessionMetaFromDoc(snap.data());
+      }
+    } catch (_) {
+      // Ignore cache probe failures.
+    }
+
+    // Always ensure the session doc exists locally (queued for sync).
+    await canonicalRef.set(<String, dynamic>{
+      'classId': widget.config.classId,
+      'subjectCode': widget.config.subjectCode,
+      'subjectName': widget.config.subjectName,
+      'section': widget.config.section,
+      'term': widget.config.term,
+      'location': widget.config.location,
+      'dayOfWeek': widget.config.dayOfWeek,
+      'startHour': widget.config.start.hour,
+      'startMinute': widget.config.start.minute,
+      'endHour': widget.config.end.hour,
+      'endMinute': widget.config.end.minute,
+      'scheduleKey': widget.config.scheduleKey,
+      'dateKey': dateKey,
+      'scheduledStartAt': Timestamp.fromDate(scheduledStart),
+      'scheduledEndAt': Timestamp.fromDate(scheduledEnd),
+      'instructorId': uid,
+      'instructorEmail': user?.email,
+      'status': 'active',
+      'effectiveStartedAt': _isSimulatedSession
+          ? Timestamp.fromDate(now)
+          : FieldValue.serverTimestamp(),
+      if (_isSimulatedSession) 'effectiveDateKey': dateKey,
+      if (_isSimulatedSession)
+        'simulatedClockOffsetMs':
+            widget.config.simulatedClockOffset?.inMilliseconds,
+      'startedAt': FieldValue.serverTimestamp(),
+      'createdAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+
+    _sessionDocId ??= canonicalSessionId;
+
+    // Best-effort pointer write (also queued for sync).
+    try {
+      await _upsertSessionPointer(status: 'active');
+    } catch (_) {
+      // Best-effort only.
+    }
+
+    // If simulated, we can reliably use the local clock.
+    if (_isSimulatedSession) {
+      _sessionStartedAt ??= now;
     }
   }
 
@@ -3495,6 +3602,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         !kIsWeb &&
         inVerify &&
         (_cameraController?.value.isInitialized ?? false);
+    final bool showCenterMarker =
+      !kIsWeb && inVerify && (_cameraController?.value.isInitialized ?? false);
     final bool endNow = _shouldEndSessionNow();
     final bool canToggleCapture = _recognitionSupported;
     final bool primaryEnabled =
@@ -3578,6 +3687,26 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                           if (showOvalGuide)
                             const Positioned.fill(
                               child: _OvalFaceGuideOverlay(),
+                            ),
+                          if (showCenterMarker)
+                            Positioned.fill(
+                              child: IgnorePointer(
+                                child: ExcludeSemantics(
+                                  child: Center(
+                                    child: SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CustomPaint(
+                                        painter: _CenterPlusPainter(
+                                          theme.colorScheme.error.withValues(
+                                            alpha: 0.95,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
                             ),
                           if (_openingCamera)
                             const Positioned.fill(
@@ -3903,6 +4032,31 @@ class _OvalFaceGuidePainter extends CustomPainter {
   bool shouldRepaint(covariant _OvalFaceGuidePainter oldDelegate) {
     return oldDelegate.scrimColor != scrimColor ||
         oldDelegate.strokeColor != strokeColor;
+  }
+}
+
+class _CenterPlusPainter extends CustomPainter {
+  const _CenterPlusPainter(this.color);
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final Paint paint = Paint()
+      ..color = color
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+
+    final Offset c = Offset(size.width / 2, size.height / 2);
+    const double half = 7;
+    canvas.drawLine(Offset(c.dx - half, c.dy), Offset(c.dx + half, c.dy), paint);
+    canvas.drawLine(Offset(c.dx, c.dy - half), Offset(c.dx, c.dy + half), paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _CenterPlusPainter oldDelegate) {
+    return oldDelegate.color != color;
   }
 }
 

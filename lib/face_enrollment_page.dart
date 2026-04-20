@@ -1438,6 +1438,8 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
         ? Center(child: Text(_statusMessage ?? 'Preparing camera...'))
         : CameraPreview(controller);
     final bool hasLivePreview = controller != null;
+    final bool showCenterMarker =
+      controller != null && controller.value.isInitialized;
 
     final int capturedThisPose = _phaseEmbeddings[_currentPhase]?.length ?? 0;
     final bool showEnrollmentInfo = _enrollmentStarted;
@@ -1471,6 +1473,27 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
                           showDirectionArrow: _enrollmentStarted,
                           previewRect: previewRect,
                           guideMatch: _uiGuideMatch,
+                        ),
+                      ),
+                    if (showCenterMarker)
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: ExcludeSemantics(
+                            child: Center(
+                              child: SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CustomPaint(
+                                  painter: _CenterPlusPainter(
+                                    Theme.of(context)
+                                        .colorScheme
+                                        .error
+                                        .withValues(alpha: 0.95),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
                         ),
                       ),
                   ],
@@ -1616,6 +1639,31 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
       icon: const Icon(Icons.camera_alt_outlined),
       label: Text(canCapture ? 'Tap to Capture' : 'Align face to capture'),
     );
+  }
+}
+
+class _CenterPlusPainter extends CustomPainter {
+  const _CenterPlusPainter(this.color);
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final Paint paint = Paint()
+      ..color = color
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+
+    final Offset c = Offset(size.width / 2, size.height / 2);
+    const double half = 7;
+    canvas.drawLine(Offset(c.dx - half, c.dy), Offset(c.dx + half, c.dy), paint);
+    canvas.drawLine(Offset(c.dx, c.dy - half), Offset(c.dx, c.dy + half), paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _CenterPlusPainter oldDelegate) {
+    return oldDelegate.color != color;
   }
 }
 
