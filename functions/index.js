@@ -1438,6 +1438,233 @@ async function deleteAttendanceSessionById({ db, sessionId }) {
   return { deleted: true };
 }
 
+function sessionDurationMinutesFromDoc(session) {
+  const sh = clampInt(session.startHour, 0);
+  const sm = clampInt(session.startMinute, 0);
+  const eh = clampInt(session.endHour, 0);
+  const em = clampInt(session.endMinute, 0);
+  const start = sh * 60 + sm;
+  let end = eh * 60 + em;
+  if (end <= start) end += 24 * 60;
+  const minutes = end - start;
+  return minutes > 0 ? minutes : 0;
+}
+
+function dateKeyFromSessionDoc(session) {
+  const raw =
+    (typeof session.effectiveDateKey === 'string' && session.effectiveDateKey.trim())
+      ? session.effectiveDateKey.trim()
+      : (typeof session.dateKey === 'string' ? session.dateKey.trim() : '');
+  return isValidDateKey(raw) ? raw : null;
+}
+
+async function fetchRosterUidsForSection({ db, section }) {
+  const sec = typeof section === 'string' ? section.trim() : '';
+  if (!sec) return [];
+  const snap = await db.collection('users').where('section', '==', sec).get();
+  if (snap.empty) return [];
+  return snap.docs.map((d) => d.id);
+}
+
+async function backfillSessionAbsences({ db, sessionId }) {
+  const sessionRef = db.collection('attendanceSessions').doc(sessionId);
+  const sessionSnap = await sessionRef.get();
+  if (!sessionSnap.exists) {
+    return { ok: true, backfilled: false, reason: 'not-found' };
+  }
+
+  const session = sessionSnap.data() || {};
+  const section = typeof session.section === 'string' ? session.section.trim() : '';
+  const classId = typeof session.classId === 'string' ? session.classId.trim() : '';
+  const dateKey = dateKeyFromSessionDoc(session);
+  const sessionMinutes = sessionDurationMinutesFromDoc(session);
+  if (!classId || !section || !dateKey || sessionMinutes <= 0) {
+    return {
+      ok: true,
+      backfilled: false,
+      reason: 'missing-required-fields',
+      classId,
+      section,
+      dateKey,
+      sessionMinutes,
+    };
+  }
+
+  const rosterUids = await fetchRosterUidsForSection({ db, section });
+  if (!rosterUids.length) {
+    return { ok: true, backfilled: false, reason: 'empty-roster', classId, section, dateKey };
+  }
+
+  const attendeesSnap = await sessionRef.collection('attendees').get();
+  const existing = new Set(attendeesSnap.docs.map((d) => d.id));
+
+  let createdAbsent = 0;
+  let batch = db.batch();
+  let ops = 0;
+
+  for (const uid of rosterUids) {
+    if (existing.has(uid)) continue;
+    const ref = sessionRef.collection('attendees').doc(uid);
+    batch.set(
+      ref,
+      {
+        status: 'absent',
+        statusComputedAt: FieldValue.serverTimestamp(),
+        markedAbsentAt: FieldValue.serverTimestamp(),
+        minutesLate: 0,
+        minutesAbsent: sessionMinutes,
+        backfilledByAdminAt: FieldValue.serverTimestamp(),
+        backfilledByAdminSessionId: sessionId,
+      },
+      { merge: true }
+    );
+    createdAbsent += 1;
+    ops += 1;
+    if (ops >= 450) {
+      await batch.commit();
+      batch = db.batch();
+      ops = 0;
+    }
+  }
+
+  if (ops) {
+    await batch.commit();
+  }
+
+  return { ok: true, backfilled: true, classId, section, dateKey, createdAbsent };
+}
+
+async function recomputeAttendanceStatsForClassFromSessions({ db, classId }) {
+  const cid = String(classId || '').trim();
+  if (!cid) return { ok: true, recomputed: false, reason: 'missing-classId' };
+
+  const classSnap = await db.collection('classes').doc(cid).get();
+  const classData = classSnap.exists ? classSnap.data() || {} : {};
+  const section = typeof classData.section === 'string' ? classData.section.trim() : '';
+  if (!section) {
+    return { ok: true, recomputed: false, reason: 'missing-section', classId: cid };
+  }
+
+  const rosterUids = await fetchRosterUidsForSection({ db, section });
+  if (!rosterUids.length) {
+    return { ok: true, recomputed: false, reason: 'empty-roster', classId: cid, section };
+  }
+
+  const sessionsSnap = await db.collection('attendanceSessions').where('classId', '==', cid).get();
+  const sessions = sessionsSnap.docs;
+  if (!sessions.length) {
+    return { ok: true, recomputed: false, reason: 'no-sessions', classId: cid, section };
+  }
+
+  // Accumulators
+  const totals = new Map();
+  function ensureStudent(uid) {
+    if (!totals.has(uid)) {
+      totals.set(uid, { presentCount: 0, lateCount: 0, absentCount: 0, lateMinutes: 0, absentMinutes: 0 });
+    }
+    return totals.get(uid);
+  }
+
+  // Build from sessions.
+  for (const sessionDoc of sessions) {
+    const session = sessionDoc.data() || {};
+    const dateKey = dateKeyFromSessionDoc(session);
+    if (!dateKey) continue;
+    const sessionMinutes = sessionDurationMinutesFromDoc(session);
+    if (sessionMinutes <= 0) continue;
+
+    // Only consider sessions that belong to this section (defense-in-depth).
+    const sessionSection = typeof session.section === 'string' ? session.section.trim() : '';
+    if (sessionSection && sessionSection !== section) continue;
+
+    const attendeesSnap = await sessionDoc.ref.collection('attendees').get();
+    const attendeeByUid = new Map();
+    for (const a of attendeesSnap.docs) {
+      const d = a.data() || {};
+      const status = normalizeStatus(d.status);
+      const minutesLate = clampInt(d.minutesLate, 0);
+      const minutesAbsent = clampInt(d.minutesAbsent, 0);
+      attendeeByUid.set(a.id, { status, minutesLate, minutesAbsent });
+    }
+
+    for (const uid of rosterUids) {
+      const info = attendeeByUid.get(uid);
+      const status = info ? info.status : 'absent';
+      const minutesLate = info ? info.minutesLate : 0;
+      const minutesAbsent = info ? info.minutesAbsent : sessionMinutes;
+
+      const t = ensureStudent(uid);
+      if (status === 'present') {
+        t.presentCount += 1;
+      } else if (status === 'late') {
+        t.lateCount += 1;
+        t.lateMinutes += clampInt(minutesLate, 0);
+      } else if (status === 'absent') {
+        t.absentCount += 1;
+        t.absentMinutes += clampInt(minutesAbsent, 0);
+      }
+
+      // Also set per-day rollup absolute values for this day.
+      // (Write later; keep in a separate map to batch.)
+    }
+  }
+
+  // Write totals (set absolute values).
+  let batch = db.batch();
+  let ops = 0;
+  let written = 0;
+
+  for (const uid of rosterUids) {
+    const t = totals.get(uid) || { presentCount: 0, lateCount: 0, absentCount: 0, lateMinutes: 0, absentMinutes: 0 };
+    const statsRef = db.collection('classes').doc(cid).collection('attendanceStats').doc(uid);
+    batch.set(
+      statsRef,
+      {
+        presentCount: clampDown(t.presentCount),
+        lateCount: clampDown(t.lateCount),
+        absentCount: clampDown(t.absentCount),
+        lateMinutes: clampDown(t.lateMinutes),
+        absentMinutes: clampDown(t.absentMinutes),
+        lastRecomputedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+    ops += 1;
+    written += 1;
+    if (ops >= 450) {
+      await batch.commit();
+      batch = db.batch();
+      ops = 0;
+    }
+  }
+  if (ops) await batch.commit();
+
+  return { ok: true, recomputed: true, classId: cid, section, rosterCount: rosterUids.length, statsDocsWritten: written };
+}
+
+exports.adminBackfillAttendanceForSession = onCall({ cors: true, timeoutSeconds: 300 }, async (request) => {
+  requireAdmin(request);
+  const sessionId = request.data && request.data.sessionId ? String(request.data.sessionId) : '';
+  if (!sessionId) {
+    throw new HttpsError('invalid-argument', 'sessionId is required');
+  }
+
+  const db = getFirestore();
+  try {
+    const backfill = await backfillSessionAbsences({ db, sessionId });
+
+    // If we can identify the class, recompute totals so the student portal
+    // summary reflects the session immediately.
+    const recompute = backfill.classId
+      ? await recomputeAttendanceStatsForClassFromSessions({ db, classId: backfill.classId })
+      : { ok: true, recomputed: false, reason: 'no-classId' };
+
+    return { ok: true, backfill, recompute };
+  } catch (error) {
+    throw toHttpsError('Backfill attendance for session', error);
+  }
+});
+
 function normalizeStatus(raw) {
   return typeof raw === 'string' ? raw.trim().toLowerCase() : '';
 }

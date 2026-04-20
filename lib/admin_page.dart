@@ -7149,6 +7149,83 @@ class _AttendanceSessionDetailsDialog extends StatelessWidget {
     }
   }
 
+  Future<void> _backfillSessionAttendance(BuildContext context) async {
+    final NavigatorState navigator = Navigator.of(context);
+    final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('Backfill attendance for this session?'),
+        content: const Text(
+          'This will mark missing students as absent for this session and recompute attendance totals so it reflects on the student portal. This does not delete the session.',
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Backfill'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    if (!context.mounted) return;
+
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const AlertDialog(
+        content: Row(
+          children: <Widget>[
+            SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            SizedBox(width: 12),
+            Text('Backfilling attendance…'),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      await FirebaseFunctions.instance
+          .httpsCallable('adminBackfillAttendanceForSession')
+          .call(<String, dynamic>{'sessionId': sessionId});
+
+      if (context.mounted) {
+        navigator.pop();
+        messenger.showSnackBar(
+          const SnackBar(content: Text('Attendance backfilled.')),
+        );
+      }
+    } catch (error) {
+      if (context.mounted) {
+        navigator.pop();
+
+        String message = error.toString();
+        if (error is FirebaseFunctionsException) {
+          final String details = error.details?.toString() ?? '';
+          message = [
+            '[${error.code}]',
+            if ((error.message ?? '').trim().isNotEmpty)
+              error.message!.trim(),
+            if (details.trim().isNotEmpty) details.trim(),
+          ].join(' ');
+        }
+        messenger.showSnackBar(
+          SnackBar(content: Text('Backfill failed: $message')),
+        );
+      }
+    }
+  }
+
   String _fmtTs(Timestamp? ts, {bool showSeconds = false}) {
     if (ts == null) return '';
     final DateTime dt = ts.toDate();
@@ -7235,6 +7312,9 @@ class _AttendanceSessionDetailsDialog extends StatelessWidget {
                           case 'reopen':
                             _reopenSession(context);
                             break;
+                          case 'backfill':
+                            _backfillSessionAttendance(context);
+                            break;
                           case 'delete':
                             _deleteSession(context);
                             break;
@@ -7242,6 +7322,15 @@ class _AttendanceSessionDetailsDialog extends StatelessWidget {
                       },
                       itemBuilder: (BuildContext context) {
                         return <PopupMenuEntry<String>>[
+                          const PopupMenuItem<String>(
+                            value: 'backfill',
+                            child: ListTile(
+                              dense: true,
+                              leading: Icon(Icons.playlist_add_check_outlined),
+                              title: Text('Backfill attendance to students'),
+                            ),
+                          ),
+                          const PopupMenuDivider(),
                           const PopupMenuItem<String>(
                             value: 'complete',
                             child: ListTile(
