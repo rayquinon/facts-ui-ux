@@ -3603,7 +3603,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         inVerify &&
         (_cameraController?.value.isInitialized ?? false);
     final bool showCenterMarker =
-      !kIsWeb && inVerify && (_cameraController?.value.isInitialized ?? false);
+        !kIsWeb &&
+        inVerify &&
+        (_cameraController?.value.isInitialized ?? false);
     final bool endNow = _shouldEndSessionNow();
     final bool canToggleCapture = _recognitionSupported;
     final bool primaryEnabled =
@@ -3693,16 +3695,36 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                               child: IgnorePointer(
                                 child: ExcludeSemantics(
                                   child: Center(
-                                    child: SizedBox(
-                                      width: 18,
-                                      height: 18,
-                                      child: CustomPaint(
-                                        painter: _CenterPlusPainter(
-                                          theme.colorScheme.error.withValues(
-                                            alpha: 0.95,
-                                          ),
-                                        ),
-                                      ),
+                                    child: LayoutBuilder(
+                                      builder:
+                                          (
+                                            BuildContext context,
+                                            BoxConstraints constraints,
+                                          ) {
+                                            // Offset is relative to the preview size so it scales
+                                            // across different screens.
+                                            final double dy =
+                                                constraints
+                                                    .biggest
+                                                    .shortestSide *
+                                                0.03;
+
+                                            return Transform.translate(
+                                              offset: Offset(0, dy),
+                                              child: SizedBox(
+                                                width: 18,
+                                                height: 18,
+                                                child: CustomPaint(
+                                                  painter: _CenterPlusPainter(
+                                                    theme.colorScheme.error
+                                                        .withValues(
+                                                          alpha: 0.95,
+                                                        ),
+                                                  ),
+                                                ),
+                                              ),
+                                            );
+                                          },
                                     ),
                                   ),
                                 ),
@@ -4050,8 +4072,16 @@ class _CenterPlusPainter extends CustomPainter {
 
     final Offset c = Offset(size.width / 2, size.height / 2);
     const double half = 7;
-    canvas.drawLine(Offset(c.dx - half, c.dy), Offset(c.dx + half, c.dy), paint);
-    canvas.drawLine(Offset(c.dx, c.dy - half), Offset(c.dx, c.dy + half), paint);
+    canvas.drawLine(
+      Offset(c.dx - half, c.dy),
+      Offset(c.dx + half, c.dy),
+      paint,
+    );
+    canvas.drawLine(
+      Offset(c.dx, c.dy - half),
+      Offset(c.dx, c.dy + half),
+      paint,
+    );
   }
 
   @override

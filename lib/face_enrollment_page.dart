@@ -1439,7 +1439,7 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
         : CameraPreview(controller);
     final bool hasLivePreview = controller != null;
     final bool showCenterMarker =
-      controller != null && controller.value.isInitialized;
+        controller != null && controller.value.isInitialized;
 
     final int capturedThisPose = _phaseEmbeddings[_currentPhase]?.length ?? 0;
     final bool showEnrollmentInfo = _enrollmentStarted;
@@ -1480,17 +1480,34 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
                         child: IgnorePointer(
                           child: ExcludeSemantics(
                             child: Center(
-                              child: SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CustomPaint(
-                                  painter: _CenterPlusPainter(
-                                    Theme.of(context)
-                                        .colorScheme
-                                        .error
-                                        .withValues(alpha: 0.95),
-                                  ),
-                                ),
+                              child: LayoutBuilder(
+                                builder:
+                                    (
+                                      BuildContext context,
+                                      BoxConstraints constraints,
+                                    ) {
+                                      // Offset is relative to the preview size so it scales
+                                      // across different screens.
+                                      final double dy =
+                                          constraints.biggest.shortestSide *
+                                          0.03;
+
+                                      return Transform.translate(
+                                        offset: Offset(0, dy),
+                                        child: SizedBox(
+                                          width: 18,
+                                          height: 18,
+                                          child: CustomPaint(
+                                            painter: _CenterPlusPainter(
+                                              Theme.of(context)
+                                                  .colorScheme
+                                                  .error
+                                                  .withValues(alpha: 0.95),
+                                            ),
+                                          ),
+                                        ),
+                                      );
+                                    },
                               ),
                             ),
                           ),
@@ -1657,8 +1674,16 @@ class _CenterPlusPainter extends CustomPainter {
 
     final Offset c = Offset(size.width / 2, size.height / 2);
     const double half = 7;
-    canvas.drawLine(Offset(c.dx - half, c.dy), Offset(c.dx + half, c.dy), paint);
-    canvas.drawLine(Offset(c.dx, c.dy - half), Offset(c.dx, c.dy + half), paint);
+    canvas.drawLine(
+      Offset(c.dx - half, c.dy),
+      Offset(c.dx + half, c.dy),
+      paint,
+    );
+    canvas.drawLine(
+      Offset(c.dx, c.dy - half),
+      Offset(c.dx, c.dy + half),
+      paint,
+    );
   }
 
   @override
@@ -1723,7 +1748,7 @@ class _FaceGuideOverlay extends StatelessWidget {
                     mainAxisSize: MainAxisSize.min,
                     children: <Widget>[
                       Text(
-                        'Align your face inside the oval',
+                        'Align your face inside the oval and your nice on the plus(+) sing',
                         style: textTheme.titleSmall?.copyWith(
                           color: Colors.white,
                           fontWeight: FontWeight.w600,

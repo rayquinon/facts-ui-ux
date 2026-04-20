@@ -25,9 +25,12 @@ class ResetPasswordPage extends StatefulWidget {
 }
 
 class _ResetPasswordPageState extends State<ResetPasswordPage> {
+  static const Duration _resendCooldown = Duration(minutes: 1);
+
   final TextEditingController _otpController = TextEditingController();
   final TextEditingController _newPasswordController = TextEditingController();
-  final TextEditingController _confirmPasswordController = TextEditingController();
+  final TextEditingController _confirmPasswordController =
+      TextEditingController();
 
   bool _loading = true;
   bool _sendingOtp = false;
@@ -45,13 +48,50 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
   int? _resendToken;
   String? _error;
 
+  DateTime? _resendCooldownEndsAt;
+  Timer? _resendCooldownTimer;
+
   bool get _supported => !kIsWeb;
+
+  int get _resendCooldownSecondsRemaining {
+    final DateTime? until = _resendCooldownEndsAt;
+    if (until == null) return 0;
+    final int seconds = until.difference(DateTime.now()).inSeconds;
+    return seconds > 0 ? seconds : 0;
+  }
+
+  void _startResendCooldown() {
+    _resendCooldownEndsAt = DateTime.now().add(_resendCooldown);
+    _resendCooldownTimer?.cancel();
+    _resendCooldownTimer = Timer.periodic(const Duration(seconds: 1), (
+      Timer t,
+    ) {
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
+      if (_resendCooldownSecondsRemaining <= 0) {
+        setState(() {});
+        _clearResendCooldown();
+        return;
+      }
+      setState(() {});
+    });
+    setState(() {});
+  }
+
+  void _clearResendCooldown() {
+    _resendCooldownEndsAt = null;
+    _resendCooldownTimer?.cancel();
+    _resendCooldownTimer = null;
+  }
 
   @override
   void dispose() {
     _otpController.dispose();
     _newPasswordController.dispose();
     _confirmPasswordController.dispose();
+    _resendCooldownTimer?.cancel();
     super.dispose();
   }
 
@@ -74,7 +114,8 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
     if (code.isEmpty) {
       setState(() {
         _loading = false;
-        _error = 'Reset link is missing a code. Please request a new reset email.';
+        _error =
+            'Reset link is missing a code. Please request a new reset email.';
       });
       return;
     }
@@ -136,6 +177,14 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
     if (!_supported) return;
     if (_sendingOtp || _verifyingOtp || _saving) return;
 
+    final int remaining = _resendCooldownSecondsRemaining;
+    if (remaining > 0) {
+      setState(() {
+        _error = 'Please wait ${remaining}s before resending the code.';
+      });
+      return;
+    }
+
     final String phone = (_phoneNumber ?? '').trim();
     if (phone.isEmpty) return;
 
@@ -143,6 +192,8 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
       _sendingOtp = true;
       _error = null;
     });
+
+    _startResendCooldown();
 
     final Completer<void> completer = Completer<void>();
 
@@ -176,6 +227,7 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
           if (mounted) {
             setState(() => _error = _mapAuthError(e));
           }
+          _clearResendCooldown();
           if (!completer.isCompleted) completer.complete();
         },
         codeSent: (String verificationId, int? resendToken) {
@@ -200,6 +252,7 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
       if (mounted) {
         setState(() => _error = 'Failed to send OTP. Please try again.');
       }
+      _clearResendCooldown();
       if (!completer.isCompleted) completer.complete();
     } finally {
       await completer.future;
@@ -307,7 +360,9 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
         builder: (BuildContext dialogContext) {
           return AlertDialog(
             title: const Text('Password updated'),
-            content: const Text('Your password was changed successfully. Please log in again.'),
+            content: const Text(
+              'Your password was changed successfully. Please log in again.',
+            ),
             actions: <Widget>[
               FilledButton(
                 onPressed: () => Navigator.of(dialogContext).pop(),
@@ -324,10 +379,15 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
       );
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
-      setState(() => _error = 'Reset failed (${e.code}). Please request a new reset email.');
+      setState(
+        () => _error =
+            'Reset failed (${e.code}). Please request a new reset email.',
+      );
     } catch (_) {
       if (!mounted) return;
-      setState(() => _error = 'Reset failed. Please request a new reset email.');
+      setState(
+        () => _error = 'Reset failed. Please request a new reset email.',
+      );
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -395,21 +455,35 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                         ),
                         const SizedBox(height: 16),
                         FilledButton(
-                          onPressed: _sendingOtp || _verifyingOtp || _saving
+                          onPressed:
+                              _sendingOtp ||
+                                  _verifyingOtp ||
+                                  _saving ||
+                                  _resendCooldownSecondsRemaining > 0
                               ? null
                               : () => _sendOtp(forceResend: _otpSent),
                           child: _sendingOtp
                               ? const SizedBox(
                                   width: 20,
                                   height: 20,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
                                 )
-                              : Text(_otpSent ? 'Resend OTP' : 'Send OTP'),
+                              : Text(
+                                  _resendCooldownSecondsRemaining > 0
+                                      ? 'Resend available in ${_resendCooldownSecondsRemaining}s'
+                                      : (_otpSent ? 'Resend OTP' : 'Send OTP'),
+                                ),
                         ),
                         const SizedBox(height: 16),
                         TextField(
                           controller: _otpController,
-                          enabled: _otpSent && !_otpVerified && !_sendingOtp && !_verifyingOtp,
+                          enabled:
+                              _otpSent &&
+                              !_otpVerified &&
+                              !_sendingOtp &&
+                              !_verifyingOtp,
                           keyboardType: TextInputType.number,
                           decoration: const InputDecoration(
                             labelText: 'OTP code',
@@ -420,14 +494,20 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                         ),
                         const SizedBox(height: 12),
                         FilledButton(
-                          onPressed: !_otpSent || _otpVerified || _sendingOtp || _verifyingOtp
+                          onPressed:
+                              !_otpSent ||
+                                  _otpVerified ||
+                                  _sendingOtp ||
+                                  _verifyingOtp
                               ? null
                               : _verifyOtp,
                           child: _verifyingOtp
                               ? const SizedBox(
                                   width: 20,
                                   height: 20,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
                                 )
                               : Text(_otpVerified ? 'Verified' : 'Verify OTP'),
                         ),
@@ -469,7 +549,9 @@ class _ResetPasswordPageState extends State<ResetPasswordPage> {
                                 ? const SizedBox(
                                     width: 20,
                                     height: 20,
-                                    child: CircularProgressIndicator(strokeWidth: 2),
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
                                   )
                                 : const Text('Set new password'),
                           ),

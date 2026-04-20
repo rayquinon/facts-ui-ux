@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
@@ -22,29 +24,76 @@ class VerifyEmailPage extends StatefulWidget {
 }
 
 class _VerifyEmailPageState extends State<VerifyEmailPage> {
+  static const Duration _resendCooldown = Duration(minutes: 1);
+
   bool _isSending = false;
   bool _isRefreshing = false;
-  DateTime? _lastSentAt;
   bool _autoSent = false;
 
-  bool get _canResend {
-    final DateTime? lastSentAt = _lastSentAt;
-    if (lastSentAt == null) return true;
-    return DateTime.now().difference(lastSentAt) >= const Duration(seconds: 30);
+  DateTime? _resendCooldownEndsAt;
+  Timer? _resendCooldownTimer;
+
+  int get _resendCooldownSecondsRemaining {
+    final DateTime? until = _resendCooldownEndsAt;
+    if (until == null) return 0;
+    final int seconds = until.difference(DateTime.now()).inSeconds;
+    return seconds > 0 ? seconds : 0;
+  }
+
+  bool get _canResend => _resendCooldownSecondsRemaining <= 0;
+
+  void _startResendCooldown() {
+    _resendCooldownEndsAt = DateTime.now().add(_resendCooldown);
+    _resendCooldownTimer?.cancel();
+    _resendCooldownTimer = Timer.periodic(const Duration(seconds: 1), (
+      Timer t,
+    ) {
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
+      if (_resendCooldownSecondsRemaining <= 0) {
+        setState(() {});
+        _clearResendCooldown();
+        return;
+      }
+      setState(() {});
+    });
+    setState(() {});
+  }
+
+  void _clearResendCooldown() {
+    _resendCooldownEndsAt = null;
+    _resendCooldownTimer?.cancel();
+    _resendCooldownTimer = null;
   }
 
   Future<void> _sendVerificationEmail() async {
     final User? user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    if (_isSending || !_canResend) return;
+    if (_isSending) return;
+
+    final int remaining = _resendCooldownSecondsRemaining;
+    if (remaining > 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Please wait ${remaining}s before resending the email.',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
 
     setState(() => _isSending = true);
     final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
 
+    _startResendCooldown();
+
     try {
       await user.sendEmailVerification();
-      setState(() => _lastSentAt = DateTime.now());
       messenger.showSnackBar(
         const SnackBar(
           content: Text('Verification email sent. Please check your inbox.'),
@@ -52,6 +101,7 @@ class _VerifyEmailPageState extends State<VerifyEmailPage> {
         ),
       );
     } on FirebaseAuthException catch (error) {
+      _clearResendCooldown();
       messenger.showSnackBar(
         SnackBar(
           content: Text('Failed to send email (${error.code}).'),
@@ -59,6 +109,7 @@ class _VerifyEmailPageState extends State<VerifyEmailPage> {
         ),
       );
     } catch (_) {
+      _clearResendCooldown();
       messenger.showSnackBar(
         const SnackBar(
           content: Text('Failed to send verification email.'),
@@ -68,6 +119,12 @@ class _VerifyEmailPageState extends State<VerifyEmailPage> {
     } finally {
       if (mounted) setState(() => _isSending = false);
     }
+  }
+
+  @override
+  void dispose() {
+    _resendCooldownTimer?.cancel();
+    super.dispose();
   }
 
   @override
@@ -119,12 +176,10 @@ class _VerifyEmailPageState extends State<VerifyEmailPage> {
   Future<void> _navigateAfterVerified(User? user) async {
     // Always go through AuthGate so role-based gates (like phone verification)
     // are applied consistently.
-    Navigator.of(context).pushNamedAndRemoveUntil(
-      '/',
-      (Route<dynamic> route) => false,
-    );
+    Navigator.of(
+      context,
+    ).pushNamedAndRemoveUntil('/', (Route<dynamic> route) => false);
     return;
-
   }
 
   @override
@@ -141,15 +196,17 @@ class _VerifyEmailPageState extends State<VerifyEmailPage> {
       appBar: AppBar(
         title: const Text('Verify your email'),
         actions: <Widget>[
-              TextButton(
-                onPressed: () async {
-                  final bool shouldSignOut = await showConfirmSignOutDialog(context);
-                  if (!shouldSignOut) return;
+          TextButton(
+            onPressed: () async {
+              final bool shouldSignOut = await showConfirmSignOutDialog(
+                context,
+              );
+              if (!shouldSignOut) return;
 
-                  await FirebaseAuth.instance.signOut();
-                },
-                child: const Text('Sign out'),
-              ),
+              await FirebaseAuth.instance.signOut();
+            },
+            child: const Text('Sign out'),
+          ),
         ],
       ),
       body: Center(
@@ -196,11 +253,11 @@ class _VerifyEmailPageState extends State<VerifyEmailPage> {
                           ? null
                           : _sendVerificationEmail,
                       child: Text(
-                        _canResend
-                            ? (_isSending
-                                  ? 'Sending…'
-                                  : 'Resend verification email')
-                            : 'Resend available in a moment',
+                        _isSending
+                            ? 'Sending…'
+                            : (_canResend
+                                  ? 'Resend verification email'
+                                  : 'Resend available in ${_resendCooldownSecondsRemaining}s'),
                       ),
                     ),
                   ],
