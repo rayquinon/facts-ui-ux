@@ -1480,34 +1480,16 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
                         child: IgnorePointer(
                           child: ExcludeSemantics(
                             child: Center(
-                              child: LayoutBuilder(
-                                builder:
-                                    (
-                                      BuildContext context,
-                                      BoxConstraints constraints,
-                                    ) {
-                                      // Offset is relative to the preview size so it scales
-                                      // across different screens.
-                                      final double dy =
-                                          constraints.biggest.shortestSide *
-                                          0.03;
-
-                                      return Transform.translate(
-                                        offset: Offset(0, dy),
-                                        child: SizedBox(
-                                          width: 18,
-                                          height: 18,
-                                          child: CustomPaint(
-                                            painter: _CenterPlusPainter(
-                                              Theme.of(context)
-                                                  .colorScheme
-                                                  .error
-                                                  .withValues(alpha: 0.95),
-                                            ),
-                                          ),
-                                        ),
-                                      );
-                                    },
+                              child: SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CustomPaint(
+                                  painter: _CenterPlusPainter(
+                                    Theme.of(
+                                      context,
+                                    ).colorScheme.error.withValues(alpha: 0.95),
+                                  ),
+                                ),
                               ),
                             ),
                           ),
@@ -1748,7 +1730,7 @@ class _FaceGuideOverlay extends StatelessWidget {
                     mainAxisSize: MainAxisSize.min,
                     children: <Widget>[
                       Text(
-                        'Align your face inside the oval and your nice on the plus(+) sing',
+                        'Align your face inside the oval and the plus(+) sign in between your eyes',
                         style: textTheme.titleSmall?.copyWith(
                           color: Colors.white,
                           fontWeight: FontWeight.w600,

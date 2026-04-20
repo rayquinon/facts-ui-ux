@@ -3695,36 +3695,16 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                               child: IgnorePointer(
                                 child: ExcludeSemantics(
                                   child: Center(
-                                    child: LayoutBuilder(
-                                      builder:
-                                          (
-                                            BuildContext context,
-                                            BoxConstraints constraints,
-                                          ) {
-                                            // Offset is relative to the preview size so it scales
-                                            // across different screens.
-                                            final double dy =
-                                                constraints
-                                                    .biggest
-                                                    .shortestSide *
-                                                0.03;
-
-                                            return Transform.translate(
-                                              offset: Offset(0, dy),
-                                              child: SizedBox(
-                                                width: 18,
-                                                height: 18,
-                                                child: CustomPaint(
-                                                  painter: _CenterPlusPainter(
-                                                    theme.colorScheme.error
-                                                        .withValues(
-                                                          alpha: 0.95,
-                                                        ),
-                                                  ),
-                                                ),
-                                              ),
-                                            );
-                                          },
+                                    child: SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CustomPaint(
+                                        painter: _CenterPlusPainter(
+                                          theme.colorScheme.error.withValues(
+                                            alpha: 0.95,
+                                          ),
+                                        ),
+                                      ),
                                     ),
                                   ),
                                 ),

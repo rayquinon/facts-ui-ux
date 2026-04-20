@@ -3,7 +3,9 @@ import 'dart:convert';
 import 'dart:ffi' show Abi;
 import 'dart:io';
 
+import 'package:flutter/services.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'app_update_types.dart';
 
@@ -11,6 +13,8 @@ class AppUpdateService {
   static final AppUpdateService instance = AppUpdateService._();
 
   AppUpdateService._();
+
+  static const MethodChannel _channel = MethodChannel('facts.app_update');
 
   // Keep this as a plain Hosting file to avoid Firestore/Remote Config costs.
   static const List<String> _manifestUrls = <String>[
@@ -268,6 +272,180 @@ class AppUpdateService {
     }
     return null;
   }
+
+  Future<bool> canRequestPackageInstalls() async {
+    if (!Platform.isAndroid) return false;
+    final bool? result = await _channel.invokeMethod<bool>(
+      'canRequestPackageInstalls',
+    );
+    return result ?? false;
+  }
+
+  Future<void> openUnknownSourcesSettings() async {
+    if (!Platform.isAndroid) return;
+    await _channel.invokeMethod<void>('openUnknownSourcesSettings');
+  }
+
+  /// Downloads the APK and launches the Android installer.
+  ///
+  /// Note: Android will still require the user to confirm install.
+  /// If "Install unknown apps" is disabled for this app, this method will
+  /// throw [AppUpdateNeedsInstallPermission] after opening Settings.
+  Future<void> downloadAndInstallUpdate(
+    AppUpdateInfo update, {
+    Duration timeout = const Duration(minutes: 3),
+    void Function(int receivedBytes, int totalBytes)? onProgress,
+  }) async {
+    if (!Platform.isAndroid) {
+      throw const AppUpdateException('In-app APK install is Android-only.');
+    }
+
+    final String? url = _chooseApkUrl(update);
+    if (url == null) {
+      throw const AppUpdateException('No APK URL available for update.');
+    }
+
+    final File apkFile = await _downloadApk(
+      url: url,
+      buildNumber: update.effectiveLatestBuildNumber,
+      timeout: timeout,
+      onProgress: onProgress,
+    );
+
+    final bool allowed = await canRequestPackageInstalls();
+    if (!allowed) {
+      await openUnknownSourcesSettings();
+      throw AppUpdateNeedsInstallPermission(apkFile.path);
+    }
+
+    await _channel.invokeMethod<void>('installApk', <String, Object?>{
+      'path': apkFile.path,
+    });
+  }
+
+  String? _chooseApkUrl(AppUpdateInfo update) {
+    final List<String?> candidates = <String?>[
+      update.preferredUrlOverride,
+      update.apkUrl,
+      update.arm64Url,
+      update.armeabiV7aUrl,
+      update.x86_64Url,
+      update.apkUrlAlt,
+      update.arm64UrlAlt,
+      update.armeabiV7aUrlAlt,
+      update.x86_64UrlAlt,
+    ];
+
+    for (final String? url in candidates) {
+      if (url == null) continue;
+      final String trimmed = url.trim();
+      if (trimmed.isEmpty) continue;
+      final Uri? uri = Uri.tryParse(trimmed);
+      if (uri == null) continue;
+      final String lowerPath = uri.path.toLowerCase();
+      if (lowerPath.endsWith('.apk')) return trimmed;
+    }
+
+    return null;
+  }
+
+  Future<File> _downloadApk({
+    required String url,
+    required int buildNumber,
+    required Duration timeout,
+    void Function(int receivedBytes, int totalBytes)? onProgress,
+  }) async {
+    final Directory dir = await getTemporaryDirectory();
+    final String fileName = 'facts-update-$buildNumber.apk';
+    final File outFile = File('${dir.path}${Platform.pathSeparator}$fileName');
+
+    // Best-effort: remove any prior partial download.
+    try {
+      if (await outFile.exists()) {
+        await outFile.delete();
+      }
+    } catch (_) {
+      // Best-effort.
+    }
+
+    final HttpClient client = HttpClient();
+    client.connectionTimeout = timeout;
+
+    try {
+      final Uri parsed = Uri.parse(url);
+      final Uri uri = parsed.replace(
+        queryParameters: <String, String>{
+          ...parsed.queryParameters,
+          // Avoid stale cached APK downloads.
+          't': DateTime.now().millisecondsSinceEpoch.toString(),
+        },
+      );
+
+      final HttpClientRequest request = await client.getUrl(uri).timeout(
+        timeout,
+      );
+      request.headers.set(HttpHeaders.acceptHeader, '*/*');
+
+      final HttpClientResponse response = await request.close().timeout(
+        timeout,
+      );
+      if (response.statusCode != 200) {
+        throw AppUpdateException(
+          'APK download failed (HTTP ${response.statusCode}).',
+        );
+      }
+
+      final int total = response.contentLength;
+      int received = 0;
+
+      final IOSink sink = outFile.openWrite();
+      try {
+        await for (final List<int> chunk in response) {
+          sink.add(chunk);
+          received += chunk.length;
+          if (onProgress != null) {
+            onProgress(received, total);
+          }
+        }
+      } finally {
+        await sink.flush();
+        await sink.close();
+      }
+
+      if (!await outFile.exists()) {
+        throw const AppUpdateException('Download failed to write APK file.');
+      }
+
+      return outFile;
+    } catch (e) {
+      try {
+        if (await outFile.exists()) {
+          await outFile.delete();
+        }
+      } catch (_) {
+        // Best-effort.
+      }
+      rethrow;
+    } finally {
+      client.close(force: true);
+    }
+  }
+}
+
+class AppUpdateException implements Exception {
+  const AppUpdateException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+class AppUpdateNeedsInstallPermission extends AppUpdateException {
+  AppUpdateNeedsInstallPermission(this.apkPath)
+      : super('Install permission required.');
+
+  final String apkPath;
 }
 
 class _AbiUpdateChoice {

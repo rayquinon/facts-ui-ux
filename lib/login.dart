@@ -1,10 +1,11 @@
+// ignore_for_file: use_build_context_synchronously
+
 import 'dart:math' as math;
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import 'signup_pickrole.dart';
 import 'widgets/clay_surface.dart';
@@ -323,8 +324,7 @@ class _LoginPageState extends State<LoginPage> {
   Future<void> _checkForUpdates({bool showUpToDateDialog = true}) async {
     if (kIsWeb) {
       if (!mounted) return;
-      final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
-      messenger.showSnackBar(
+      ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Checking for updates...'),
           behavior: SnackBarBehavior.floating,
@@ -333,10 +333,10 @@ class _LoginPageState extends State<LoginPage> {
 
       final WebUpdateCheck result = await WebUpdateService.instance
           .checkForUpdates();
-      if (!mounted) return;
+        if (!mounted) return;
 
       if (!result.supported) {
-        messenger.showSnackBar(
+        ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('This browser does not support update checks.'),
             behavior: SnackBarBehavior.floating,
@@ -346,7 +346,7 @@ class _LoginPageState extends State<LoginPage> {
       }
 
       if (result.error != null && result.error!.isNotEmpty) {
-        messenger.showSnackBar(
+        ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Update check failed: ${result.error}'),
             behavior: SnackBarBehavior.floating,
@@ -356,14 +356,14 @@ class _LoginPageState extends State<LoginPage> {
       }
 
       if (result.updateAvailable == true) {
-        messenger.showSnackBar(
+        ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Update available. Tap Reload on the prompt.'),
             behavior: SnackBarBehavior.floating,
           ),
         );
       } else {
-        messenger.showSnackBar(
+        ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('No update found right now.'),
             behavior: SnackBarBehavior.floating,
@@ -450,9 +450,100 @@ class _LoginPageState extends State<LoginPage> {
     );
 
     if (shouldUpdate != true) return;
-    final String? url = update.preferredUrl;
-    if (url == null) return;
-    await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+
+    await _downloadAndInstallAndroidUpdate(update);
+  }
+
+  Future<void> _downloadAndInstallAndroidUpdate(AppUpdateInfo update) {
+    if (!mounted) return Future<void>.value();
+
+    final BuildContext rootContext = context;
+    if (!rootContext.mounted) return Future<void>.value();
+
+    int receivedBytes = 0;
+    int totalBytes = 0;
+    Object? updateError;
+    bool dialogOpen = true;
+    bool started = false;
+
+    return showDialog<void>(
+      context: rootContext,
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) {
+        return StatefulBuilder(
+          builder: (BuildContext _, void Function(void Function()) setState) {
+            if (!started) {
+              started = true;
+              Future<void>.microtask(() async {
+                final NavigatorState navigator = Navigator.of(dialogContext);
+                try {
+                  await AppUpdateService.instance.downloadAndInstallUpdate(
+                    update,
+                    onProgress: (int received, int total) {
+                      receivedBytes = received;
+                      totalBytes = total;
+                      if (dialogOpen) {
+                        setState(() {});
+                      }
+                    },
+                  );
+                } catch (e) {
+                  updateError = e;
+                } finally {
+                  if (navigator.canPop()) {
+                    dialogOpen = false;
+                    navigator.pop();
+                  }
+                }
+              });
+            }
+
+            final double? progress = totalBytes > 0
+                ? (receivedBytes / totalBytes).clamp(0.0, 1.0)
+                : null;
+
+            String label = 'Downloading update…';
+            if (progress != null) {
+              final int percent = (progress * 100).round();
+              label = 'Downloading update… $percent%';
+            }
+
+            return AlertDialog(
+              title: const Text('Updating…'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  Text(label),
+                  const SizedBox(height: 12),
+                  LinearProgressIndicator(value: progress),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Android will ask you to confirm install.',
+                    style: Theme.of(dialogContext).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    ).then((_) {
+      if (!mounted) return;
+      if (updateError == null) return;
+      if (!rootContext.mounted) return;
+
+      ScaffoldMessenger.of(rootContext).showSnackBar(
+        SnackBar(
+          content: Text(
+            updateError is AppUpdateNeedsInstallPermission
+                ? 'Enable "Install unknown apps" for FACTS, then tap Update again.'
+                : 'Update failed: $updateError',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    });
   }
 
   String _mapAuthError(FirebaseAuthException error) {

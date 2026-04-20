@@ -1,3 +1,5 @@
+// ignore_for_file: use_build_context_synchronously
+
 import 'dart:async';
 
 import 'package:app_links/app_links.dart';
@@ -8,7 +10,6 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 import 'admin_page.dart';
 import 'face_enrollment_page.dart';
@@ -632,7 +633,8 @@ class _AuthGateState extends State<AuthGate> {
 
     final AppUpdateInfo? update = await AppUpdateService.instance
         .checkForUpdate();
-    if (!mounted || update == null || !update.updateAvailable) return;
+    if (!mounted) return;
+    if (update == null || !update.updateAvailable) return;
 
     final bool? shouldUpdate = await showDialog<bool>(
       context: context,
@@ -663,11 +665,100 @@ class _AuthGateState extends State<AuthGate> {
     );
 
     if (shouldUpdate != true) return;
-    final String? url = update.preferredUrl;
-    if (url == null) return;
 
-    final Uri uri = Uri.parse(url);
-    await launchUrl(uri, mode: LaunchMode.externalApplication);
+    await _downloadAndInstallAndroidUpdate(update);
+  }
+
+  Future<void> _downloadAndInstallAndroidUpdate(AppUpdateInfo update) {
+    if (!mounted) return Future<void>.value();
+
+    final BuildContext rootContext = context;
+    if (!rootContext.mounted) return Future<void>.value();
+
+    int receivedBytes = 0;
+    int totalBytes = 0;
+    Object? updateError;
+    bool dialogOpen = true;
+    bool started = false;
+
+    return showDialog<void>(
+      context: rootContext,
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) {
+        return StatefulBuilder(
+          builder: (BuildContext _, void Function(void Function()) setState) {
+            if (!started) {
+              started = true;
+              Future<void>.microtask(() async {
+                final NavigatorState navigator = Navigator.of(dialogContext);
+                try {
+                  await AppUpdateService.instance.downloadAndInstallUpdate(
+                    update,
+                    onProgress: (int received, int total) {
+                      receivedBytes = received;
+                      totalBytes = total;
+                      if (dialogOpen) {
+                        setState(() {});
+                      }
+                    },
+                  );
+                } catch (e) {
+                  updateError = e;
+                } finally {
+                  if (navigator.canPop()) {
+                    dialogOpen = false;
+                    navigator.pop();
+                  }
+                }
+              });
+            }
+
+            final double? progress = totalBytes > 0
+                ? (receivedBytes / totalBytes).clamp(0.0, 1.0)
+                : null;
+
+            String label = 'Downloading update…';
+            if (progress != null) {
+              final int percent = (progress * 100).round();
+              label = 'Downloading update… $percent%';
+            }
+
+            return AlertDialog(
+              title: const Text('Updating…'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  Text(label),
+                  const SizedBox(height: 12),
+                  LinearProgressIndicator(value: progress),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Android will ask you to confirm install.',
+                    style: Theme.of(dialogContext).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    ).then((_) {
+      if (!mounted) return;
+      if (updateError == null) return;
+      if (!rootContext.mounted) return;
+
+      ScaffoldMessenger.of(rootContext).showSnackBar(
+        SnackBar(
+          content: Text(
+            updateError is AppUpdateNeedsInstallPermission
+                ? 'Enable "Install unknown apps" for FACTS, then tap Update again.'
+                : 'Update failed: $updateError',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    });
   }
 
   Future<Map<String, dynamic>> _fetchAuthInfo(User user, int refreshKey) async {
