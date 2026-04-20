@@ -892,7 +892,7 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
       }
     }
 
-    // Prefer simulated/effective timestamps when present, but keep legacy
+    // Prefer effective timestamps when present, but keep legacy
     // sessions (which only have startedAt) visible via the fallback query.
     await fetchSessions('effectiveStartedAt');
     await fetchSessions('startedAt');

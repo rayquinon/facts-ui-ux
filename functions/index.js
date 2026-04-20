@@ -857,6 +857,12 @@ exports.onAttendanceSessionAttendeeWritten = onDocumentWritten(
       .collection('daily')
       .doc(dateKey);
 
+    const statsRef = db
+      .collection('classes')
+      .doc(classId)
+      .collection('attendanceStats')
+      .doc(studentId);
+
     const update = {
       classId,
       studentId,
@@ -870,7 +876,22 @@ exports.onAttendanceSessionAttendeeWritten = onDocumentWritten(
     if (delta.lateMinutes) update.lateMinutes = FieldValue.increment(delta.lateMinutes);
     if (delta.absentMinutes) update.absentMinutes = FieldValue.increment(delta.absentMinutes);
 
-    await dailyRef.set(update, { merge: true });
+    const statsUpdate = {
+      presentCount: FieldValue.increment(delta.presentCount),
+      lateCount: FieldValue.increment(delta.lateCount),
+      absentCount: FieldValue.increment(delta.absentCount),
+      lateMinutes: FieldValue.increment(delta.lateMinutes),
+      absentMinutes: FieldValue.increment(delta.absentMinutes),
+      lastUpdated: FieldValue.serverTimestamp(),
+    };
+    if (statusAfter) {
+      statsUpdate.lastStatus = statusAfter;
+    }
+
+    await Promise.all([
+      dailyRef.set(update, { merge: true }),
+      statsRef.set(statsUpdate, { merge: true }),
+    ]);
   }
 );
 
@@ -961,6 +982,69 @@ exports.sendNextClassReminders = onSchedule(
         }
       }
     }
+  }
+);
+
+exports.autoCompleteOverdueAttendanceSessions = onSchedule(
+  {
+    schedule: 'every 1 minutes',
+    timeZone: 'Asia/Manila',
+  },
+  async () => {
+    const db = getFirestore();
+    const now = Timestamp.now();
+
+    // Best-effort: complete sessions that should have ended already.
+    // This makes auto-end reliable even if the instructor device goes offline.
+    const snap = await db
+      .collection('attendanceSessions')
+      .where('status', 'in', ['active', 'paused'])
+      .where('scheduledEndAt', '<=', now)
+      .limit(50)
+      .get();
+
+    if (snap.empty) return;
+
+    const batch = db.batch();
+    for (const doc of snap.docs) {
+      const data = doc.data() || {};
+      const scheduledEndAt = data.scheduledEndAt;
+
+      batch.set(
+        doc.ref,
+        {
+          status: 'completed',
+          endedAt: FieldValue.serverTimestamp(),
+          effectiveEndedAt: scheduledEndAt || FieldValue.serverTimestamp(),
+          autoCompletedAt: FieldValue.serverTimestamp(),
+          autoCompletedBy: 'autoCompleteOverdueAttendanceSessions',
+        },
+        { merge: true }
+      );
+
+      const instructorId = typeof data.instructorId === 'string' ? data.instructorId.trim() : '';
+      const classId = typeof data.classId === 'string' ? data.classId.trim() : '';
+      const dateKey = typeof data.dateKey === 'string' ? data.dateKey.trim() : '';
+      if (instructorId && classId && dateKey) {
+        const pointerId = `${instructorId}_${classId}_${dateKey}`;
+        const pointerRef = db.collection('attendanceSessionPointers').doc(pointerId);
+        const pointerUpdate = {
+          status: 'completed',
+          sessionId: doc.id,
+          endedAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        };
+        if (typeof data.scheduleKey === 'string' && data.scheduleKey.trim()) {
+          pointerUpdate.scheduleKey = data.scheduleKey.trim();
+        }
+        if (scheduledEndAt) {
+          pointerUpdate.scheduledEndAt = scheduledEndAt;
+        }
+        batch.set(pointerRef, pointerUpdate, { merge: true });
+      }
+    }
+
+    await batch.commit();
   }
 );
 
@@ -1461,9 +1545,28 @@ function dateKeyFromSessionDoc(session) {
 async function fetchRosterUidsForSection({ db, section }) {
   const sec = typeof section === 'string' ? section.trim() : '';
   if (!sec) return [];
-  const snap = await db.collection('users').where('section', '==', sec).get();
-  if (snap.empty) return [];
-  return snap.docs.map((d) => d.id);
+  // Roster should include only students. Prefer a role+section query; if the
+  // project is missing a composite index, fall back to section-only and
+  // filter client-side.
+  try {
+    const snap = await db
+      .collection('users')
+      .where('role', '==', 'student')
+      .where('section', '==', sec)
+      .get();
+    if (snap.empty) return [];
+    return snap.docs.map((d) => d.id);
+  } catch (e) {
+    const snap = await db.collection('users').where('section', '==', sec).get();
+    if (snap.empty) return [];
+    return snap.docs
+      .filter((d) => {
+        const data = d.data() || {};
+        const role = typeof data.role === 'string' ? data.role.trim().toLowerCase() : '';
+        return role === 'student';
+      })
+      .map((d) => d.id);
+  }
 }
 
 async function backfillSessionAbsences({ db, sessionId }) {
@@ -1664,6 +1767,97 @@ exports.adminBackfillAttendanceForSession = onCall({ cors: true, timeoutSeconds:
     throw toHttpsError('Backfill attendance for session', error);
   }
 });
+
+exports.onAttendanceSessionCompleted = onDocumentWritten(
+  'attendanceSessions/{sessionId}',
+  async (event) => {
+    const after = event.data.after;
+    const before = event.data.before;
+    if (!after || !after.exists) return;
+
+    const afterData = after.data() || {};
+    const beforeData = before && before.exists ? before.data() || {} : {};
+
+    const statusAfter = typeof afterData.status === 'string' ? afterData.status.trim().toLowerCase() : '';
+    const statusBefore = typeof beforeData.status === 'string' ? beforeData.status.trim().toLowerCase() : '';
+
+    // Only run when the session transitions into completed.
+    if (statusAfter !== 'completed' || statusBefore === 'completed') {
+      return;
+    }
+
+    const sessionId = event.params.sessionId;
+    const db = getFirestore();
+    const sessionRef = db.collection('attendanceSessions').doc(sessionId);
+
+    // Idempotency lock: ensure exactly-once best-effort backfill.
+    const lock = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(sessionRef);
+      if (!snap.exists) return { run: false, reason: 'not-found' };
+      const d = snap.data() || {};
+      if (d.serverAbsenceBackfillDoneAt) return { run: false, reason: 'already-done' };
+      if (d.serverAbsenceBackfillStartedAt) return { run: false, reason: 'already-started' };
+      tx.set(
+        sessionRef,
+        {
+          serverAbsenceBackfillStartedAt: FieldValue.serverTimestamp(),
+          serverAbsenceBackfillTrigger: 'onAttendanceSessionCompleted',
+        },
+        { merge: true }
+      );
+      return { run: true };
+    });
+
+    if (!lock.run) {
+      return;
+    }
+
+    try {
+      const sessionSnap = await sessionRef.get();
+      if (!sessionSnap.exists) return;
+      const session = sessionSnap.data() || {};
+
+      // Safety: avoid mass-absent for test sessions started at/after scheduled end.
+      const startedAtTs = session.startedAt;
+      const scheduledEndTs = session.scheduledEndAt;
+      const startedAt = startedAtTs && typeof startedAtTs.toDate === 'function' ? startedAtTs.toDate() : null;
+      const scheduledEndAt = scheduledEndTs && typeof scheduledEndTs.toDate === 'function' ? scheduledEndTs.toDate() : null;
+      if (startedAt && scheduledEndAt && startedAt >= scheduledEndAt) {
+        await sessionRef.set(
+          {
+            serverAbsenceBackfillDoneAt: FieldValue.serverTimestamp(),
+            serverAbsenceBackfillSkippedReason: 'started-outside-window',
+          },
+          { merge: true }
+        );
+        return;
+      }
+
+      const result = await backfillSessionAbsences({ db, sessionId });
+
+      await sessionRef.set(
+        {
+          serverAbsenceBackfillDoneAt: FieldValue.serverTimestamp(),
+          serverAbsenceBackfillCreatedAbsent: clampInt(result && result.createdAbsent, 0),
+        },
+        { merge: true }
+      );
+    } catch (error) {
+      // Keep a breadcrumb for debugging; do not fail the trigger.
+      try {
+        await sessionRef.set(
+          {
+            serverAbsenceBackfillErrorAt: FieldValue.serverTimestamp(),
+            serverAbsenceBackfillError: String(error && error.message ? error.message : error),
+          },
+          { merge: true }
+        );
+      } catch (_) {
+        // ignore
+      }
+    }
+  }
+);
 
 function normalizeStatus(raw) {
   return typeof raw === 'string' ? raw.trim().toLowerCase() : '';

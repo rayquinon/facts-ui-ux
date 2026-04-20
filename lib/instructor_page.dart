@@ -16,6 +16,7 @@ import 'services/attendance_calendar_service.dart';
 import 'services/open_external_url.dart';
 import 'services/offline_mode_service.dart';
 import 'services/offline_mode_service_types.dart';
+import 'services/attendance_outbox_service.dart';
 import 'services/push_notification_service.dart';
 import 'widgets/confirm_sign_out_dialog.dart';
 import 'notifications_page.dart';
@@ -37,8 +38,6 @@ class InstructorPage extends StatefulWidget {
 }
 
 class _InstructorPageState extends State<InstructorPage> {
-  bool _simulationEnabled = true;
-  late DateTime _simulatedTime;
   _InstructorSection _section = _InstructorSection.dashboard;
   bool _pushInitialized = false;
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>?
@@ -61,9 +60,9 @@ class _InstructorPageState extends State<InstructorPage> {
   OfflineModeStatus? _offlineModeStatus;
   bool _offlineModeChecking = false;
   int _offlineModeRequestId = 0;
+  int _pendingOutboxCount = 0;
 
-  DateTime get _activeTime =>
-      _simulationEnabled ? _simulatedTime : DateTime.now();
+  DateTime get _activeTime => DateTime.now();
 
   static const String _kSessionPointerCollection = 'attendanceSessionPointers';
 
@@ -241,8 +240,6 @@ class _InstructorPageState extends State<InstructorPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          _buildSimulationPanel(context, activeTime),
-          const SizedBox(height: 24),
           _buildNextUpCard(
             context,
             nextSchedule,
@@ -306,7 +303,6 @@ class _InstructorPageState extends State<InstructorPage> {
   @override
   void initState() {
     super.initState();
-    _simulatedTime = DateTime.now();
     _listenToApproval();
     _ensurePushInitialized();
   }
@@ -858,63 +854,6 @@ class _InstructorPageState extends State<InstructorPage> {
     ).pushNamedAndRemoveUntil('/login', (Route<dynamic> route) => false);
   }
 
-  void _adjustSimulatedTime(Duration delta) {
-    if (!_simulationEnabled) return;
-    setState(() => _simulatedTime = _simulatedTime.add(delta));
-  }
-
-  void _resetSimulatedTime() {
-    if (!_simulationEnabled) return;
-    setState(() => _simulatedTime = DateTime.now());
-  }
-
-  void _toggleSimulation(bool enabled) {
-    if (enabled == _simulationEnabled) return;
-    setState(() {
-      _simulationEnabled = enabled;
-      _simulatedTime = DateTime.now();
-    });
-  }
-
-  Future<void> _pickSimulatedDate() async {
-    if (!_simulationEnabled) return;
-    final DateTime now = DateTime.now();
-    final DateTime? picked = await showDatePicker(
-      context: context,
-      initialDate: _simulatedTime,
-      firstDate: DateTime(now.year - 1),
-      lastDate: DateTime(now.year + 1),
-    );
-    if (picked == null) return;
-    setState(() {
-      _simulatedTime = DateTime(
-        picked.year,
-        picked.month,
-        picked.day,
-        _simulatedTime.hour,
-        _simulatedTime.minute,
-      );
-    });
-  }
-
-  Future<void> _pickSimulatedTime() async {
-    if (!_simulationEnabled) return;
-    final TimeOfDay? picked = await showTimePicker(
-      context: context,
-      initialTime: TimeOfDay.fromDateTime(_simulatedTime),
-    );
-    if (picked == null) return;
-    setState(() {
-      _simulatedTime = DateTime(
-        _simulatedTime.year,
-        _simulatedTime.month,
-        _simulatedTime.day,
-        picked.hour,
-        picked.minute,
-      );
-    });
-  }
-
   void _subscribeToAssignments() {
     final User? user = FirebaseAuth.instance.currentUser;
     if (user == null) {
@@ -990,17 +929,25 @@ class _InstructorPageState extends State<InstructorPage> {
     setState(() => _offlineModeChecking = true);
 
     try {
-      final OfflineModeStatus status = await _offlineModeService
-          .getStatusForSections(sectionLabels);
+      final List<Object> results = await Future.wait(<Future<Object>>[
+        _offlineModeService.getStatusForSections(sectionLabels),
+        AttendanceOutboxService.instance.pendingCountBestEffort(),
+      ]);
+      final OfflineModeStatus status = results[0] as OfflineModeStatus;
+      final int pending = results[1] as int;
       if (!mounted || requestId != _offlineModeRequestId) return;
       setState(() {
         _offlineModeStatus = status;
+        _pendingOutboxCount = pending;
         _offlineModeChecking = false;
       });
     } catch (_) {
+      final int pending = await AttendanceOutboxService.instance
+          .pendingCountBestEffort();
       if (!mounted || requestId != _offlineModeRequestId) return;
       setState(() {
         _offlineModeStatus = null;
+        _pendingOutboxCount = pending;
         _offlineModeChecking = false;
       });
     }
@@ -1084,6 +1031,14 @@ class _InstructorPageState extends State<InstructorPage> {
                 fontWeight: FontWeight.w700,
               ),
             ),
+            if (_pendingOutboxCount > 0) ...<Widget>[
+              const SizedBox(width: 8),
+              Icon(
+                Icons.sync,
+                size: 16,
+                color: theme.colorScheme.outline,
+              ),
+            ],
           ],
         ),
       ),
@@ -1093,7 +1048,7 @@ class _InstructorPageState extends State<InstructorPage> {
 
   _InstructorSchedule? _resolveActiveSchedule(DateTime time) {
     for (final _InstructorSchedule schedule in _scheduleEntries) {
-      if (schedule.isActive(time)) return schedule;
+      if (schedule.isStartable(time)) return schedule;
     }
     return null;
   }
@@ -1119,9 +1074,7 @@ class _InstructorPageState extends State<InstructorPage> {
     final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
     final NavigatorState navigator = Navigator.of(context);
 
-    final DateTime effectiveNow = _simulationEnabled
-        ? _simulatedTime
-        : DateTime.now();
+    final DateTime effectiveNow = DateTime.now();
     final AttendanceCalendarDay? override = await _calendar.fetchDayBestEffort(
       day: effectiveNow,
     );
@@ -1147,10 +1100,6 @@ class _InstructorPageState extends State<InstructorPage> {
     }
     if (_isLaunchingSession) return;
     setState(() => _isLaunchingSession = true);
-    final DateTime launchNow = DateTime.now();
-    final Duration? simulatedClockOffset = _simulationEnabled
-        ? _simulatedTime.difference(launchNow)
-        : null;
 
     try {
       String? effectiveResumeSessionId = resumeSessionId;
@@ -1228,6 +1177,60 @@ class _InstructorPageState extends State<InstructorPage> {
         }
       }
 
+      if ((effectiveResumeSessionId == null ||
+              effectiveResumeSessionId.trim().isEmpty) &&
+          schedule.dayOfWeek != effectiveNow.weekday) {
+        messenger.showSnackBar(
+          const SnackBar(content: Text('This session is not scheduled for today.')),
+        );
+        return;
+      }
+
+      if (effectiveResumeSessionId == null ||
+          effectiveResumeSessionId.trim().isEmpty) {
+        final DateTime scheduledStart = DateTime(
+          effectiveNow.year,
+          effectiveNow.month,
+          effectiveNow.day,
+          schedule.start.hour,
+          schedule.start.minute,
+        );
+        DateTime scheduledEnd = DateTime(
+          effectiveNow.year,
+          effectiveNow.month,
+          effectiveNow.day,
+          schedule.end.hour,
+          schedule.end.minute,
+        );
+        if (!scheduledEnd.isAfter(scheduledStart)) {
+          scheduledEnd = scheduledEnd.add(const Duration(days: 1));
+        }
+
+        final DateTime earliestStart = scheduledStart.subtract(
+          const Duration(minutes: 15),
+        );
+
+        if (effectiveNow.isBefore(earliestStart)) {
+          messenger.showSnackBar(
+            const SnackBar(
+              content: Text(
+                'You can start a session up to 15 minutes before the scheduled start.',
+              ),
+            ),
+          );
+          return;
+        }
+
+        if (!effectiveNow.isBefore(scheduledEnd)) {
+          messenger.showSnackBar(
+            const SnackBar(
+              content: Text('This session slot has already ended.'),
+            ),
+          );
+          return;
+        }
+      }
+
       final AttendanceSessionConfig config = AttendanceSessionConfig(
         classId: schedule.classId,
         subjectCode: schedule.subjectCode,
@@ -1238,7 +1241,6 @@ class _InstructorPageState extends State<InstructorPage> {
         dayOfWeek: schedule.dayOfWeek,
         start: schedule.start,
         end: schedule.end,
-        simulatedClockOffset: simulatedClockOffset,
         resumeSessionId: effectiveResumeSessionId,
       );
 
@@ -1583,99 +1585,6 @@ class _InstructorPageState extends State<InstructorPage> {
               hasAssignments,
             ),
           },
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSimulationPanel(BuildContext context, DateTime activeTime) {
-    final ThemeData theme = Theme.of(context);
-    final MaterialLocalizations localizations = MaterialLocalizations.of(
-      context,
-    );
-    final String timeLabel = localizations.formatTimeOfDay(
-      TimeOfDay.fromDateTime(activeTime),
-    );
-    final String dateLabel = localizations.formatFullDate(activeTime);
-
-    return Card(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      Text(
-                        _simulationEnabled ? 'Simulated time' : 'Live time',
-                        style: theme.textTheme.labelLarge,
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        timeLabel,
-                        style: theme.textTheme.headlineMedium?.copyWith(
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      Text(dateLabel, style: theme.textTheme.bodyMedium),
-                    ],
-                  ),
-                ),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: <Widget>[
-                    Text('Simulation mode', style: theme.textTheme.labelLarge),
-                    Switch.adaptive(
-                      value: _simulationEnabled,
-                      onChanged: _toggleSimulation,
-                    ),
-                  ],
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            Wrap(
-              spacing: 12,
-              runSpacing: 12,
-              children: <Widget>[
-                OutlinedButton.icon(
-                  onPressed: _simulationEnabled
-                      ? () => _adjustSimulatedTime(const Duration(minutes: -15))
-                      : null,
-                  icon: const Icon(Icons.history_toggle_off),
-                  label: const Text('- 15 min'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: _simulationEnabled
-                      ? () => _adjustSimulatedTime(const Duration(minutes: 15))
-                      : null,
-                  icon: const Icon(Icons.update),
-                  label: const Text('+ 15 min'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: _simulationEnabled ? _resetSimulatedTime : null,
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('Sync to now'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: _simulationEnabled ? _pickSimulatedDate : null,
-                  icon: const Icon(Icons.calendar_month_outlined),
-                  label: const Text('Pick date'),
-                ),
-                OutlinedButton.icon(
-                  onPressed: _simulationEnabled ? _pickSimulatedTime : null,
-                  icon: const Icon(Icons.schedule_outlined),
-                  label: const Text('Pick time'),
-                ),
-              ],
-            ),
-          ],
         ),
       ),
     );
@@ -2034,16 +1943,8 @@ class _InstructorPageState extends State<InstructorPage> {
               ),
             ] else ...<Widget>[
               Text(
-                'No class is running right now. Use the simulated clock to test sessions or wait for your next slot.',
+                'No class is running right now. Check your schedule for the next session.',
                 style: theme.textTheme.bodyMedium,
-              ),
-              const SizedBox(height: 16),
-              OutlinedButton.icon(
-                onPressed: _simulationEnabled
-                    ? () => _adjustSimulatedTime(const Duration(minutes: 30))
-                    : null,
-                icon: const Icon(Icons.schedule_send_outlined),
-                label: const Text('Jump +30 min'),
               ),
             ],
           ],
@@ -2471,6 +2372,32 @@ class _InstructorSchedule {
       end.minute,
     );
     return !reference.isBefore(startDate) && reference.isBefore(endDate);
+  }
+
+  bool isStartable(DateTime reference) {
+    if (dayOfWeek != reference.weekday) return false;
+    final DateTime scheduledStart = DateTime(
+      reference.year,
+      reference.month,
+      reference.day,
+      start.hour,
+      start.minute,
+    );
+    DateTime scheduledEnd = DateTime(
+      reference.year,
+      reference.month,
+      reference.day,
+      end.hour,
+      end.minute,
+    );
+    if (!scheduledEnd.isAfter(scheduledStart)) {
+      scheduledEnd = scheduledEnd.add(const Duration(days: 1));
+    }
+
+    final DateTime earliestStart = scheduledStart.subtract(
+      const Duration(minutes: 15),
+    );
+    return !reference.isBefore(earliestStart) && reference.isBefore(scheduledEnd);
   }
 
   Duration timeUntilStart(DateTime reference) {

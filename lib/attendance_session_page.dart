@@ -13,6 +13,7 @@ import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 
 import 'services/face_embedding_service.dart';
 import 'services/face_quality_exception.dart';
+import 'services/attendance_outbox_service.dart';
 import 'services/roster_cache_locator.dart';
 import 'services/roster_embeddings_cache.dart';
 import 'services/vps_embeddings_api_client.dart';
@@ -56,7 +57,6 @@ class AttendanceSessionConfig {
     this.section,
     this.term,
     this.location,
-    this.simulatedClockOffset,
     this.resumeSessionId,
   });
 
@@ -69,7 +69,6 @@ class AttendanceSessionConfig {
   final int dayOfWeek;
   final TimeOfDay start;
   final TimeOfDay end;
-  final Duration? simulatedClockOffset;
   final String? resumeSessionId;
 
   String get scheduleKey {
@@ -180,6 +179,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   CameraController? _cameraController;
   FaceDetector? _faceDetector;
   Timer? _sessionUiTimer;
+  Timer? _autoEndTimer;
 
   bool _isProcessingFrame = false;
   bool _captureEnabled = true;
@@ -200,6 +200,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   DateTime? _lastUnalignedFallbackAt;
   DateTime? _lastProbeSampleAt;
   int _lastRotationCompensation = 0;
+  int _clientCaptureSeq = 0;
 
   final List<List<double>> _probeHistoryUnit = <List<double>>[];
 
@@ -283,18 +284,35 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   }
 
   DateTime _now() {
-    final Duration? offset = widget.config.simulatedClockOffset;
-    final DateTime systemNow = DateTime.now();
-    return offset == null ? systemNow : systemNow.add(offset);
+    return DateTime.now();
   }
-
-  bool get _isSimulatedSession => widget.config.simulatedClockOffset != null;
 
   bool _shouldEndSessionNow() {
     final DateTime now = _now();
     final DateTime? scheduledEnd = _scheduledEndAt;
     if (scheduledEnd == null) return false;
     return now.isAfter(scheduledEnd) || now.isAtSameMomentAs(scheduledEnd);
+  }
+
+  void _scheduleAutoEndTimer() {
+    _autoEndTimer?.cancel();
+    _autoEndTimer = null;
+
+    final DateTime? scheduledEnd = _scheduledEndAt;
+    if (scheduledEnd == null) {
+      return;
+    }
+
+    final Duration remaining = scheduledEnd.difference(_now());
+    if (remaining <= Duration.zero) {
+      _checkAutoEnd();
+      return;
+    }
+
+    _autoEndTimer = Timer(remaining, () {
+      if (!mounted) return;
+      _checkAutoEnd();
+    });
   }
 
   void _checkAutoEnd() {
@@ -333,6 +351,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   Future<void> _initializeSession() async {
     _sessionStartedAt ??= _now();
     _scheduledEndAt ??= _computeScheduledEnd(_sessionStartedAt!);
+    _scheduleAutoEndTimer();
     setState(() {
       _initializing = true;
       _statusMessage = 'Loading roster...';
@@ -414,7 +433,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   Future<void> _ensureSessionDocument() async {
     if (_sessionDocId != null) return;
 
-    // Anchor the pointer ID to the date at session launch (supports simulation).
+    // Anchor the pointer ID to the date at session launch (deterministic across retries).
     _sessionPointerDateKey ??= _dateKey(_now());
 
     final User? user = FirebaseAuth.instance.currentUser;
@@ -469,9 +488,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         final String docStatus =
             (data?['status'] as String?)?.trim().toLowerCase() ?? '';
         final bool hasEndedAt = data != null && data['endedAt'] is Timestamp;
-        final bool hasEffectiveEndedAt =
-            data != null && data['effectiveEndedAt'] is Timestamp;
-        if (docStatus == 'completed' || hasEndedAt || hasEffectiveEndedAt) {
+        if (docStatus == 'completed' || hasEndedAt) {
           _sessionDocId = null;
           throw StateError('Refusing to resume a completed session.');
         }
@@ -488,10 +505,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           'endMinute': widget.config.end.minute,
           'scheduledStartAt': Timestamp.fromDate(scheduledStart),
           'scheduledEndAt': Timestamp.fromDate(scheduledEnd),
-          if (_isSimulatedSession) 'effectiveDateKey': dateKey,
-          if (_isSimulatedSession)
-            'simulatedClockOffsetMs':
-                widget.config.simulatedClockOffset?.inMilliseconds,
         }, SetOptions(merge: true));
         await _upsertSessionPointer(status: 'active');
 
@@ -536,9 +549,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           final String docStatus =
               (data?['status'] as String?)?.trim().toLowerCase() ?? '';
           final bool hasEndedAt = data != null && data['endedAt'] is Timestamp;
-          final bool hasEffectiveEndedAt =
-              data != null && data['effectiveEndedAt'] is Timestamp;
-          if (docStatus == 'completed' || hasEndedAt || hasEffectiveEndedAt) {
+          if (docStatus == 'completed' || hasEndedAt) {
             throw StateError('Refusing to resume a completed session.');
           }
 
@@ -557,11 +568,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
             'scheduledStartAt': Timestamp.fromDate(scheduledStart),
             'scheduledEndAt': Timestamp.fromDate(scheduledEnd),
           };
-          if (_isSimulatedSession) {
-            copy['effectiveDateKey'] = dateKey;
-            copy['simulatedClockOffsetMs'] =
-                widget.config.simulatedClockOffset?.inMilliseconds;
-          }
 
           await canonicalRef.set(copy, SetOptions(merge: true));
         }
@@ -590,13 +596,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       'instructorId': uid,
       'instructorEmail': user?.email,
       'status': 'active',
-      'effectiveStartedAt': _isSimulatedSession
-          ? Timestamp.fromDate(now)
-          : FieldValue.serverTimestamp(),
-      if (_isSimulatedSession) 'effectiveDateKey': dateKey,
-      if (_isSimulatedSession)
-        'simulatedClockOffsetMs':
-            widget.config.simulatedClockOffset?.inMilliseconds,
       'startedAt': FieldValue.serverTimestamp(),
       'createdAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
@@ -609,11 +608,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       canonicalSessionId: canonicalSessionId,
       scheduledStart: scheduledStart,
     );
-
-    if (_isSimulatedSession) {
-      _sessionStartedAt ??= now;
-      return;
-    }
 
     // Anchor the session start time on Firestore server time.
     // This avoids device clock drift affecting the 30-minute cutoff.
@@ -660,15 +654,14 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       _scheduledEndAt = scheduledEndTs.toDate();
     }
 
-    final Object? effectiveStartedAt = data['effectiveStartedAt'];
     final Object? startedAt = data['startedAt'];
-    final Timestamp? started = (effectiveStartedAt is Timestamp)
-        ? effectiveStartedAt
-        : (startedAt is Timestamp ? startedAt : null);
+    final Timestamp? started = startedAt is Timestamp ? startedAt : null;
     if (started != null) {
       _sessionStartedAt = started.toDate();
       _scheduledEndAt ??= _computeScheduledEnd(_sessionStartedAt!);
     }
+
+    _scheduleAutoEndTimer();
   }
 
   Future<void> _mergeDuplicateSessionAttemptsBestEffort({
@@ -821,7 +814,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   Future<void> _ensureSessionDocumentOfflineFirst() async {
     if (_sessionDocId != null) return;
 
-    // Anchor the pointer ID to the date at session launch (supports simulation).
+    // Anchor the pointer ID to the date at session launch (deterministic across retries).
     _sessionPointerDateKey ??= _dateKey(_now());
 
     final User? user = FirebaseAuth.instance.currentUser;
@@ -883,13 +876,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       'instructorId': uid,
       'instructorEmail': user?.email,
       'status': 'active',
-      'effectiveStartedAt': _isSimulatedSession
-          ? Timestamp.fromDate(now)
-          : FieldValue.serverTimestamp(),
-      if (_isSimulatedSession) 'effectiveDateKey': dateKey,
-      if (_isSimulatedSession)
-        'simulatedClockOffsetMs':
-            widget.config.simulatedClockOffset?.inMilliseconds,
       'startedAt': FieldValue.serverTimestamp(),
       'createdAt': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
@@ -903,10 +889,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       // Best-effort only.
     }
 
-    // If simulated, we can reliably use the local clock.
-    if (_isSimulatedSession) {
-      _sessionStartedAt ??= now;
-    }
   }
 
   Future<void> _loadRecordedAttendeesBestEffort() async {
@@ -1756,8 +1738,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       if (!mounted) return;
       setState(() {
         _openingCamera = false;
-        _statusMessage =
-            'Verifying ${student.displayName}. Keep their face centered.';
+        _statusMessage = 'Scanning for ${student.displayName}...';
       });
     } catch (e) {
       if (!mounted) return;
@@ -1813,7 +1794,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       final InputImage inputImage = _buildInputImage(image);
       final List<Face> faces = await detector.processImage(inputImage);
       if (faces.isEmpty) {
-        _updateStatus('No face detected. Ask the student to step closer.');
+        _updateStatus('No face detected. Move face closer or farther');
       } else {
         Face primary = faces.first;
         if (faces.length > 1) {
@@ -2091,8 +2072,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
     _MatchResult result = _matchEmbedding(smoothed, tuning);
     List<double> embeddingUsed = smoothed;
-    bool usedLegacy = false;
-    String? legacyDebug;
 
     if (sourceImage != null &&
         sourceBbox != null &&
@@ -2111,14 +2090,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           legacyEmbedding,
           tuning,
         );
-        final double? lb = legacyResult.similarity;
-        final double? ls = legacyResult.secondBestSimilarity;
-        if (lb != null && !lb.isNaN) {
-          final double margin = (ls == null || ls.isNaN) ? double.nan : lb - ls;
-          legacyDebug =
-              'Legacy(top1 ${lb.toStringAsFixed(2)}, top2 ${ls?.toStringAsFixed(2) ?? '??'}, '
-              'margin ${margin.isNaN ? '??' : margin.toStringAsFixed(2)})';
-        }
         final chosen = _chooseBetweenNormalAndLegacy(
           result,
           smoothed,
@@ -2127,7 +2098,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         );
         result = chosen.result;
         embeddingUsed = chosen.embedding;
-        usedLegacy = chosen.usedLegacy;
       } catch (_) {
         // Best-effort only; keep normal result.
       }
@@ -2163,26 +2133,14 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         _pendingAmbiguousConfirmations = 0;
         _pendingAmbiguousExpiresAt = null;
         _pendingAmbiguousStartedAt = null;
-        _updateStatus(
-          'Could not confirm an ambiguous match. Try again (hold still, better lighting).',
-        );
+        final String name = result.student?.displayName ?? 'this student';
+        _updateStatus('Scanning for $name...');
         return;
       }
 
       if (_pendingAmbiguousConfirmations < _ambiguousConfirmationsRequired) {
-        final double best = result.similarity ?? double.nan;
-        final double second = result.secondBestSimilarity ?? double.nan;
-        final double margin = (best.isNaN || second.isNaN)
-            ? double.nan
-            : (best - second);
         final String name = result.student?.displayName ?? 'this student';
-        final int remaining =
-            _ambiguousConfirmationsRequired - _pendingAmbiguousConfirmations;
-        _updateStatus(
-          'Ambiguous match for $name. Scan again to confirm ($remaining left). '
-          '(top1 ${best.toStringAsFixed(2)}, top2 ${second.toStringAsFixed(2)}, '
-          'margin ${margin.toStringAsFixed(2)})',
-        );
+        _updateStatus('Scanning for $name...');
         return;
       }
 
@@ -2193,9 +2151,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       _pendingAmbiguousConfirmations = 0;
       _pendingAmbiguousExpiresAt = null;
       _pendingAmbiguousStartedAt = null;
-      _updateStatus(
-        'Still ambiguous after multiple scans. Move closer, center the face, and hold still.',
-      );
+      final String name = result.student?.displayName ?? 'this student';
+      _updateStatus('Scanning for $name...');
       return;
     } else if (result.student == null) {
       // Clear pending confirmation when nothing plausible matched.
@@ -2218,36 +2175,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         return;
       }
       _lastUnrecognizedTime = captureTime;
-      final double? best = result.similarity;
-      final double? second = result.secondBestSimilarity;
-      if (best == null || best.isNaN) {
-        _updateStatus('Face detected but no match found in roster.');
-      } else {
-        final String reason = result.rejectionReason == null
-            ? ''
-            : ' Reason: ${result.rejectionReason}.';
-        final String mode = usedLegacy ? ' Mode: legacy.' : '';
-        final String legacyLine = legacyDebug == null ? '' : '\n$legacyDebug';
-        final String hint = best < 0.30
-            ? ' Re-enroll this student in the Android app.'
-            : '';
-        if (second != null && !second.isNaN) {
-          final double margin = best - second;
-          _updateStatus(
-            'Face detected but no match found in roster.$reason$mode\n'
-            '(top1 ${best.toStringAsFixed(2)}, top2 ${second.toStringAsFixed(2)}, '
-            'margin ${margin.toStringAsFixed(2)}, '
-            'threshold ${tuning.similarityThreshold.toStringAsFixed(2)}, '
-            'min margin ${_similarityMargin.toStringAsFixed(2)})$legacyLine$hint',
-          );
-        } else {
-          _updateStatus(
-            'Face detected but no match found in roster.$reason$mode\n'
-            '(best similarity ${best.toStringAsFixed(2)}, '
-            'threshold ${tuning.similarityThreshold.toStringAsFixed(2)})$legacyLine$hint',
-          );
-        }
-      }
+      _updateStatus('Scanning for...');
       return;
     }
 
@@ -2288,9 +2216,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         _pendingExpiresAt = null;
         _pendingStartedAt = null;
         final String name = _pendingStudentName ?? candidateName;
-        _updateStatus(
-          'Could not confirm $name. Try again (hold still, better lighting).',
-        );
+        _updateStatus('Scanning for $name...');
         return;
       }
 
@@ -2299,9 +2225,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         tuning,
       );
       if (_pendingConfirmations < requiredConfirmations) {
-        final int remaining = requiredConfirmations - _pendingConfirmations;
         final String name = _pendingStudentName ?? candidateName;
-        _updateStatus('Hold still. Confirming $name... ($remaining left)');
+        _updateStatus('Scanning for $name...');
         return;
       }
 
@@ -2445,10 +2370,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       tuning,
     );
     List<double> embeddingUsed = smoothed;
-    bool usedLegacy = false;
-    String? legacyDebug;
-    bool usedUnaligned = false;
-    String? unalignedDebug;
 
     if (sourceImage != null &&
         sourceBbox != null &&
@@ -2468,16 +2389,11 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           selected,
           tuning,
         );
-        final double? lb = legacyResult.similarity;
-        if (lb != null && !lb.isNaN) {
-          legacyDebug = 'Legacy(best ${lb.toStringAsFixed(2)})';
-        }
 
         // Prefer normal if both accept; otherwise pick the one that accepts.
         if (legacyResult.student != null && result.student == null) {
           result = legacyResult;
           embeddingUsed = legacyEmbedding;
-          usedLegacy = true;
         }
       } catch (_) {
         // Best-effort only.
@@ -2498,15 +2414,10 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           selected,
           tuning,
         );
-        final double? ub = unalignedResult.similarity;
-        if (ub != null && !ub.isNaN) {
-          unalignedDebug = 'Unaligned(best ${ub.toStringAsFixed(2)})';
-        }
 
         if (unalignedResult.student != null && result.student == null) {
           result = unalignedResult;
           embeddingUsed = unalignedEmbedding;
-          usedUnaligned = true;
         }
       } catch (_) {
         // Best-effort only.
@@ -2527,37 +2438,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       _pendingExpiresAt = null;
       _pendingStartedAt = null;
 
-      final double best = result.similarity ?? double.nan;
-      final String mode = usedLegacy
-          ? ' (legacy)'
-          : (usedUnaligned ? ' (unaligned)' : '');
-      final List<String> debugLines = <String>[];
-      if (legacyDebug != null) debugLines.add(legacyDebug);
-      if (unalignedDebug != null) debugLines.add(unalignedDebug);
-      final String extra = debugLines.isEmpty
-          ? ''
-          : '\n${debugLines.join('\n')}';
-      final String reason = result.rejectionReason == null
-          ? ''
-          : '\nReason: ${result.rejectionReason}';
-      if (best.isFinite) {
-        final bool singleTooWeak = (result.rejectionReason ?? '').startsWith(
-          'single-template-too-weak',
-        );
-        final String thresholdLine = singleTooWeak
-            ? '(best similarity ${best.toStringAsFixed(2)}, '
-                  'required ${tuning.singleTemplateThreshold.toStringAsFixed(2)})'
-            : '(best similarity ${best.toStringAsFixed(2)}, '
-                  'threshold ${tuning.similarityThreshold.toStringAsFixed(2)})';
-        _updateStatus(
-          'Face detected but does not match ${selected.displayName}.$mode\n'
-          '$thresholdLine$reason$extra',
-        );
-      } else {
-        _updateStatus(
-          'Face detected but does not match ${selected.displayName}.',
-        );
-      }
+      _updateStatus('Scanning for ${selected.displayName}...');
       return;
     }
 
@@ -2591,17 +2472,14 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       _pendingConfirmations = 0;
       _pendingExpiresAt = null;
       _pendingStartedAt = null;
-      _updateStatus(
-        'Could not confirm ${selected.displayName}. Try again (hold still, better lighting).',
-      );
+      _updateStatus('Scanning for ${selected.displayName}...');
       return;
     }
 
     final int requiredConfirmations = _requiredConfirmationsFor(result, tuning);
     if (_pendingConfirmations < requiredConfirmations) {
-      final int remaining = requiredConfirmations - _pendingConfirmations;
       _updateStatus(
-        'Hold still. Confirming ${selected.displayName}... ($remaining left)',
+        'Scanning for ${selected.displayName}...',
       );
       return;
     }
@@ -2914,48 +2792,97 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     final DocumentReference<Map<String, dynamic>> sessionRef = _firestore
         .collection('attendanceSessions')
         .doc(sessionId);
-    await sessionRef.collection('captures').add(<String, dynamic>{
-      'capturedAt': FieldValue.serverTimestamp(),
-      'capturedAtLocal': captureTime.toIso8601String(),
-      'matchUserId': result.student?.userId,
-      'matchDisplayName': result.student?.displayName,
-      'confidence': result.confidence,
-      'similarity': result.similarity,
-      'embedding': embedding,
-      'attendanceStatus': attendanceStatus,
-    });
+
+    final String clientCaptureId =
+        '${captureTime.toUtc().millisecondsSinceEpoch}_${++_clientCaptureSeq}';
+    final String capturedAtLocalIso = captureTime.toIso8601String();
+
+    try {
+      await sessionRef.collection('captures').doc(clientCaptureId).set(
+        <String, dynamic>{
+          'clientCaptureId': clientCaptureId,
+          'capturedAt': FieldValue.serverTimestamp(),
+          'capturedAtLocal': capturedAtLocalIso,
+          'matchUserId': result.student?.userId,
+          'matchDisplayName': result.student?.displayName,
+          'confidence': result.confidence,
+          'similarity': result.similarity,
+          'embedding': embedding,
+          'attendanceStatus': attendanceStatus,
+        },
+        SetOptions(merge: true),
+      );
+    } catch (_) {
+      await AttendanceOutboxService.instance.enqueueCapture(
+        sessionId: sessionId,
+        captureId: clientCaptureId,
+        capturedAtLocalIso: capturedAtLocalIso,
+        matchUserId: result.student?.userId,
+        matchDisplayName: result.student?.displayName,
+        confidence: result.confidence,
+        similarity: result.similarity,
+        embedding: embedding,
+        attendanceStatus: attendanceStatus,
+      );
+      unawaited(AttendanceOutboxService.instance.flushBestEffort());
+    }
+
     if (result.student != null) {
       final String studentId = result.student!.userId;
       final bool isFirstStatusForStudent = !_recordedStatuses.containsKey(
         studentId,
       );
 
-      await sessionRef
-          .collection('attendees')
-          .doc(studentId)
-          .set(<String, dynamic>{
-            'displayName': result.student!.displayName,
-            if (isFirstStatusForStudent)
-              'firstCapturedAt': FieldValue.serverTimestamp(),
-            if (isFirstStatusForStudent)
-              'firstCapturedAtLocal': captureTime.toIso8601String(),
-            'lastCapturedAt': FieldValue.serverTimestamp(),
-            'confidence': result.confidence,
-            if (isFirstStatusForStudent) 'status': attendanceStatus,
-            if (isFirstStatusForStudent)
-              'statusComputedAt': FieldValue.serverTimestamp(),
-            if (isFirstStatusForStudent) 'minutesLate': minutesLate,
-            if (isFirstStatusForStudent) 'minutesAbsent': 0,
-          }, SetOptions(merge: true));
+      try {
+        await sessionRef
+            .collection('attendees')
+            .doc(studentId)
+            .set(<String, dynamic>{
+              'displayName': result.student!.displayName,
+              if (isFirstStatusForStudent)
+                'firstCapturedAt': FieldValue.serverTimestamp(),
+              if (isFirstStatusForStudent)
+                'firstCapturedAtLocal': capturedAtLocalIso,
+              'lastCapturedAt': FieldValue.serverTimestamp(),
+              'confidence': result.confidence,
+              if (isFirstStatusForStudent) 'status': attendanceStatus,
+              if (isFirstStatusForStudent)
+                'statusComputedAt': FieldValue.serverTimestamp(),
+              if (isFirstStatusForStudent) 'minutesLate': minutesLate,
+              if (isFirstStatusForStudent) 'minutesAbsent': 0,
+            }, SetOptions(merge: true));
+      } catch (_) {
+        await AttendanceOutboxService.instance.enqueueAttendeeUpsert(
+          sessionId: sessionId,
+          studentId: studentId,
+          displayName: result.student!.displayName,
+          isFirstStatusForStudent: isFirstStatusForStudent,
+          capturedAtLocalIso: capturedAtLocalIso,
+          confidence: result.confidence,
+          status: attendanceStatus,
+          minutesLate: minutesLate,
+          minutesAbsent: 0,
+        );
+        unawaited(AttendanceOutboxService.instance.flushBestEffort());
+      }
+
       await _updateClassAttendanceStats(
         studentId: studentId,
         newStatus: attendanceStatus,
         lateMinutesBeyondGrace: minutesLate,
       );
     }
-    await sessionRef.update(<String, dynamic>{
-      'lastCaptureAt': FieldValue.serverTimestamp(),
-    });
+
+    try {
+      await sessionRef.set(<String, dynamic>{
+        'lastCaptureAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (_) {
+      await AttendanceOutboxService.instance.enqueueSessionLastCaptureAt(
+        sessionId: sessionId,
+      );
+      unawaited(AttendanceOutboxService.instance.flushBestEffort());
+    }
   }
 
   bool _shouldThrottleStudentCapture(String studentId, DateTime captureTime) {
@@ -3016,84 +2943,29 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     required String? newStatus,
     int? lateMinutesBeyondGrace,
   }) async {
-    if (newStatus == null || newStatus.isEmpty) {
-      return;
-    }
+    // Server is the source of truth for attendanceStats.
+    // Keep local status tracking only to prevent duplicate captures.
+    final String normalized = (newStatus ?? '').trim().toLowerCase();
+    if (normalized.isEmpty) return;
+
     final String? previousStatus = _recordedStatuses[studentId];
-    if (previousStatus == newStatus) {
-      return;
-    }
-    final String classId = widget.config.classId;
-    if (classId.isEmpty) {
-      return;
-    }
-    final String? incrementField = _counterFieldForStatus(newStatus);
-    if (incrementField == null) {
-      return;
-    }
-    final DocumentReference<Map<String, dynamic>> statsRef = _firestore
-        .collection('classes')
-        .doc(classId)
-        .collection('attendanceStats')
-        .doc(studentId);
+    if (previousStatus == normalized) return;
+
+    _recordedStatuses[studentId] = normalized;
 
     final int sessionMinutes = _computeSessionDurationMinutes();
-    final Map<String, Object?> updateData = <String, Object?>{
-      incrementField: FieldValue.increment(1),
-      'lastStatus': newStatus,
-      'lastUpdated': FieldValue.serverTimestamp(),
-    };
-    final String? decrementField = previousStatus == null
-        ? null
-        : _counterFieldForStatus(previousStatus);
-    if (decrementField != null && decrementField != incrementField) {
-      updateData[decrementField] = FieldValue.increment(-1);
-    }
-
-    if (sessionMinutes > 0) {
-      if (newStatus == 'absent') {
-        updateData['absentMinutes'] = FieldValue.increment(sessionMinutes);
-      }
-      if (previousStatus == 'absent' && newStatus != 'absent') {
-        updateData['absentMinutes'] = FieldValue.increment(-sessionMinutes);
-      }
-
-      if (newStatus == 'late') {
-        final int lateMinutes = (lateMinutesBeyondGrace ?? 0).clamp(
-          0,
-          sessionMinutes,
-        );
-        if (lateMinutes != 0) {
-          updateData['lateMinutes'] = FieldValue.increment(lateMinutes);
-        }
-      }
-      if (previousStatus == 'late' && newStatus != 'late') {
-        final int previousLateMinutes = _recordedLateMinutes[studentId] ?? 0;
-        if (previousLateMinutes != 0) {
-          updateData['lateMinutes'] = FieldValue.increment(
-            -previousLateMinutes,
-          );
-        }
-      }
-    }
-    try {
-      await statsRef.set(updateData, SetOptions(merge: true));
-      _recordedStatuses[studentId] = newStatus;
-      if (newStatus == 'late') {
-        final int lateMinutes = (lateMinutesBeyondGrace ?? 0).clamp(
-          0,
-          sessionMinutes,
-        );
-        if (lateMinutes > 0) {
-          _recordedLateMinutes[studentId] = lateMinutes;
-        } else {
-          _recordedLateMinutes.remove(studentId);
-        }
+    if (normalized == 'late') {
+      final int lateMinutes = (lateMinutesBeyondGrace ?? 0).clamp(
+        0,
+        sessionMinutes,
+      );
+      if (lateMinutes > 0) {
+        _recordedLateMinutes[studentId] = lateMinutes;
       } else {
         _recordedLateMinutes.remove(studentId);
       }
-    } catch (error) {
-      debugPrint('Failed to update attendance stats: $error');
+    } else {
+      _recordedLateMinutes.remove(studentId);
     }
   }
 
@@ -3106,19 +2978,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     }
     final int minutes = end.difference(start).inMinutes;
     return minutes > 0 ? minutes : 0;
-  }
-
-  String? _counterFieldForStatus(String status) {
-    switch (status) {
-      case 'present':
-        return 'presentCount';
-      case 'late':
-        return 'lateCount';
-      case 'absent':
-        return 'absentCount';
-      default:
-        return null;
-    }
   }
 
   Future<void> _markUncapturedStudentsAbsent() async {
@@ -3445,8 +3304,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           .update(<String, dynamic>{
             'status': 'completed',
             'endedAt': FieldValue.serverTimestamp(),
-            'effectiveEndedAt': _isSimulatedSession
-                ? Timestamp.fromDate(_now())
+            'effectiveEndedAt': _scheduledEndAt != null
+                ? Timestamp.fromDate(_scheduledEndAt!)
                 : FieldValue.serverTimestamp(),
           });
       await _upsertSessionPointer(status: 'completed', ended: true);
@@ -3465,7 +3324,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           (startedAt.isAfter(scheduledEnd) ||
               startedAt.isAtSameMomentAs(scheduledEnd));
 
-      if (!_isSimulatedSession && !startedOutsideWindow) {
+      if (!startedOutsideWindow) {
         await _markUncapturedStudentsAbsent();
       }
       _sessionClosed = true;
@@ -3481,7 +3340,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
   bool _isDecisionStatus(String message) {
     return message.startsWith('Face detected') ||
-        message.startsWith('Ambiguous match') ||
+      message.startsWith('Ambiguous match') ||
+      message.startsWith('Scanning for') ||
+      message.startsWith('No face detected') ||
         message.startsWith('Recognized') ||
         message.startsWith('Multiple faces') ||
         message.startsWith('Look straight') ||
@@ -3540,6 +3401,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   void dispose() {
     unawaited(_disposeCameraBestEffort());
     _sessionUiTimer?.cancel();
+    _autoEndTimer?.cancel();
     _faceDetector?.close();
     _captureListController.dispose();
     unawaited(_pauseSessionBestEffort());
@@ -3894,11 +3756,10 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     final String classId = widget.config.classId.trim();
     if (classId.isEmpty) return null;
 
-    // IMPORTANT: Anchor the pointer doc ID to the session's active/simulated
-    // date key, not the Firestore server timestamp. In simulation mode the
-    // server date can differ from the simulated date, which would make the
-    // instructor page listen to a different pointer doc and never show
-    // "Continue Session".
+    // IMPORTANT: Anchor the pointer doc ID to the session date key (derived
+    // from the session's notion of "today"), not the Firestore server
+    // timestamp. This keeps the instructor page listening to the correct
+    // pointer doc and enables "Continue Session" reliably.
     final String dateKey = _sessionPointerDateKey ?? _dateKey(_now());
     return '${uid}_${classId}_$dateKey';
   }

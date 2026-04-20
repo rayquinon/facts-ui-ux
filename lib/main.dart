@@ -23,6 +23,7 @@ import 'services/crash_reporter.dart';
 import 'services/user_role_service.dart';
 import 'services/app_update_service.dart';
 import 'services/app_update_types.dart';
+import 'services/attendance_outbox_service.dart';
 import 'reports/generate_report_page.dart';
 import 'reports/instructor_sessions_report_page.dart';
 import 'reset_password_page.dart';
@@ -217,6 +218,21 @@ Future<void> main() async {
         );
     }
   }
+
+  // Offline support:
+  // - Web: enable persistence where possible
+  // - IO platforms: flush any locally queued attendance writes
+  if (kIsWeb) {
+    try {
+      FirebaseFirestore.instance.settings = const Settings(
+        persistenceEnabled: true,
+      );
+    } catch (_) {
+      // Best-effort only. Can fail if persistence is already enabled
+      // in another tab or the browser doesn't support it.
+    }
+  }
+  unawaited(AttendanceOutboxService.instance.flushBestEffort());
 
   runApp(const MyApp());
 }
