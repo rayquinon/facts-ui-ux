@@ -56,6 +56,7 @@ class AttendanceSessionConfig {
     required this.end,
     this.section,
     this.term,
+    this.scheduleType,
     this.location,
     this.resumeSessionId,
   });
@@ -65,6 +66,7 @@ class AttendanceSessionConfig {
   final String subjectName;
   final String? section;
   final String? term;
+  final String? scheduleType;
   final String? location;
   final int dayOfWeek;
   final TimeOfDay start;
@@ -151,10 +153,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   // while the camera stream is running.
   static const Duration _statusUpdateMinInterval = Duration(milliseconds: 350);
 
-  // Keep a short history of decision messages so diagnostics don't disappear
-  // before the instructor can screenshot them.
-  static const int _statusHistoryMaxEntries = 4;
-
   // Distance tuning.
   // We estimate distance by how large the face bbox is relative to the frame.
   // Smaller ratio => farther away => lower-detail crops => more "no match".
@@ -189,7 +187,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   bool _attemptedInstructorClaimBootstrap = false;
   DateTime? _lastFrameProcessedAt;
   DateTime? _lastStatusUpdatedAt;
-  final List<String> _statusHistory = <String>[];
   String? _sessionDocId;
   bool _sessionClosed = false;
   DateTime? _sessionStartedAt;
@@ -888,7 +885,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     } catch (_) {
       // Best-effort only.
     }
-
   }
 
   Future<void> _loadRecordedAttendeesBestEffort() async {
@@ -1686,6 +1682,18 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     setState(() => _cameraController = controller);
   }
 
+  Future<void> _stopCameraStreamBestEffort() async {
+    final CameraController? controller = _cameraController;
+    if (controller == null) return;
+    try {
+      if (controller.value.isStreamingImages) {
+        await controller.stopImageStream();
+      }
+    } catch (_) {
+      // Best-effort only.
+    }
+  }
+
   Future<void> _disposeCameraBestEffort() async {
     final CameraController? controller = _cameraController;
     _cameraController = null;
@@ -1735,6 +1743,15 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           !(_cameraController?.value.isInitialized ?? false)) {
         await _initializeDeviceCamera();
       }
+
+      // If the controller is already initialized from a previous verification,
+      // restart the image stream so recognition resumes instantly.
+      final CameraController? controller = _cameraController;
+      if (controller != null &&
+          controller.value.isInitialized &&
+          !controller.value.isStreamingImages) {
+        await controller.startImageStream(_processCameraImage);
+      }
       if (!mounted) return;
       setState(() {
         _openingCamera = false;
@@ -1753,7 +1770,10 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   }
 
   Future<void> _exitVerifyMode({String? statusMessage}) async {
-    await _disposeCameraBestEffort();
+    // Keep the camera controller warm between student scans (much faster than
+    // re-initializing). Stop the image stream so we don't keep processing
+    // frames while showing the roster.
+    await _stopCameraStreamBestEffort();
     if (!mounted) return;
     setState(() {
       _viewMode = _AttendanceSessionViewMode.roster;
@@ -2478,9 +2498,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
     final int requiredConfirmations = _requiredConfirmationsFor(result, tuning);
     if (_pendingConfirmations < requiredConfirmations) {
-      _updateStatus(
-        'Scanning for ${selected.displayName}...',
-      );
+      _updateStatus('Scanning for ${selected.displayName}...');
       return;
     }
 
@@ -2789,6 +2807,20 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
             }
             return _computeLateMinutesBeyondGrace(captureTime);
           })();
+
+    final int minutesAbsent = (result.student == null)
+        ? 0
+        : (() {
+            final String studentId = result.student!.userId;
+            final String? existing = _recordedStatuses[studentId];
+            if (existing != null && existing.isNotEmpty) {
+              return 0;
+            }
+            if (attendanceStatus != 'absent') {
+              return 0;
+            }
+            return _computeSessionDurationMinutes();
+          })();
     final DocumentReference<Map<String, dynamic>> sessionRef = _firestore
         .collection('attendanceSessions')
         .doc(sessionId);
@@ -2798,20 +2830,20 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     final String capturedAtLocalIso = captureTime.toIso8601String();
 
     try {
-      await sessionRef.collection('captures').doc(clientCaptureId).set(
-        <String, dynamic>{
-          'clientCaptureId': clientCaptureId,
-          'capturedAt': FieldValue.serverTimestamp(),
-          'capturedAtLocal': capturedAtLocalIso,
-          'matchUserId': result.student?.userId,
-          'matchDisplayName': result.student?.displayName,
-          'confidence': result.confidence,
-          'similarity': result.similarity,
-          'embedding': embedding,
-          'attendanceStatus': attendanceStatus,
-        },
-        SetOptions(merge: true),
-      );
+      await sessionRef
+          .collection('captures')
+          .doc(clientCaptureId)
+          .set(<String, dynamic>{
+            'clientCaptureId': clientCaptureId,
+            'capturedAt': FieldValue.serverTimestamp(),
+            'capturedAtLocal': capturedAtLocalIso,
+            'matchUserId': result.student?.userId,
+            'matchDisplayName': result.student?.displayName,
+            'confidence': result.confidence,
+            'similarity': result.similarity,
+            'embedding': embedding,
+            'attendanceStatus': attendanceStatus,
+          }, SetOptions(merge: true));
     } catch (_) {
       await AttendanceOutboxService.instance.enqueueCapture(
         sessionId: sessionId,
@@ -2849,7 +2881,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
               if (isFirstStatusForStudent)
                 'statusComputedAt': FieldValue.serverTimestamp(),
               if (isFirstStatusForStudent) 'minutesLate': minutesLate,
-              if (isFirstStatusForStudent) 'minutesAbsent': 0,
+              if (isFirstStatusForStudent) 'minutesAbsent': minutesAbsent,
             }, SetOptions(merge: true));
       } catch (_) {
         await AttendanceOutboxService.instance.enqueueAttendeeUpsert(
@@ -2861,7 +2893,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
           confidence: result.confidence,
           status: attendanceStatus,
           minutesLate: minutesLate,
-          minutesAbsent: 0,
+          minutesAbsent: minutesAbsent,
         );
         unawaited(AttendanceOutboxService.instance.flushBestEffort());
       }
@@ -2902,11 +2934,27 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     if (endDateTime.isBefore(startDateTime)) {
       endDateTime = endDateTime.add(const Duration(days: 1));
     }
-    // Rule: students are marked late only when they are 15 minutes late.
-    // (At exactly +15 minutes, treat as late.)
-    const Duration tardyWindow = Duration(minutes: 15);
-    final DateTime tardyThreshold = startDateTime.add(tardyWindow);
-    return captureTime.isBefore(tardyThreshold) ? 'present' : 'late';
+
+    final String type = (config.scheduleType ?? '').trim().toLowerCase();
+    final bool isLaboratory = type == 'laboratory' || type == 'lab';
+
+    // Lecture rules:
+    // - late at +15 minutes (inclusive)
+    // - absent at +30 minutes (inclusive)
+    // Laboratory rules:
+    // - late after 30 minutes (so +31 minutes and beyond)
+    // - absent at +60 minutes (inclusive)
+    final DateTime absentThreshold = startDateTime.add(
+      Duration(minutes: isLaboratory ? 60 : 30),
+    );
+    if (!captureTime.isBefore(absentThreshold)) {
+      return 'absent';
+    }
+
+    final DateTime lateThreshold = startDateTime.add(
+      Duration(minutes: isLaboratory ? 31 : 15),
+    );
+    return captureTime.isBefore(lateThreshold) ? 'present' : 'late';
   }
 
   DateTime _dateWithTime(DateTime reference, TimeOfDay time) {
@@ -2933,7 +2981,10 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         .difference(scheduledStart)
         .inMinutes;
     final int clampedActual = actualLateMinutes.clamp(0, sessionMinutes);
-    const int graceMinutes = 15;
+
+    final String type = (widget.config.scheduleType ?? '').trim().toLowerCase();
+    final bool isLaboratory = type == 'laboratory' || type == 'lab';
+    final int graceMinutes = isLaboratory ? 30 : 15;
     final int beyondGrace = clampedActual - graceMinutes;
     return beyondGrace > 0 ? beyondGrace : 0;
   }
@@ -3320,7 +3371,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       final DateTime? startedAt = _sessionStartedAt;
       final DateTime? scheduledEnd = _scheduledEndAt;
       final bool startedOutsideWindow =
-          startedAt != null && scheduledEnd != null &&
+          startedAt != null &&
+          scheduledEnd != null &&
           (startedAt.isAfter(scheduledEnd) ||
               startedAt.isAtSameMomentAs(scheduledEnd));
 
@@ -3340,9 +3392,9 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
   bool _isDecisionStatus(String message) {
     return message.startsWith('Face detected') ||
-      message.startsWith('Ambiguous match') ||
-      message.startsWith('Scanning for') ||
-      message.startsWith('No face detected') ||
+        message.startsWith('Ambiguous match') ||
+        message.startsWith('Scanning for') ||
+        message.startsWith('No face detected') ||
         message.startsWith('Recognized') ||
         message.startsWith('Multiple faces') ||
         message.startsWith('Look straight') ||
@@ -3377,19 +3429,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         return;
       }
       final String trimmed = message.trim();
-      if (trimmed.isNotEmpty) {
-        if (_statusHistory.isEmpty || _statusHistory.last != trimmed) {
-          _statusHistory.add(trimmed);
-          if (_statusHistory.length > _statusHistoryMaxEntries) {
-            _statusHistory.removeAt(0);
-          }
-        }
-      }
-      final String combined = _statusHistory.isEmpty
-          ? message
-          : _statusHistory.join('\n\n');
       _lastStatusUpdatedAt = now;
-      setState(() => _statusMessage = combined);
+      setState(() => _statusMessage = trimmed.isEmpty ? message : trimmed);
       return;
     }
 

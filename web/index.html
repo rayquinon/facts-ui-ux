@@ -251,8 +251,30 @@
       window.checkForUpdates = checkForUpdates;
       window.dismissUpdateBanner = hideBanner;
       window.reloadForUpdate = function () {
-        // A reload is the most reliable way to activate the updated service worker.
-        location.reload();
+        // Activate the waiting service worker (if any) and reload once.
+        // Use sessionStorage so the guard survives a reload.
+        const guardKey = '__facts_reloaded_for_update';
+        try {
+          if (sessionStorage.getItem(guardKey) === '1') {
+            return;
+          }
+          sessionStorage.setItem(guardKey, '1');
+        } catch (_) {
+          // Best-effort; continue.
+        }
+
+        getRegistration().then((reg) => {
+          try {
+            if (reg && reg.waiting) {
+              reg.waiting.postMessage('skipWaiting');
+            }
+          } catch (_) {
+            // Ignore.
+          } finally {
+            // A reload is the most reliable way to pick up new assets.
+            location.reload();
+          }
+        }).catch((_) => location.reload());
       };
 
       // Optional: light periodic checks (won't reload automatically).
@@ -265,9 +287,15 @@
       // If the controlling SW changes, reload to pick up new assets.
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.addEventListener('controllerchange', () => {
-          // Avoid infinite reload loops.
-          if (window.__reloadedForUpdate) return;
-          window.__reloadedForUpdate = true;
+          // Avoid infinite reload loops (including across reloads).
+          const guardKey = '__facts_reloaded_for_update';
+          try {
+            if (sessionStorage.getItem(guardKey) === '1') return;
+            sessionStorage.setItem(guardKey, '1');
+          } catch (_) {
+            if (window.__reloadedForUpdate) return;
+            window.__reloadedForUpdate = true;
+          }
           location.reload();
         });
       }

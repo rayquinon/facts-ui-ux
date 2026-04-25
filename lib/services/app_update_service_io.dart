@@ -300,27 +300,51 @@ class AppUpdateService {
       throw const AppUpdateException('In-app APK install is Android-only.');
     }
 
+    final bool allowed = await canRequestPackageInstalls();
+    if (!allowed) {
+      await openUnknownSourcesSettings();
+      throw const AppUpdateNeedsInstallPermission();
+    }
+
     final String? url = _chooseApkUrl(update);
     if (url == null) {
       throw const AppUpdateException('No APK URL available for update.');
     }
 
-    final File apkFile = await _downloadApk(
-      url: url,
-      buildNumber: update.effectiveLatestBuildNumber,
-      timeout: timeout,
-      onProgress: onProgress,
-    );
-
-    final bool allowed = await canRequestPackageInstalls();
-    if (!allowed) {
-      await openUnknownSourcesSettings();
-      throw AppUpdateNeedsInstallPermission(apkFile.path);
-    }
+    final int buildNumber = update.effectiveLatestBuildNumber;
+    final File apkFile = await _getExistingApkFile(buildNumber) ??
+        await _downloadApk(
+          url: url,
+          buildNumber: buildNumber,
+          timeout: timeout,
+          onProgress: onProgress,
+        );
 
     await _channel.invokeMethod<void>('installApk', <String, Object?>{
       'path': apkFile.path,
     });
+  }
+
+  Future<File?> _getExistingApkFile(int buildNumber) async {
+    try {
+      final Directory dir = await getTemporaryDirectory();
+      final String fileName = 'facts-update-$buildNumber.apk';
+      final File file = File('${dir.path}${Platform.pathSeparator}$fileName');
+      if (!await file.exists()) return null;
+      final int length = await file.length();
+      // Basic sanity: reject tiny/partial files.
+      if (length < 1024 * 1024) {
+        try {
+          await file.delete();
+        } catch (_) {
+          // Best-effort.
+        }
+        return null;
+      }
+      return file;
+    } catch (_) {
+      return null;
+    }
   }
 
   String? _chooseApkUrl(AppUpdateInfo update) {
@@ -412,6 +436,12 @@ class AppUpdateService {
         await sink.close();
       }
 
+      if (total > 0 && received != total) {
+        throw AppUpdateException(
+          'APK download incomplete ($received/$total bytes).',
+        );
+      }
+
       if (!await outFile.exists()) {
         throw const AppUpdateException('Download failed to write APK file.');
       }
@@ -442,10 +472,7 @@ class AppUpdateException implements Exception {
 }
 
 class AppUpdateNeedsInstallPermission extends AppUpdateException {
-  AppUpdateNeedsInstallPermission(this.apkPath)
-      : super('Install permission required.');
-
-  final String apkPath;
+  const AppUpdateNeedsInstallPermission() : super('Install permission required.');
 }
 
 class _AbiUpdateChoice {

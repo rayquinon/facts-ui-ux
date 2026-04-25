@@ -1033,11 +1033,7 @@ class _InstructorPageState extends State<InstructorPage> {
             ),
             if (_pendingOutboxCount > 0) ...<Widget>[
               const SizedBox(width: 8),
-              Icon(
-                Icons.sync,
-                size: 16,
-                color: theme.colorScheme.outline,
-              ),
+              Icon(Icons.sync, size: 16, color: theme.colorScheme.outline),
             ],
           ],
         ),
@@ -1181,7 +1177,9 @@ class _InstructorPageState extends State<InstructorPage> {
               effectiveResumeSessionId.trim().isEmpty) &&
           schedule.dayOfWeek != effectiveNow.weekday) {
         messenger.showSnackBar(
-          const SnackBar(content: Text('This session is not scheduled for today.')),
+          const SnackBar(
+            content: Text('This session is not scheduled for today.'),
+          ),
         );
         return;
       }
@@ -1207,14 +1205,14 @@ class _InstructorPageState extends State<InstructorPage> {
         }
 
         final DateTime earliestStart = scheduledStart.subtract(
-          const Duration(minutes: 15),
+          const Duration(minutes: 30),
         );
 
         if (effectiveNow.isBefore(earliestStart)) {
           messenger.showSnackBar(
             const SnackBar(
               content: Text(
-                'You can start a session up to 15 minutes before the scheduled start.',
+                'You can start a session up to 30 minutes before the scheduled start.',
               ),
             ),
           );
@@ -1237,6 +1235,7 @@ class _InstructorPageState extends State<InstructorPage> {
         subjectName: schedule.subjectName,
         section: schedule.section,
         term: schedule.term,
+        scheduleType: schedule.scheduleType,
         location: schedule.location,
         dayOfWeek: schedule.dayOfWeek,
         start: schedule.start,
@@ -2397,7 +2396,8 @@ class _InstructorSchedule {
     final DateTime earliestStart = scheduledStart.subtract(
       const Duration(minutes: 15),
     );
-    return !reference.isBefore(earliestStart) && reference.isBefore(scheduledEnd);
+    return !reference.isBefore(earliestStart) &&
+        reference.isBefore(scheduledEnd);
   }
 
   Duration timeUntilStart(DateTime reference) {

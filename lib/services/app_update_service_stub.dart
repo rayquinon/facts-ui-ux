@@ -28,8 +28,5 @@ class AppUpdateException implements Exception {
 }
 
 class AppUpdateNeedsInstallPermission extends AppUpdateException {
-  AppUpdateNeedsInstallPermission(this.apkPath)
-      : super('Install permission required.');
-
-  final String apkPath;
+  const AppUpdateNeedsInstallPermission() : super('Install permission required.');
 }

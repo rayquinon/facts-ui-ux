@@ -95,6 +95,98 @@ exports.getPasswordResetPhone = onCall({ cors: true }, async (request) => {
   };
 });
 
+function normalizePhoneInput(raw) {
+  const v = String(raw || '')
+    .trim()
+    .replace(/\s+/g, '')
+    .replace(/-/g, '')
+    .replace(/\(/g, '')
+    .replace(/\)/g, '');
+
+  // Accept common PH local formats and convert to E.164.
+  // 09xxxxxxxxx (11 digits) -> +639xxxxxxxxx
+  if (v.startsWith('09') && v.length === 11) {
+    return `+63${v.slice(1)}`;
+  }
+  // 9xxxxxxxxx (10 digits) -> +639xxxxxxxxx
+  if (v.startsWith('9') && v.length === 10) {
+    return `+63${v}`;
+  }
+  // 63xxxxxxxxxx -> +63xxxxxxxxxx
+  if (/^63\d+$/.test(v)) {
+    return `+${v}`;
+  }
+
+  return v;
+}
+
+function isValidE164(phone) {
+  // Loose E.164 check: + plus 7..15 digits.
+  return typeof phone === 'string' && /^\+\d{7,15}$/.test(phone);
+}
+
+exports.adminGetUserAuthPhoneNumber = onCall({ cors: true }, async (request) => {
+  requireAdmin(request);
+  const uid = request.data && request.data.uid ? String(request.data.uid).trim() : '';
+  if (!uid) {
+    throw new HttpsError('invalid-argument', 'uid is required');
+  }
+
+  let user;
+  try {
+    user = await getAuth().getUser(uid);
+  } catch (_) {
+    throw new HttpsError('not-found', 'User not found');
+  }
+
+  return {
+    ok: true,
+    uid,
+    phoneNumber: typeof user.phoneNumber === 'string' ? user.phoneNumber : '',
+  };
+});
+
+exports.adminSetUserAuthPhoneNumber = onCall({ cors: true }, async (request) => {
+  requireAdmin(request);
+  const uid = request.data && request.data.uid ? String(request.data.uid).trim() : '';
+  if (!uid) {
+    throw new HttpsError('invalid-argument', 'uid is required');
+  }
+  const raw = request.data && request.data.phoneNumber != null ? String(request.data.phoneNumber) : '';
+  const normalized = normalizePhoneInput(raw);
+
+  // Empty => clear the phone number.
+  if (!normalized) {
+    try {
+      await getAuth().updateUser(uid, { phoneNumber: null });
+    } catch (e) {
+      // If the user already has no phone number, ignore common no-op errors.
+      // Otherwise surface it.
+      console.warn('adminSetUserAuthPhoneNumber clear failed', e);
+      throw new HttpsError('unknown', 'Failed to clear phone number');
+    }
+    return { ok: true, uid, phoneNumber: '' };
+  }
+
+  if (!isValidE164(normalized)) {
+    throw new HttpsError('invalid-argument', 'Invalid phone number. Use E.164 (e.g. +63...)');
+  }
+
+  try {
+    const updated = await getAuth().updateUser(uid, { phoneNumber: normalized });
+    return {
+      ok: true,
+      uid,
+      phoneNumber: typeof updated.phoneNumber === 'string' ? updated.phoneNumber : normalized,
+    };
+  } catch (e) {
+    console.warn('adminSetUserAuthPhoneNumber update failed', e);
+    // Preserve Firebase Auth semantics when possible.
+    const msg = String((e && e.message) || 'Failed to update phone number');
+    throw new HttpsError('unknown', msg);
+  }
+});
+
 function requireSignedIn(request) {
   const auth = request.auth;
   if (!auth) {

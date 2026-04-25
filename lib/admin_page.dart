@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math' as math;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
@@ -3405,8 +3404,6 @@ class _UserManagementPanel extends StatefulWidget {
 
 enum _BulkUserAction {
   editProfile,
-  fixFaceEnrollment,
-  migrateFaceEnrollmentToVps,
   clearFaceEnrollment,
   deleteUser,
 }
@@ -3724,52 +3721,6 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     };
   }
 
-  List<double> _l2NormalizeVector(List<double> v) {
-    if (v.isEmpty) return <double>[];
-    double sumSquares = 0;
-    for (final double x in v) {
-      sumSquares += x * x;
-    }
-    if (sumSquares <= 0) return <double>[];
-    final double inv = 1.0 / math.sqrt(sumSquares);
-    return v.map((double x) => x * inv).toList(growable: false);
-  }
-
-  List<double>? _extractLegacyEmbedding(Map<String, dynamic> data) {
-    final Object? rawMulti = data['faceEmbeds'];
-    if (rawMulti is List) {
-      for (final Object? item in rawMulti) {
-        List<num>? nums;
-        if (item is List) {
-          nums = item.whereType<num>().toList(growable: false);
-        } else if (item is Map) {
-          final Object? v = item['v'];
-          if (v is List) {
-            nums = v.whereType<num>().toList(growable: false);
-          }
-        }
-        if (nums == null || nums.isEmpty) continue;
-        final List<double> vec = nums
-            .where((num n) => n.isFinite)
-            .map((num n) => n.toDouble())
-            .toList(growable: false);
-        if (vec.isNotEmpty) return vec;
-      }
-    }
-
-    final Object? rawSingle = data['faceEmbed'];
-    if (rawSingle is List) {
-      final List<double> vec = rawSingle
-          .whereType<num>()
-          .where((num n) => n.isFinite)
-          .map((num n) => n.toDouble())
-          .toList(growable: false);
-      if (vec.isNotEmpty) return vec;
-    }
-
-    return null;
-  }
-
   Future<void> _refreshUsersById(Iterable<String> uids) async {
     final List<String> ids = uids.toSet().toList(growable: false);
     if (ids.isEmpty) return;
@@ -3956,186 +3907,6 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
       }
       p.currentLabel = currentLabel;
     });
-  }
-
-  Future<void> _runBulkFixFaceEnrollment() async {
-    if (_bulkActionRunning) return;
-    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
-        _selectedDocs();
-    if (docs.isEmpty) return;
-
-    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docsWithEnrollment =
-        docs
-            .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-              final Map<String, dynamic> data = _patchedUserData(doc);
-              return _hasLegacyFaceEnrollment(data);
-            })
-            .toList(growable: false);
-
-    final int totalTargeted = docsWithEnrollment.length;
-    if (totalTargeted == 0) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('No selected users have face enrollment data.'),
-        ),
-      );
-      return;
-    }
-
-    final bool confirmed = await _confirmBulkAction(
-      title: 'Fix Face Enrollment',
-      message:
-          'Are you sure you want to Fix Face Enrollment of $totalTargeted selected user(s)?',
-      confirmLabel: 'Fix',
-    );
-    if (!confirmed) return;
-
-    setState(() => _bulkActionRunning = true);
-    _startBulkProgress('Fixing face enrollment', totalTargeted);
-    int success = 0;
-    int failed = 0;
-    final Set<String> touched = <String>{};
-    for (final QueryDocumentSnapshot<Map<String, dynamic>> doc
-        in docsWithEnrollment) {
-      final String name = _resolveDisplayName(doc.data(), doc.id);
-      try {
-        await _functions.httpsCallable('adminMigrateFaceEmbeds').call(
-          <String, dynamic>{'uid': doc.id},
-        );
-        touched.add(doc.id);
-        success++;
-        _tickBulkProgress(succeeded: true, currentLabel: name);
-      } catch (_) {
-        failed++;
-        _tickBulkProgress(succeeded: false, currentLabel: name);
-      }
-    }
-
-    if (!mounted) return;
-    setState(() {
-      _bulkActionRunning = false;
-      _multiSelectEnabled = false;
-      _selectedUserIds.clear();
-    });
-    _finishBulkProgress();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Fix completed. Success: $success, Failed: $failed.'),
-      ),
-    );
-
-    // Background refresh only for the affected users.
-    unawaited(_refreshUsersById(touched));
-  }
-
-  Future<void> _runBulkMigrateFaceEnrollmentToVps() async {
-    if (_bulkActionRunning) return;
-    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
-        _selectedDocs();
-    if (docs.isEmpty) return;
-
-    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docsWithLegacy =
-        docs
-            .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-              final Map<String, dynamic> data = _patchedUserData(doc);
-              return _hasLegacyFaceEnrollment(data);
-            })
-            .toList(growable: false);
-
-    final int totalTargeted = docsWithLegacy.length;
-    if (totalTargeted == 0) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('No selected users have legacy Firestore embeddings.'),
-        ),
-      );
-      return;
-    }
-
-    final bool confirmed = await _confirmBulkAction(
-      title: 'Migrate Face Enrollment to VPS',
-      message:
-          'This will copy each selected user\'s legacy Firestore embedding to the VPS, then delete the embedding fields from Firestore.\n\nContinue for $totalTargeted user(s)?',
-      confirmLabel: 'Migrate',
-    );
-    if (!confirmed) return;
-
-    setState(() => _bulkActionRunning = true);
-    _startBulkProgress('Migrating face enrollment to VPS', totalTargeted);
-
-    int success = 0;
-    int failed = 0;
-    final Set<String> touched = <String>{};
-    const VpsEmbeddingsApiClient vpsClient = VpsEmbeddingsApiClient();
-
-    for (final QueryDocumentSnapshot<Map<String, dynamic>> doc
-        in docsWithLegacy) {
-      final String name = _resolveDisplayName(doc.data(), doc.id);
-      try {
-        final Map<String, dynamic> data = _patchedUserData(doc);
-        final List<double>? legacy = _extractLegacyEmbedding(data);
-        if (legacy == null) {
-          failed++;
-          _tickBulkProgress(succeeded: false, currentLabel: name);
-          continue;
-        }
-
-        final List<double> normalized = _l2NormalizeVector(legacy);
-        final List<double> payload = normalized.isNotEmpty
-            ? normalized
-            : legacy;
-
-        await vpsClient.putEmbeddingForUid(
-          doc.id,
-          embedding: payload,
-          model: 'onnx_v1_migrated',
-          forceRefreshToken: success == 0,
-        );
-
-        // Best-effort cleanup: delete legacy Firestore embedding fields via Admin SDK.
-        // VPS is the source of truth; migration should still be considered successful
-        // if the VPS write succeeded.
-        try {
-          await _functions.httpsCallable('adminClearFaceEnrollment').call(
-            <String, dynamic>{'uid': doc.id},
-          );
-        } catch (_) {
-          // Ignore; cleanup can be retried later.
-        }
-
-        touched.add(doc.id);
-        success++;
-        _tickBulkProgress(succeeded: true, currentLabel: name);
-
-        if (mounted) {
-          setState(() {
-            _applyVpsEnrollmentPatch(doc.id, true);
-          });
-        }
-      } catch (_) {
-        failed++;
-        _tickBulkProgress(succeeded: false, currentLabel: name);
-      }
-    }
-
-    if (!mounted) return;
-    setState(() {
-      _bulkActionRunning = false;
-      _multiSelectEnabled = false;
-      _selectedUserIds.clear();
-    });
-    _finishBulkProgress();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          'Migration completed. Success: $success, Failed: $failed.',
-        ),
-      ),
-    );
-
-    unawaited(_refreshUsersById(touched));
   }
 
   Future<void> _runBulkClearFaceEnrollment() async {
@@ -4590,58 +4361,6 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     }
   }
 
-  Future<void> _migrateFaceEnrollmentFormat(String uid) async {
-    final bool? confirmed = await showDialog<bool>(
-      context: context,
-      builder: (BuildContext context) => AlertDialog(
-        title: const Text('Fix face enrollment format?'),
-        content: const Text(
-          'This will convert legacy face embedding storage to the current format. '
-          'It does not change the embedding values, only how they are stored.',
-        ),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Fix'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-
-    try {
-      final result = await _functions
-          .httpsCallable('adminMigrateFaceEmbeds')
-          .call(<String, dynamic>{'uid': uid});
-      final data = result.data;
-      final bool migrated =
-          data is Map &&
-          (data['migrated'] == true || data['migrated'] == 'true');
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            migrated
-                ? 'Face enrollment format updated.'
-                : 'No migration needed for this user.',
-          ),
-        ),
-      );
-
-      // Background refresh only for this user (keeps pagination intact).
-      unawaited(_refreshUsersById(<String>[uid]));
-    } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to migrate enrollment: $error')),
-      );
-    }
-  }
-
   Future<void> _clearFaceEnrollment(String uid) async {
     final bool? confirmed = await showDialog<bool>(
       context: context,
@@ -4691,80 +4410,6 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to clear enrollment: $error')),
       );
-    }
-  }
-
-  Future<void> _migrateFaceEnrollmentToVps(String uid) async {
-    final bool? confirmed = await showDialog<bool>(
-      context: context,
-      builder: (BuildContext context) => AlertDialog(
-        title: const Text('Migrate face enrollment to VPS?'),
-        content: const Text(
-          'This will copy the legacy Firestore embedding for this account to the VPS, then delete the embedding fields from Firestore.\n\nUse this only as a one-time migration for existing records.',
-        ),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Migrate'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-
-    try {
-      final DocumentSnapshot<Map<String, dynamic>> snap = await _firestore
-          .collection('users')
-          .doc(uid)
-          .get(const GetOptions(source: Source.server));
-      final Map<String, dynamic> data = snap.data() ?? <String, dynamic>{};
-      final List<double>? legacy = _extractLegacyEmbedding(data);
-      if (legacy == null) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No legacy Firestore embedding found.')),
-        );
-        return;
-      }
-
-      final List<double> normalized = _l2NormalizeVector(legacy);
-      final List<double> payload = normalized.isNotEmpty ? normalized : legacy;
-
-      const VpsEmbeddingsApiClient vpsClient = VpsEmbeddingsApiClient();
-      await vpsClient.putEmbeddingForUid(
-        uid,
-        embedding: payload,
-        model: 'onnx_v1_migrated',
-        forceRefreshToken: true,
-      );
-
-      // Best-effort cleanup: delete legacy Firestore embedding fields via Admin SDK.
-      try {
-        await _functions.httpsCallable('adminClearFaceEnrollment').call(
-          <String, dynamic>{'uid': uid},
-        );
-      } catch (_) {
-        // Ignore; VPS is the source of truth.
-      }
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Migration completed.')));
-
-      setState(() {
-        _applyVpsEnrollmentPatch(uid, true);
-      });
-      unawaited(_refreshUsersById(<String>[uid]));
-    } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Failed to migrate: $error')));
     }
   }
 
@@ -4842,11 +4487,31 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     if (data == null) return;
     final String role = (data['role'] as String?)?.toLowerCase() ?? '';
 
+    String originalPhoneNumber = '';
+    try {
+      final result = await _functions
+          .httpsCallable('adminGetUserAuthPhoneNumber')
+          .call(<String, dynamic>{'uid': doc.id});
+      final Object? raw = (result.data is Map)
+          ? (result.data as Map)['phoneNumber']
+          : null;
+      if (raw is String) {
+        originalPhoneNumber = raw.trim();
+      }
+    } catch (_) {
+      // Best-effort: if not available, show empty.
+    }
+
+    if (!mounted) return;
+
     final TextEditingController nameController = TextEditingController(
       text:
           (data['displayName'] as String?) ??
           (data['Full Name'] as String?) ??
           '',
+    );
+    final TextEditingController phoneController = TextEditingController(
+      text: originalPhoneNumber,
     );
     final TextEditingController departmentController = TextEditingController(
       text: (data['Department'] as String?) ?? '',
@@ -4857,6 +4522,27 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     final TextEditingController studentIdController = TextEditingController(
       text: (data['Student ID'] as String?) ?? '',
     );
+
+    String normalizePhone(String input) {
+      final String value = input
+          .trim()
+          .replaceAll(' ', '')
+          .replaceAll('-', '')
+          .replaceAll('(', '')
+          .replaceAll(')', '');
+
+      // Accept common PH local formats and convert to E.164.
+      if (value.startsWith('09') && value.length == 11) {
+        return '+63${value.substring(1)}';
+      }
+      if (value.startsWith('9') && value.length == 10) {
+        return '+63$value';
+      }
+      if (RegExp(r'^63\d+$').hasMatch(value)) {
+        return '+$value';
+      }
+      return value;
+    }
 
     bool saving = false;
     final bool? saved = await showDialog<bool>(
@@ -4874,6 +4560,14 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                     TextField(
                       controller: nameController,
                       decoration: const InputDecoration(labelText: 'Full name'),
+                    ),
+                    TextField(
+                      controller: phoneController,
+                      keyboardType: TextInputType.phone,
+                      decoration: const InputDecoration(
+                        labelText: 'Phone number',
+                        hintText: '+63...',
+                      ),
                     ),
                     if (role == 'instructor')
                       TextField(
@@ -4910,6 +4604,13 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                       : () async {
                           set(() => saving = true);
                           try {
+                            final String desiredPhone = normalizePhone(
+                              phoneController.text,
+                            );
+                            final String originalPhone = normalizePhone(
+                              originalPhoneNumber,
+                            );
+
                             final Map<String, Object?> update =
                                 <String, Object?>{
                                   'displayName': nameController.text.trim(),
@@ -4942,10 +4643,28 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                   'section': sectionController.text.trim(),
                                 },
                               );
+
+                              if (desiredPhone != originalPhone) {
+                                await _functions
+                                    .httpsCallable('adminSetUserAuthPhoneNumber')
+                                    .call(<String, dynamic>{
+                                      'uid': doc.id,
+                                      'phoneNumber': desiredPhone,
+                                    });
+                              }
                               if (context.mounted) {
                                 Navigator.of(context).pop(true);
                               }
                               return;
+                            }
+
+                            if (desiredPhone != originalPhone) {
+                              await _functions
+                                  .httpsCallable('adminSetUserAuthPhoneNumber')
+                                  .call(<String, dynamic>{
+                                    'uid': doc.id,
+                                    'phoneNumber': desiredPhone,
+                                  });
                             }
                             await _firestore
                                 .collection('users')
@@ -4979,6 +4698,7 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     );
 
     nameController.dispose();
+    phoneController.dispose();
     departmentController.dispose();
     sectionController.dispose();
     studentIdController.dispose();
@@ -5249,10 +4969,6 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                             switch (action) {
                               case _BulkUserAction.editProfile:
                                 await _runBulkEditProfiles();
-                              case _BulkUserAction.fixFaceEnrollment:
-                                await _runBulkFixFaceEnrollment();
-                              case _BulkUserAction.migrateFaceEnrollmentToVps:
-                                await _runBulkMigrateFaceEnrollmentToVps();
                               case _BulkUserAction.clearFaceEnrollment:
                                 await _runBulkClearFaceEnrollment();
                               case _BulkUserAction.deleteUser:
@@ -5264,15 +4980,6 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                               PopupMenuItem<_BulkUserAction>(
                                 value: _BulkUserAction.editProfile,
                                 child: Text('Edit profile'),
-                              ),
-                              PopupMenuItem<_BulkUserAction>(
-                                value: _BulkUserAction.fixFaceEnrollment,
-                                child: Text('Fix Face Enrollment'),
-                              ),
-                              PopupMenuItem<_BulkUserAction>(
-                                value:
-                                    _BulkUserAction.migrateFaceEnrollmentToVps,
-                                child: Text('Migrate Face Enrollment to VPS'),
                               ),
                               PopupMenuItem<_BulkUserAction>(
                                 value: _BulkUserAction.clearFaceEnrollment,
@@ -5668,16 +5375,6 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                               case 'approve':
                                                 _approveInstructor(doc.id);
                                                 break;
-                                              case 'migrateEnrollment':
-                                                _migrateFaceEnrollmentFormat(
-                                                  doc.id,
-                                                );
-                                                break;
-                                              case 'migrateToVps':
-                                                _migrateFaceEnrollmentToVps(
-                                                  doc.id,
-                                                );
-                                                break;
                                               case 'clearEnrollment':
                                                 _clearFaceEnrollment(doc.id);
                                                 break;
@@ -5699,20 +5396,6 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                                   value: 'approve',
                                                   child: Text(
                                                     'Approve instructor',
-                                                  ),
-                                                ),
-                                              if (hasLegacyEnrollment)
-                                                const PopupMenuItem<String>(
-                                                  value: 'migrateEnrollment',
-                                                  child: Text(
-                                                    'Fix face enrollment format',
-                                                  ),
-                                                ),
-                                              if (hasLegacyEnrollment)
-                                                const PopupMenuItem<String>(
-                                                  value: 'migrateToVps',
-                                                  child: Text(
-                                                    'Migrate face enrollment to VPS',
                                                   ),
                                                 ),
                                               if (hasEnrollment ||
