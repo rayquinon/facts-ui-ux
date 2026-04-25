@@ -312,7 +312,8 @@ class AppUpdateService {
     }
 
     final int buildNumber = update.effectiveLatestBuildNumber;
-    final File apkFile = await _getExistingApkFile(buildNumber) ??
+    final File apkFile =
+        await _getExistingApkFile(buildNumber) ??
         await _downloadApk(
           url: url,
           buildNumber: buildNumber,
@@ -379,6 +380,32 @@ class AppUpdateService {
     required Duration timeout,
     void Function(int receivedBytes, int totalBytes)? onProgress,
   }) async {
+    AppUpdateException? lastError;
+    for (int attempt = 1; attempt <= 2; attempt++) {
+      try {
+        return await _downloadApkOnce(
+          url: url,
+          buildNumber: buildNumber,
+          timeout: timeout,
+          onProgress: onProgress,
+        );
+      } on AppUpdateException catch (e) {
+        lastError = e;
+        if (attempt >= 2) {
+          rethrow;
+        }
+      }
+    }
+
+    throw lastError ?? const AppUpdateException('APK download failed.');
+  }
+
+  Future<File> _downloadApkOnce({
+    required String url,
+    required int buildNumber,
+    required Duration timeout,
+    void Function(int receivedBytes, int totalBytes)? onProgress,
+  }) async {
     final Directory dir = await getTemporaryDirectory();
     final String fileName = 'facts-update-$buildNumber.apk';
     final File outFile = File('${dir.path}${Platform.pathSeparator}$fileName');
@@ -394,6 +421,8 @@ class AppUpdateService {
 
     final HttpClient client = HttpClient();
     client.connectionTimeout = timeout;
+    // Keep transfer bytes as-is so size checks are reliable for APK binaries.
+    client.autoUncompress = false;
 
     try {
       final Uri parsed = Uri.parse(url);
@@ -405,10 +434,11 @@ class AppUpdateService {
         },
       );
 
-      final HttpClientRequest request = await client.getUrl(uri).timeout(
-        timeout,
-      );
+      final HttpClientRequest request = await client
+          .getUrl(uri)
+          .timeout(timeout);
       request.headers.set(HttpHeaders.acceptHeader, '*/*');
+      request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
 
       final HttpClientResponse response = await request.close().timeout(
         timeout,
@@ -436,13 +466,14 @@ class AppUpdateService {
         await sink.close();
       }
 
-      if (total > 0 && received != total) {
+      final int actual = await outFile.length();
+      if (total > 0 && actual < total) {
         throw AppUpdateException(
-          'APK download incomplete ($received/$total bytes).',
+          'APK download incomplete ($actual/$total bytes).',
         );
       }
 
-      if (!await outFile.exists()) {
+      if (!await outFile.exists() || actual <= 0) {
         throw const AppUpdateException('Download failed to write APK file.');
       }
 
@@ -472,7 +503,8 @@ class AppUpdateException implements Exception {
 }
 
 class AppUpdateNeedsInstallPermission extends AppUpdateException {
-  const AppUpdateNeedsInstallPermission() : super('Install permission required.');
+  const AppUpdateNeedsInstallPermission()
+    : super('Install permission required.');
 }
 
 class _AbiUpdateChoice {
