@@ -21,6 +21,7 @@ class AnalyticsDashboardPage extends StatefulWidget {
 
 class _AnalyticsDashboardPageState extends State<AnalyticsDashboardPage> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  static final RegExp _dateKeyPattern = RegExp(r'^\d{4}-\d{2}-\d{2}$');
 
   late DateTimeRange _range;
   bool _loading = false;
@@ -101,10 +102,17 @@ class _AnalyticsDashboardPageState extends State<AnalyticsDashboardPage> {
           .orderBy('dateKey')
           .get();
 
-      final List<_DailyAnalyticsRow> rows = snap.docs
+      List<_DailyAnalyticsRow> rows = snap.docs
           .map(_DailyAnalyticsRow.fromDoc)
           .whereType<_DailyAnalyticsRow>()
           .toList(growable: false);
+
+      if (rows.isEmpty) {
+        rows = await _loadRowsFromSessionAttendees(
+          startKey: startKey,
+          endKey: endKey,
+        );
+      }
 
       if (!mounted) return;
       setState(() {
@@ -120,6 +128,113 @@ class _AnalyticsDashboardPageState extends State<AnalyticsDashboardPage> {
         _error = e;
       });
     }
+  }
+
+  Future<List<_DailyAnalyticsRow>> _loadRowsFromSessionAttendees({
+    required String startKey,
+    required String endKey,
+  }) async {
+    final QuerySnapshot<Map<String, dynamic>> sessionSnap = await _firestore
+        .collection('attendanceSessions')
+        .where('classId', isEqualTo: widget.classInfo.id)
+        .get();
+
+    final Map<String, _DailyAggregate> byDate = <String, _DailyAggregate>{};
+
+    for (final QueryDocumentSnapshot<Map<String, dynamic>> sessionDoc
+        in sessionSnap.docs) {
+      final Map<String, dynamic> session = sessionDoc.data();
+      final String? dateKey = _sessionDateKey(session);
+      if (dateKey == null) {
+        continue;
+      }
+      if (dateKey.compareTo(startKey) < 0 || dateKey.compareTo(endKey) > 0) {
+        continue;
+      }
+
+      final DocumentSnapshot<Map<String, dynamic>> attendeeSnap =
+          await sessionDoc.reference
+              .collection('attendees')
+              .doc(widget.studentId)
+              .get();
+      if (!attendeeSnap.exists) {
+        continue;
+      }
+
+      final Map<String, dynamic>? attendee = attendeeSnap.data();
+      if (attendee == null) {
+        continue;
+      }
+
+      final String status = ((attendee['status'] as String?) ?? '')
+          .trim()
+          .toLowerCase();
+      final int minutesLate = _asInt(attendee['minutesLate']);
+      final int minutesAbsent = _asInt(attendee['minutesAbsent']);
+
+      final _DailyAggregate agg = byDate.putIfAbsent(
+        dateKey,
+        () => _DailyAggregate(dateKey: dateKey),
+      );
+
+      switch (status) {
+        case 'present':
+        case 'excused':
+          agg.presentCount += 1;
+          break;
+        case 'late':
+          agg.lateCount += 1;
+          agg.lateMinutes += minutesLate;
+          break;
+        case 'absent':
+          agg.absentCount += 1;
+          agg.absentMinutes += minutesAbsent;
+          break;
+      }
+    }
+
+    final List<_DailyAnalyticsRow> rows =
+        byDate.values
+            .map((_DailyAggregate aggregate) => aggregate.toRow())
+            .toList(growable: false)
+          ..sort((a, b) => a.dateKey.compareTo(b.dateKey));
+    return rows;
+  }
+
+  String? _sessionDateKey(Map<String, dynamic> session) {
+    final String? effective = (session['effectiveDateKey'] as String?)?.trim();
+    if (_isDateKey(effective)) {
+      return effective;
+    }
+
+    final String? dateKey = (session['dateKey'] as String?)?.trim();
+    if (_isDateKey(dateKey)) {
+      return dateKey;
+    }
+
+    final Object? startedAt = session['startedAt'];
+    if (startedAt is Timestamp) {
+      return _dateKey(startedAt.toDate());
+    }
+
+    return null;
+  }
+
+  bool _isDateKey(String? value) {
+    if (value == null || value.isEmpty) {
+      return false;
+    }
+    return _dateKeyPattern.hasMatch(value);
+  }
+
+  int _asInt(Object? value) {
+    if (value is num) {
+      return value.round();
+    }
+    if (value is String) {
+      return int.tryParse(value.trim()) ?? 0;
+    }
+    return 0;
   }
 
   @override
@@ -323,6 +438,28 @@ class _DailyAnalyticsRow {
       absentCount: asInt(data['absentCount']),
       lateMinutes: asInt(data['lateMinutes']),
       absentMinutes: asInt(data['absentMinutes']),
+    );
+  }
+}
+
+class _DailyAggregate {
+  _DailyAggregate({required this.dateKey});
+
+  final String dateKey;
+  int presentCount = 0;
+  int lateCount = 0;
+  int absentCount = 0;
+  int lateMinutes = 0;
+  int absentMinutes = 0;
+
+  _DailyAnalyticsRow toRow() {
+    return _DailyAnalyticsRow(
+      dateKey: dateKey,
+      presentCount: presentCount,
+      lateCount: lateCount,
+      absentCount: absentCount,
+      lateMinutes: lateMinutes,
+      absentMinutes: absentMinutes,
     );
   }
 }

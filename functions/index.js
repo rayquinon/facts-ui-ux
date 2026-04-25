@@ -1753,11 +1753,31 @@ async function recomputeAttendanceStatsForClassFromSessions({ db, classId }) {
 
   // Accumulators
   const totals = new Map();
+  const dailyByStudent = new Map();
+
   function ensureStudent(uid) {
     if (!totals.has(uid)) {
       totals.set(uid, { presentCount: 0, lateCount: 0, absentCount: 0, lateMinutes: 0, absentMinutes: 0 });
     }
     return totals.get(uid);
+  }
+
+  function ensureDaily(uid, dateKey) {
+    let byDate = dailyByStudent.get(uid);
+    if (!byDate) {
+      byDate = new Map();
+      dailyByStudent.set(uid, byDate);
+    }
+    if (!byDate.has(dateKey)) {
+      byDate.set(dateKey, {
+        presentCount: 0,
+        lateCount: 0,
+        absentCount: 0,
+        lateMinutes: 0,
+        absentMinutes: 0,
+      });
+    }
+    return byDate.get(dateKey);
   }
 
   // Build from sessions.
@@ -1799,15 +1819,24 @@ async function recomputeAttendanceStatsForClassFromSessions({ db, classId }) {
         t.absentMinutes += clampInt(minutesAbsent, 0);
       }
 
-      // Also set per-day rollup absolute values for this day.
-      // (Write later; keep in a separate map to batch.)
+      const d = ensureDaily(uid, dateKey);
+      if (status === 'present') {
+        d.presentCount += 1;
+      } else if (status === 'late') {
+        d.lateCount += 1;
+        d.lateMinutes += clampInt(minutesLate, 0);
+      } else if (status === 'absent') {
+        d.absentCount += 1;
+        d.absentMinutes += clampInt(minutesAbsent, 0);
+      }
     }
   }
 
   // Write totals (set absolute values).
   let batch = db.batch();
   let ops = 0;
-  let written = 0;
+  let statsDocsWritten = 0;
+  let dailyDocsWritten = 0;
 
   for (const uid of rosterUids) {
     const t = totals.get(uid) || { presentCount: 0, lateCount: 0, absentCount: 0, lateMinutes: 0, absentMinutes: 0 };
@@ -1825,17 +1854,142 @@ async function recomputeAttendanceStatsForClassFromSessions({ db, classId }) {
       { merge: true }
     );
     ops += 1;
-    written += 1;
+    statsDocsWritten += 1;
     if (ops >= 450) {
       await batch.commit();
       batch = db.batch();
       ops = 0;
     }
   }
+
+  for (const uid of rosterUids) {
+    const byDate = dailyByStudent.get(uid);
+    if (!byDate || !byDate.size) continue;
+
+    for (const [dateKey, d] of byDate.entries()) {
+      const dailyRef = db
+        .collection('classes')
+        .doc(cid)
+        .collection('students')
+        .doc(uid)
+        .collection('daily')
+        .doc(dateKey);
+
+      batch.set(
+        dailyRef,
+        {
+          classId: cid,
+          studentId: uid,
+          dateKey,
+          presentCount: clampDown(d.presentCount),
+          lateCount: clampDown(d.lateCount),
+          absentCount: clampDown(d.absentCount),
+          lateMinutes: clampDown(d.lateMinutes),
+          absentMinutes: clampDown(d.absentMinutes),
+          updatedAt: FieldValue.serverTimestamp(),
+          lastRecomputedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      ops += 1;
+      dailyDocsWritten += 1;
+      if (ops >= 450) {
+        await batch.commit();
+        batch = db.batch();
+        ops = 0;
+      }
+    }
+  }
+
   if (ops) await batch.commit();
 
-  return { ok: true, recomputed: true, classId: cid, section, rosterCount: rosterUids.length, statsDocsWritten: written };
+  return {
+    ok: true,
+    recomputed: true,
+    classId: cid,
+    section,
+    rosterCount: rosterUids.length,
+    statsDocsWritten,
+    dailyDocsWritten,
+  };
 }
+
+exports.reconcileAttendanceAnalyticsDaily = onSchedule(
+  {
+    schedule: 'every 30 minutes',
+    timeZone: 'Asia/Manila',
+    timeoutSeconds: 540,
+  },
+  async () => {
+    const db = getFirestore();
+    const stateRef = db.collection('adminSettings').doc('analyticsReconcileState');
+
+    const stateSnap = await stateRef.get();
+    const state = stateSnap.exists ? stateSnap.data() || {} : {};
+    const lastClassId = typeof state.lastClassId === 'string' ? state.lastClassId.trim() : '';
+
+    const limit = 5;
+    let query = db.collection('classes').orderBy(FieldPath.documentId()).limit(limit);
+    if (lastClassId) {
+      query = query.startAfter(lastClassId);
+    }
+
+    let classesSnap = await query.get();
+    let wrapped = false;
+
+    // Reached the end of the class list; wrap around to the start.
+    if (classesSnap.empty && lastClassId) {
+      wrapped = true;
+      classesSnap = await db.collection('classes').orderBy(FieldPath.documentId()).limit(limit).get();
+    }
+
+    if (classesSnap.empty) {
+      await stateRef.set(
+        {
+          lastClassId: null,
+          wrapped,
+          processedClasses: 0,
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+      return;
+    }
+
+    let processedClasses = 0;
+    let recomputedClasses = 0;
+    const errors = [];
+
+    for (const classDoc of classesSnap.docs) {
+      processedClasses += 1;
+      try {
+        const result = await recomputeAttendanceStatsForClassFromSessions({
+          db,
+          classId: classDoc.id,
+        });
+        if (result && result.recomputed) {
+          recomputedClasses += 1;
+        }
+      } catch (error) {
+        errors.push({ classId: classDoc.id, message: String(error && error.message ? error.message : error) });
+      }
+    }
+
+    const lastProcessedClassId = classesSnap.docs[classesSnap.docs.length - 1].id;
+    await stateRef.set(
+      {
+        lastClassId: lastProcessedClassId,
+        wrapped,
+        processedClasses,
+        recomputedClasses,
+        errors,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+  }
+);
 
 exports.adminBackfillAttendanceForSession = onCall({ cors: true, timeoutSeconds: 300 }, async (request) => {
   requireAdmin(request);
