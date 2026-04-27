@@ -44,6 +44,7 @@ class _AdminPageState extends State<AdminPage> {
   final ExcuseRequestService _excuseService = ExcuseRequestService();
   bool _isApprovingExcuse = false;
   bool _isDeletingExcuse = false;
+  bool _isStartingDatabaseBackup = false;
   static const List<_SectionNavItem> _navItems = <_SectionNavItem>[
     _SectionNavItem(
       _AdminSection.overview,
@@ -115,6 +116,53 @@ class _AdminPageState extends State<AdminPage> {
     Navigator.of(
       context,
     ).pushNamedAndRemoveUntil('/login', (Route<dynamic> route) => false);
+  }
+
+  Future<void> _startDatabaseBackup() async {
+    if (_isStartingDatabaseBackup) return;
+    setState(() => _isStartingDatabaseBackup = true);
+    try {
+      final HttpsCallableResult<dynamic> result =
+          await FirebaseFunctions.instanceFor(
+            region: 'us-central1',
+          ).httpsCallable('adminStartDatabaseBackup').call();
+
+      final dynamic data = result.data;
+      final Map<String, dynamic> map = data is Map
+          ? data.cast<String, dynamic>()
+          : <String, dynamic>{};
+      final String outputUriPrefix =
+          (map['outputUriPrefix'] as String?)?.trim() ?? '';
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            outputUriPrefix.isEmpty
+                ? 'Database back-up started.'
+                : 'Database back-up started: $outputUriPrefix',
+          ),
+          duration: const Duration(seconds: 5),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      String message = 'Failed to start database back-up.';
+      if (error is FirebaseFunctionsException &&
+          error.message != null &&
+          error.message!.trim().isNotEmpty) {
+        message = error.message!.trim();
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    } finally {
+      if (mounted) {
+        setState(() => _isStartingDatabaseBackup = false);
+      } else {
+        _isStartingDatabaseBackup = false;
+      }
+    }
   }
 
   Widget _buildAdminDrawer() {
@@ -221,9 +269,28 @@ class _AdminPageState extends State<AdminPage> {
               title: const Text('Instructor Sessions Report'),
               onTap: () {
                 Navigator.of(context).pop();
-                Navigator.of(context)
-                    .pushNamed(InstructorSessionsReportPage.routeName);
+                Navigator.of(
+                  context,
+                ).pushNamed(InstructorSessionsReportPage.routeName);
               },
+            ),
+            ListTile(
+              leading: const Icon(Icons.backup_outlined),
+              title: const Text('Database Back-up'),
+              trailing: _isStartingDatabaseBackup
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : null,
+              enabled: !_isStartingDatabaseBackup,
+              onTap: _isStartingDatabaseBackup
+                  ? null
+                  : () async {
+                      Navigator.of(context).pop();
+                      await _startDatabaseBackup();
+                    },
             ),
             const Divider(height: 1),
             ListTile(
@@ -3402,11 +3469,7 @@ class _UserManagementPanel extends StatefulWidget {
   State<_UserManagementPanel> createState() => _UserManagementPanelState();
 }
 
-enum _BulkUserAction {
-  editProfile,
-  clearFaceEnrollment,
-  deleteUser,
-}
+enum _BulkUserAction { editProfile, clearFaceEnrollment, deleteUser }
 
 class _BulkProgressInfo {
   _BulkProgressInfo({required this.label, required this.total});
@@ -4646,7 +4709,9 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
 
                               if (desiredPhone != originalPhone) {
                                 await _functions
-                                    .httpsCallable('adminSetUserAuthPhoneNumber')
+                                    .httpsCallable(
+                                      'adminSetUserAuthPhoneNumber',
+                                    )
                                     .call(<String, dynamic>{
                                       'uid': doc.id,
                                       'phoneNumber': desiredPhone,
@@ -6692,8 +6757,7 @@ class _AttendanceSessionDetailsDialog extends StatelessWidget {
           final String details = error.details?.toString() ?? '';
           message = [
             '[${error.code}]',
-            if ((error.message ?? '').trim().isNotEmpty)
-              error.message!.trim(),
+            if ((error.message ?? '').trim().isNotEmpty) error.message!.trim(),
             if (details.trim().isNotEmpty) details.trim(),
           ].join(' ');
         }

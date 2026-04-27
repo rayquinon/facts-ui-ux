@@ -5,6 +5,7 @@ const { initializeApp } = require('firebase-admin/app');
 const { getAuth } = require('firebase-admin/auth');
 const { getMessaging } = require('firebase-admin/messaging');
 const { getFirestore, FieldValue, FieldPath } = require('firebase-admin/firestore');
+const { GoogleAuth } = require('google-auth-library');
 
 initializeApp();
 
@@ -1366,6 +1367,99 @@ function toHttpsError(step, error) {
   const message = error && error.message ? String(error.message) : String(error);
   return new HttpsError(codeHint, `${step} failed: ${message}`);
 }
+
+exports.adminStartDatabaseBackup = onCall({ cors: true, timeoutSeconds: 120 }, async (request) => {
+  requireAdmin(request);
+
+  const projectId =
+    process.env.GCLOUD_PROJECT ||
+    process.env.GCP_PROJECT ||
+    process.env.FIREBASE_CONFIG && (() => {
+      try {
+        const cfg = JSON.parse(process.env.FIREBASE_CONFIG);
+        return typeof cfg.projectId === 'string' ? cfg.projectId : '';
+      } catch (_) {
+        return '';
+      }
+    })() ||
+    '';
+
+  if (!projectId) {
+    throw new HttpsError('failed-precondition', 'Missing project id for backup export.');
+  }
+
+  const rawBucket = request.data && request.data.bucket ? String(request.data.bucket).trim() : '';
+  const bucket = rawBucket || process.env.FIRESTORE_BACKUP_BUCKET || `${projectId}.appspot.com`;
+  const now = new Date();
+  const stamp = now.toISOString().replace(/[.:]/g, '-');
+  const outputUriPrefix = `gs://${bucket}/firestore-backups/${projectId}/${stamp}`;
+
+  const endpoint = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default):exportDocuments`;
+
+  try {
+    const auth = new GoogleAuth({
+      scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+    });
+    const client = await auth.getClient();
+    const tokenResponse = await client.getAccessToken();
+    const accessToken =
+      tokenResponse && typeof tokenResponse === 'object'
+        ? tokenResponse.token
+        : tokenResponse;
+
+    if (!accessToken) {
+      throw new HttpsError('internal', 'Unable to acquire access token for backup export.');
+    }
+
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ outputUriPrefix }),
+    });
+
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const errorMessage =
+        body && body.error && body.error.message
+          ? String(body.error.message)
+          : `HTTP ${res.status}`;
+      throw new HttpsError('internal', `Failed to start backup export: ${errorMessage}`);
+    }
+
+    const operationName = typeof body.name === 'string' ? body.name : '';
+    const operationId = operationName ? operationName.split('/').pop() : '';
+
+    const db = getFirestore();
+    const backupDoc = db.collection('adminBackups').doc(operationId || db.collection('adminBackups').doc().id);
+    await backupDoc.set(
+      {
+        type: 'firestore-export',
+        projectId,
+        bucket,
+        outputUriPrefix,
+        operationName,
+        operationId: operationId || null,
+        status: 'started',
+        requestedByUid: request.auth.uid,
+        requestedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    return {
+      ok: true,
+      operationName,
+      operationId: operationId || null,
+      outputUriPrefix,
+      backupDocId: backupDoc.id,
+    };
+  } catch (error) {
+    throw toHttpsError('Start database backup', error);
+  }
+});
 
 exports.adminApproveInstructor = onCall({ cors: true }, async (request) => {
   requireAdmin(request);
