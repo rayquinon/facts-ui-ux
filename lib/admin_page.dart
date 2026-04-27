@@ -165,6 +165,102 @@ class _AdminPageState extends State<AdminPage> {
     }
   }
 
+  String _formatBackupTimestamp(Object? raw) {
+    if (raw is! Timestamp) return 'Unknown time';
+    final DateTime dt = raw.toDate().toLocal();
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${dt.year}-${two(dt.month)}-${two(dt.day)} '
+        '${two(dt.hour)}:${two(dt.minute)}:${two(dt.second)}';
+  }
+
+  Future<void> _showBackupHistoryDialog() async {
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Backup History'),
+          content: SizedBox(
+            width: 640,
+            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: FirebaseFirestore.instance
+                  .collection('adminBackups')
+                  .orderBy('requestedAt', descending: true)
+                  .limit(20)
+                  .snapshots(),
+              builder:
+                  (
+                    BuildContext context,
+                    AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>> snapshot,
+                  ) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+                    if (snapshot.hasError) {
+                      return Text(
+                        'Failed to load backup history: ${snapshot.error}',
+                      );
+                    }
+
+                    final List<QueryDocumentSnapshot<Map<String, dynamic>>>
+                    docs =
+                        snapshot.data?.docs ??
+                        <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+                    if (docs.isEmpty) {
+                      return const Text('No backup jobs found yet.');
+                    }
+
+                    return ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: docs.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (BuildContext context, int index) {
+                        final Map<String, dynamic> data = docs[index].data();
+                        final String status =
+                            ((data['status'] as String?) ?? 'unknown')
+                                .trim()
+                                .toUpperCase();
+                        final String when = _formatBackupTimestamp(
+                          data['requestedAt'],
+                        );
+                        final String output =
+                            (data['outputUriPrefix'] as String?)?.trim() ??
+                            'No output URI';
+
+                        return ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(
+                            status,
+                            style: const TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Text(when),
+                              Text(
+                                output,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    );
+                  },
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   Widget _buildAdminDrawer() {
     return Drawer(
       child: SafeArea(
@@ -291,6 +387,14 @@ class _AdminPageState extends State<AdminPage> {
                       Navigator.of(context).pop();
                       await _startDatabaseBackup();
                     },
+            ),
+            ListTile(
+              leading: const Icon(Icons.history_outlined),
+              title: const Text('Backup History'),
+              onTap: () async {
+                Navigator.of(context).pop();
+                await _showBackupHistoryDialog();
+              },
             ),
             const Divider(height: 1),
             ListTile(
