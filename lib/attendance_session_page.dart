@@ -1448,12 +1448,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
         _rosterCacheUpdatedAtUtc = cachedAtUtc;
       });
 
-      final String when = cachedAtUtc == null
-          ? ''
-          : ' (saved ${cachedAtUtc.toLocal()})';
-      _updateStatus(
-        'Offline mode: loaded cached roster (${roster.length})$when. Will refresh when online.',
-      );
+      _updateStatus('Loading Attendance Session');
     } catch (_) {
       // Best-effort only.
     }
