@@ -1015,6 +1015,21 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
             if (minutesLateRaw is num) {
               _recordedLateMinutes[studentId] = minutesLateRaw.round();
             }
+            // Also populate recent captures so the Recognized faces modal
+            // includes offline scans performed before flush.
+            try {
+              final String? iso = (payload['capturedAtLocalIso'] as String?)?.toString();
+              final DateTime ts = DateTime.tryParse(iso ?? '') ?? DateTime.now();
+              final String? displayName = (payload['displayName'] as String?)?.toString().trim();
+              final double? confidence = payload['confidence'] is num
+                  ? (payload['confidence'] as num).toDouble()
+                  : null;
+              _recentCaptures.insert(0, _AttendanceCapture(
+                timestamp: ts,
+                matchDisplayName: displayName,
+                confidence: confidence,
+              ));
+            } catch (_) {}
           } else if (type == 'capture') {
             final String? matchUserId =
                 (payload['matchUserId'] as String?)?.trim();
@@ -1028,9 +1043,40 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
                   !_recordedStatuses.containsKey(matchUserId)) {
                 _recordedStatuses[matchUserId] = attendanceStatus;
               }
+              // Also populate recent captures so the Recognized faces modal
+              // includes offline scans performed before flush.
+              try {
+                final String? iso = (payload['capturedAtLocalIso'] as String?)?.toString();
+                DateTime ts = DateTime.tryParse(iso ?? '') ?? DateTime.now();
+                String? displayName = (payload['matchDisplayName'] as String?)?.toString().trim();
+                if (displayName == null || displayName.isEmpty) {
+                  _RecognizedStudent? found;
+                  try {
+                    found = _roster.firstWhere((r) => r.userId == matchUserId);
+                  } catch (_) {
+                    found = null;
+                  }
+                  if (found != null) displayName = found.displayName;
+                }
+                final double? confidence = payload['confidence'] is num
+                    ? (payload['confidence'] as num).toDouble()
+                    : null;
+                _recentCaptures.insert(0, _AttendanceCapture(
+                  timestamp: ts,
+                  matchDisplayName: displayName,
+                  confidence: confidence,
+                ));
+              } catch (_) {}
             }
           }
         }
+        // Keep recent captures newest-first and cap list length.
+        try {
+          _recentCaptures.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+          if (_recentCaptures.length > 6) {
+            _recentCaptures.removeRange(6, _recentCaptures.length);
+          }
+        } catch (_) {}
       });
     } catch (_) {
       // Best-effort only.
