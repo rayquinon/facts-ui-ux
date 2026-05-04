@@ -385,7 +385,7 @@ class _LoginPageState extends State<LoginPage> {
     }
 
     final AppUpdateInfo? update = await AppUpdateService.instance
-        .checkForUpdate();
+      .checkForUpdate(force: showUpToDateDialog);
     if (!mounted) return;
 
     if (update == null) {

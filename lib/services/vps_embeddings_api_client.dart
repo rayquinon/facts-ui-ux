@@ -79,7 +79,7 @@ class VpsEmbeddingsRecord {
 class VpsEmbeddingsApiClient {
   const VpsEmbeddingsApiClient({
     this.baseUrl = 'https://embeddings.shiro.codes',
-    this.timeout = const Duration(seconds: 12),
+    this.timeout = const Duration(seconds: 30),
   });
 
   final String baseUrl;

@@ -10,6 +10,9 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'dart:io';
+import 'dart:convert';
+import 'package:path_provider/path_provider.dart';
 
 import 'admin_page.dart';
 import 'face_enrollment_page.dart';
@@ -701,6 +704,24 @@ class _AuthGateState extends State<AuthGate> {
     );
 
     if (shouldUpdate != true) return;
+
+    // Record that the user initiated an update and snooze further prompts
+    // for a short window to avoid re-prompting during the install flow.
+    try {
+      final Directory supportDir = await getApplicationSupportDirectory();
+      if (!await supportDir.exists()) await supportDir.create(recursive: true);
+      final File stateFile = File('${supportDir.path}${Platform.pathSeparator}update_prompt_state.json');
+      final DateTime snoozeUntil = DateTime.now().toUtc().add(const Duration(minutes: 10));
+      final Map<String, Object> payload = <String, Object>{
+        'latestBuild': update.latestBuildNumber,
+        'currentBuildWhenShown': update.currentBuildNumber,
+        'snoozedUntilUtc': snoozeUntil.toIso8601String(),
+        'consentedAtUtc': DateTime.now().toUtc().toIso8601String(),
+      };
+      await stateFile.writeAsString(jsonEncode(payload));
+    } catch (_) {
+      // Best-effort only.
+    }
 
     await _downloadAndInstallAndroidUpdate(update);
   }

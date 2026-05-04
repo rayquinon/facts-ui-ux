@@ -1319,6 +1319,22 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
     }
 
     setState(() => _isSaving = true);
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) {
+        return const AlertDialog(
+          content: Row(
+            children: <Widget>[
+              CircularProgressIndicator(),
+              SizedBox(width: 24),
+              Text('Saving enrollment...'),
+            ],
+          ),
+        );
+      },
+    );
+
     try {
       final Map<_OrientationPhase, List<List<double>>> selectedByPhase =
           _selectRepresentativeEmbeddingsByPhase(perPhase: _capturesPerPhase);
@@ -1354,12 +1370,21 @@ class _FaceEnrollmentPageState extends State<FaceEnrollmentPage> {
         forceRefreshToken: true,
       );
       if (!mounted) return;
+      // Dismiss progress dialog.
+      try {
+        Navigator.of(context).pop();
+      } catch (_) {
+        // Ignore if already dismissed.
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Face enrolled successfully.')),
       );
       Navigator.of(context).pop(true);
     } catch (error) {
       if (!mounted) return;
+      try {
+        Navigator.of(context).pop();
+      } catch (_) {}
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Failed to save: $error')));

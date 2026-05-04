@@ -26,6 +26,7 @@ class AppUpdateService {
 
   Future<AppUpdateInfo?> checkForUpdate({
     Duration timeout = const Duration(seconds: 3),
+    bool force = false,
   }) async {
     final PackageInfo info = await PackageInfo.fromPlatform();
     final int currentBuild = int.tryParse(info.buildNumber) ?? 0;
@@ -70,8 +71,52 @@ class AppUpdateService {
       x86_64UrlAlt: x86_64UrlAlt,
       androidPageUrlAlt: androidPageUrlAlt,
     );
+    // Avoid repeatedly prompting the user for the same manifest when they
+    // have already seen it and not updated. Persist a small state file that
+    // records the last manifest build shown to the user along with the
+    // current app build at that time. If we detect the manifest build is the
+    // same and the device build hasn't changed, skip reporting an update.
+    if (!force) {
+      try {
+        final Directory supportDir = await getApplicationSupportDirectory();
+        final File stateFile = File('${supportDir.path}${Platform.pathSeparator}update_prompt_state.json');
+        if (await stateFile.exists()) {
+          try {
+            final String content = await stateFile.readAsString();
+            final Object? decoded = jsonDecode(content);
+            if (decoded is Map<String, dynamic>) {
+              final int? seenLatest = _readInt(decoded['latestBuild']);
+              final int? seenCurrent = _readInt(decoded['currentBuildWhenShown']);
+              final String? snoozed = decoded['snoozedUntilUtc'] as String?;
+              if (snoozed != null) {
+                try {
+                  final DateTime snoozedUntil = DateTime.parse(snoozed);
+                  if (DateTime.now().toUtc().isBefore(snoozedUntil)) {
+                    // We're within a user-initiated snooze window; skip update checks.
+                    return null;
+                  }
+                } catch (_) {
+                  // Ignore parse errors.
+                }
+              }
+              if (seenLatest != null && seenCurrent != null) {
+                if (seenLatest == latestBuild && seenCurrent == currentBuild) {
+                  // User has already been shown this exact manifest while
+                  // running the same app build; don't keep nagging.
+                  return null;
+                }
+              }
+            }
+          } catch (_) {
+            // Ignore parse errors and allow update checks to proceed.
+          }
+        }
+      } catch (_) {
+        // Best-effort only. If storage isn't available, continue normally.
+      }
+    }
 
-    return AppUpdateInfo(
+    final AppUpdateInfo infoObj = AppUpdateInfo(
       currentBuildNumber: currentBuild,
       currentVersion: currentVersion,
       latestBuildNumber: latestBuild,
@@ -86,9 +131,32 @@ class AppUpdateService {
       armeabiV7aUrlAlt: armeabiV7aUrlAlt,
       x86_64UrlAlt: x86_64UrlAlt,
       androidPageUrlAlt: androidPageUrlAlt,
-      latestBuildNumberEffective: abiChoice.latestBuildEffective,
       preferredUrlOverride: abiChoice.preferredUrl,
+      latestBuildNumberEffective: abiChoice.latestBuildEffective,
     );
+
+    // Persist that we are about to (or will) show this manifest for this
+    // device build. This prevents repeated prompts for the same manifest
+    // when the user dismisses the dialog or the install does not complete.
+    unawaited(() async {
+      try {
+        final Directory supportDir = await getApplicationSupportDirectory();
+        if (!await supportDir.exists()) {
+          await supportDir.create(recursive: true);
+        }
+        final File stateFile = File('${supportDir.path}${Platform.pathSeparator}update_prompt_state.json');
+        final Map<String, Object> payload = <String, Object>{
+          'latestBuild': latestBuild,
+          'currentBuildWhenShown': currentBuild,
+          'shownAtUtc': DateTime.now().toUtc().toIso8601String(),
+        };
+        await stateFile.writeAsString(jsonEncode(payload));
+      } catch (_) {
+        // Best-effort.
+      }
+    }());
+
+    return infoObj;
   }
 
   _AbiUpdateChoice _chooseAndroidUpdate({

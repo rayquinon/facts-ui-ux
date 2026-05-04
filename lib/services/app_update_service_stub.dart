@@ -5,7 +5,7 @@ class AppUpdateService {
 
   AppUpdateService._();
 
-  Future<AppUpdateInfo?> checkForUpdate({Duration timeout = const Duration(seconds: 3)}) async {
+  Future<AppUpdateInfo?> checkForUpdate({Duration timeout = const Duration(seconds: 3), bool force = false}) async {
     return null;
   }
 
