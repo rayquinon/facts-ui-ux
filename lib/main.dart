@@ -901,6 +901,11 @@ class _AuthGateState extends State<AuthGate> {
           return const LoginPage();
         }
 
+        // Ensure any locally queued attendance writes are flushed once the
+        // app has a signed-in user. This covers the case where the app
+        // started or regained connectivity before Firebase restored auth.
+        unawaited(AttendanceOutboxService.instance.flushBestEffort());
+
         return FutureBuilder<Map<String, dynamic>>(
           future: _fetchAuthInfo(user, _authRefreshKey),
           builder:
