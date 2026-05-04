@@ -30,6 +30,17 @@ class AttendanceOutboxService {
     }
   }
 
+  Future<void> _debugLog(String message) async {
+    try {
+      final Directory dir = await _outboxDir();
+      final File log = File('${dir.path}${Platform.pathSeparator}outbox_debug.log');
+      final String line = '${DateTime.now().toUtc().toIso8601String()} $message\n';
+      await log.writeAsString(line, mode: FileMode.append, flush: true);
+    } catch (_) {
+      // Best-effort diagnostics only.
+    }
+  }
+
   Future<Directory> _outboxDir() async {
     final Directory base = await getApplicationSupportDirectory();
     final Directory dir = Directory('${base.path}${Platform.pathSeparator}$_dirName');
@@ -51,7 +62,9 @@ class AttendanceOutboxService {
       final String name = 'op_${ms}_${_randomSuffix()}.json';
       final File file = File('${dir.path}${Platform.pathSeparator}$name');
       await file.writeAsString(jsonEncode(payload), flush: true);
-    } catch (_) {
+      unawaited(_debugLog('enqueued file=$name type=${payload['type'] ?? 'unknown'} session=${payload['sessionId'] ?? ''}'));
+    } catch (e) {
+      unawaited(_debugLog('enqueue failed: $e'));
       // Best-effort only.
     }
   }
@@ -117,15 +130,24 @@ class AttendanceOutboxService {
     if (_flushing) return;
     _flushing = true;
     try {
+      unawaited(_debugLog('flushBestEffort: started'));
       final User? user = FirebaseAuth.instance.currentUser;
-      if (user == null) return;
+      if (user == null) {
+        unawaited(_debugLog('flushBestEffort: aborted - no authenticated user'));
+        return;
+      }
 
       final Directory dir = await _outboxDir();
-      if (!dir.existsSync()) return;
+      if (!dir.existsSync()) {
+        unawaited(_debugLog('flushBestEffort: outbox dir does not exist'));
+        return;
+      }
 
       final List<FileSystemEntity> entities = dir.listSync(followLinks: false);
       final List<File> files = entities.whereType<File>().toList(growable: false)
         ..sort((a, b) => a.path.compareTo(b.path));
+
+      unawaited(_debugLog('flushBestEffort: found ${files.length} files'));
 
       for (final File file in files) {
         Map<String, Object?>? payload;
@@ -139,16 +161,21 @@ class AttendanceOutboxService {
           // Malformed file; delete it.
           try {
             await file.delete();
-          } catch (_) {}
+            unawaited(_debugLog('flushBestEffort: deleted malformed file ${file.path}'));
+          } catch (e) {
+            unawaited(_debugLog('flushBestEffort: failed deleting malformed file ${file.path}: $e'));
+          }
           continue;
         }
         if (payload == null) continue;
 
         final String type = (payload['type'] ?? '').toString();
         final String sessionId = (payload['sessionId'] ?? '').toString().trim();
+        unawaited(_debugLog('flushBestEffort: processing file=${file.path} type=$type session=$sessionId'));
         if (sessionId.isEmpty) {
           try {
             await file.delete();
+            unawaited(_debugLog('flushBestEffort: deleted file with empty session ${file.path}'));
           } catch (_) {}
           continue;
         }
@@ -242,12 +269,15 @@ class AttendanceOutboxService {
               // Success for this op.
               try {
                 await file.delete();
+                unawaited(_debugLog('flushBestEffort: op success deleted file ${file.path}'));
               } catch (_) {}
               opCompleted = true;
             } on FirebaseException catch (e) {
+              unawaited(_debugLog('flushBestEffort: firebase exception code=${e.code} message=${e.message}'));
               final String code = e.code;
               // Auth/permission issues: keep the op for retry later.
               if (code == 'permission-denied' || code == 'unauthenticated') {
+                unawaited(_debugLog('flushBestEffort: aborting flush due to auth/permission error: $code'));
                 return;
               }
               // Transient network/server unavailability: retry a few times,
@@ -264,19 +294,23 @@ class AttendanceOutboxService {
               // For truly invalid ops (bad data, missing docs), drop to avoid wedging.
               try {
                 await file.delete();
+                unawaited(_debugLog('flushBestEffort: deleted invalid op file ${file.path}'));
               } catch (_) {}
               opCompleted = true;
             } catch (_) {
               // Unknown error: stop to avoid thrash; keep file for later.
+              unawaited(_debugLog('flushBestEffort: unknown error during op processing, aborting'));
               return;
             }
           }
         } catch (_) {
           // Protect outer loop: unknown failures should stop flushing.
+          unawaited(_debugLog('flushBestEffort: outer loop error, aborting'));
           return;
         }
       }
     } finally {
+      unawaited(_debugLog('flushBestEffort: completed'));
       _flushing = false;
     }
   }
