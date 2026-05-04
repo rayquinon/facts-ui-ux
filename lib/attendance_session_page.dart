@@ -976,9 +976,21 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
 
   Future<void> _applyPendingOutboxOpsToState(String sessionId) async {
     try {
-      final List<Map<String, Object?>> ops =
+      List<Map<String, Object?>> ops =
           await AttendanceOutboxService.instance
               .pendingOperationsForSession(sessionId);
+      // If no exact matches found, try a fuzzy fallback that matches
+      // by instructor/class/date segments. This addresses cases where
+      // a legacy or resume session id differs from the canonical id.
+      if (ops.isEmpty) {
+        ops = await AttendanceOutboxService.instance
+            .pendingOperationsForSession(sessionId, fuzzy: true);
+        if (ops.isNotEmpty) {
+          try {
+            debugPrint('AttendanceSessionPage: applied fuzzy outbox fallback for $sessionId (found ${ops.length} ops)');
+          } catch (_) {}
+        }
+      }
       if (ops.isEmpty) return;
       if (!mounted) return;
       setState(() {

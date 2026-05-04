@@ -5,6 +5,7 @@ import 'dart:math' as math;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
 class AttendanceOutboxService {
@@ -282,7 +283,8 @@ class AttendanceOutboxService {
 
   /// Return pending outbox payloads for [sessionId]. Best-effort only.
   Future<List<Map<String, Object?>>> pendingOperationsForSession(
-      String sessionId) async {
+      String sessionId,
+      {bool fuzzy = false}) async {
     try {
       final Directory dir = await _outboxDir();
       if (!dir.existsSync()) return <Map<String, Object?>>[];
@@ -299,17 +301,50 @@ class AttendanceOutboxService {
           if (decoded is Map) {
             final Map<String, Object?> payload = decoded.cast<String, Object?>();
             final String sid = (payload['sessionId'] ?? '').toString().trim();
-            if (sid == sessionId) {
-              results.add(payload);
+            if (!fuzzy) {
+              if (sid == sessionId) {
+                results.add(payload);
+              }
+            } else {
+              if (sid == sessionId) {
+                results.add(payload);
+              } else {
+                // Fuzzy match: compare the canonical session id parts
+                // Format: sess_{instructorId}_{classId}_{dateKey}_{scheduleKey}
+                List<String> partsA = _sessionIdParts(sid);
+                List<String> partsB = _sessionIdParts(sessionId);
+                if (partsA.length >= 3 && partsB.length >= 3) {
+                  if (partsA[0] == partsB[0] &&
+                      partsA[1] == partsB[1] &&
+                      partsA[2] == partsB[2]) {
+                    results.add(payload);
+                  }
+                }
+              }
             }
           }
         } catch (_) {
           // ignore malformed files for read-only probing
         }
       }
+      if (fuzzy && results.isNotEmpty) {
+        try {
+          // Simple diagnostic aid during development.
+          debugPrint('AttendanceOutboxService: fuzzy matched ${results.length} ops for sessionId $sessionId');
+        } catch (_) {}
+      }
       return results;
     } catch (_) {
       return <Map<String, Object?>>[];
     }
+  }
+
+  List<String> _sessionIdParts(String sid) {
+    final String s = sid.trim();
+    String work = s;
+    if (work.startsWith('sess_')) {
+      work = work.substring(5);
+    }
+    return work.split('_');
   }
 }

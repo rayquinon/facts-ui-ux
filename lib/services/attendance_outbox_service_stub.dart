@@ -8,7 +8,8 @@ class AttendanceOutboxService {
   }
 
   Future<List<Map<String, Object?>>> pendingOperationsForSession(
-      String sessionId) async {
+      String sessionId,
+      {bool fuzzy = false}) async {
     return <Map<String, Object?>>[];
   }
 
