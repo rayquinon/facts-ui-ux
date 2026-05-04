@@ -7,6 +7,11 @@ class AttendanceOutboxService {
     return 0;
   }
 
+  Future<List<Map<String, Object?>>> pendingOperationsForSession(
+      String sessionId) async {
+    return <Map<String, Object?>>[];
+  }
+
   Future<void> enqueueCapture({
     required String sessionId,
     required String captureId,

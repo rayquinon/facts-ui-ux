@@ -937,6 +937,61 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
         }
       }
     });
+    // Merge any pending offline ops for this session so the UI reflects
+    // captures/upserts performed while offline before they are flushed.
+    try {
+      await _applyPendingOutboxOpsToState(sessionId);
+    } catch (_) {
+      // Best-effort only.
+    }
+  }
+
+  Future<void> _applyPendingOutboxOpsToState(String sessionId) async {
+    try {
+      final List<Map<String, Object?>> ops =
+          await AttendanceOutboxService.instance
+              .pendingOperationsForSession(sessionId);
+      if (ops.isEmpty) return;
+      if (!mounted) return;
+      setState(() {
+        for (final Map<String, Object?> payload in ops) {
+          final String type = (payload['type'] ?? '').toString();
+          if (type == 'attendee') {
+            final String studentId =
+                (payload['studentId'] ?? '').toString().trim();
+            if (studentId.isEmpty) continue;
+
+            final String? status = (payload['status'] as String?)?.trim();
+            if (status != null && status.isNotEmpty) {
+              _recordedStatuses[studentId] = status;
+            }
+
+            // Mark as captured locally so the roster disables the student.
+            _capturedStudentIds.add(studentId);
+
+            final Object? minutesLateRaw = payload['minutesLate'];
+            if (minutesLateRaw is num) {
+              _recordedLateMinutes[studentId] = minutesLateRaw.round();
+            }
+          } else if (type == 'capture') {
+            final String? matchUserId =
+                (payload['matchUserId'] as String?)?.trim();
+            if (matchUserId != null && matchUserId.isNotEmpty) {
+              _capturedStudentIds.add(matchUserId);
+              final String? attendanceStatus =
+                  (payload['attendanceStatus'] as String?)?.trim();
+              if (attendanceStatus != null &&
+                  attendanceStatus.isNotEmpty &&
+                  !_recordedStatuses.containsKey(matchUserId)) {
+                _recordedStatuses[matchUserId] = attendanceStatus;
+              }
+            }
+          }
+        }
+      });
+    } catch (_) {
+      // Best-effort only.
+    }
   }
 
   Future<void> _loadRosterEmbeddings() async {

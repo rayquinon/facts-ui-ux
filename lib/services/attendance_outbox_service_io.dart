@@ -261,4 +261,37 @@ class AttendanceOutboxService {
       _flushing = false;
     }
   }
+
+  /// Return pending outbox payloads for [sessionId]. Best-effort only.
+  Future<List<Map<String, Object?>>> pendingOperationsForSession(
+      String sessionId) async {
+    try {
+      final Directory dir = await _outboxDir();
+      if (!dir.existsSync()) return <Map<String, Object?>>[];
+      final List<FileSystemEntity> entities =
+          dir.listSync(followLinks: false);
+      final List<File> files = entities.whereType<File>().toList(growable: false)
+        ..sort((a, b) => a.path.compareTo(b.path));
+
+      final List<Map<String, Object?>> results = <Map<String, Object?>>[];
+      for (final File file in files) {
+        try {
+          final String raw = await file.readAsString();
+          final Object? decoded = jsonDecode(raw);
+          if (decoded is Map) {
+            final Map<String, Object?> payload = decoded.cast<String, Object?>();
+            final String sid = (payload['sessionId'] ?? '').toString().trim();
+            if (sid == sessionId) {
+              results.add(payload);
+            }
+          }
+        } catch (_) {
+          // ignore malformed files for read-only probing
+        }
+      }
+      return results;
+    } catch (_) {
+      return <Map<String, Object?>>[];
+    }
+  }
 }
