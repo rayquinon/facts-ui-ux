@@ -2394,7 +2394,7 @@ class _InstructorSchedule {
     }
 
     final DateTime earliestStart = scheduledStart.subtract(
-      const Duration(minutes: 15),
+      const Duration(minutes: 30),
     );
     return !reference.isBefore(earliestStart) &&
         reference.isBefore(scheduledEnd);
