@@ -1024,6 +1024,8 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
         return AttendanceMark.suspension;
       case AttendanceCalendarDayType.examWeek:
         return AttendanceMark.examWeek;
+      case AttendanceCalendarDayType.schoolActivity:
+        return AttendanceMark.present;
     }
   }
 

@@ -132,6 +132,7 @@ class _AttendanceCalendarOverridesPageState
       AttendanceCalendarDayType.holiday => 'Holiday (H)',
       AttendanceCalendarDayType.suspension => 'Suspension (S)',
       AttendanceCalendarDayType.examWeek => 'Exam Week (Ex)',
+      AttendanceCalendarDayType.schoolActivity => 'School Activity (A)',
     };
   }
 

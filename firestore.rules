@@ -401,6 +401,12 @@ service cloud.firestore {
       allow create, update, delete: if isAdmin();
     }
 
+    // Backup audit/history records written by Cloud Functions.
+    match /adminBackups/{backupId} {
+      allow read: if isAdmin() || isRoleAdmin();
+      allow create, update, delete: if false;
+    }
+
     // Global per-day attendance calendar overrides (Holiday / Suspension / Exam Week).
     // Doc IDs are YYYY-MM-DD.
     match /attendanceCalendarDays/{dateKey} {

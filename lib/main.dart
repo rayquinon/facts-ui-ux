@@ -36,6 +36,28 @@ import 'widgets/android_only_feature_page.dart';
 
 final GlobalKey<NavigatorState> _rootNavigatorKey = GlobalKey<NavigatorState>();
 
+class _NoAutoScrollbarBehavior extends MaterialScrollBehavior {
+  const _NoAutoScrollbarBehavior(this._dragDevices);
+
+  final Set<PointerDeviceKind> _dragDevices;
+
+  @override
+  Set<PointerDeviceKind> get dragDevices => _dragDevices;
+
+  @override
+  Widget buildScrollbar(
+    BuildContext context,
+    Widget child,
+    ScrollableDetails details,
+  ) {
+    // Flutter adds automatic scrollbars on desktop/web. Some scrollables in this
+    // app do not attach a ScrollController in time for painting on web, which
+    // can trigger an assertion. We keep our explicit Scrollbar widgets where
+    // needed and disable the automatic ones globally.
+    return child;
+  }
+}
+
 class _StudentInactivityLogoutController with WidgetsBindingObserver {
   _StudentInactivityLogoutController._();
 
@@ -417,14 +439,12 @@ class FactsApp extends StatelessWidget {
           },
         ),
       ),
-      scrollBehavior: const MaterialScrollBehavior().copyWith(
-        dragDevices: <PointerDeviceKind>{
-          PointerDeviceKind.touch,
-          PointerDeviceKind.mouse,
-          PointerDeviceKind.trackpad,
-          PointerDeviceKind.stylus,
-        },
-      ),
+      scrollBehavior: const _NoAutoScrollbarBehavior(<PointerDeviceKind>{
+        PointerDeviceKind.touch,
+        PointerDeviceKind.mouse,
+        PointerDeviceKind.trackpad,
+        PointerDeviceKind.stylus,
+      }),
       home: const AuthGate(),
       onGenerateRoute: (RouteSettings settings) {
         final String? name = settings.name;

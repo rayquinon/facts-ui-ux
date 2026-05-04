@@ -481,6 +481,14 @@ class _SummaryGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    String formatHours(int minutes) {
+      final double hours = minutes / 60.0;
+      if ((hours - hours.roundToDouble()).abs() < 1e-9) {
+        return hours.toStringAsFixed(0);
+      }
+      return hours.toStringAsFixed(1);
+    }
+
     return LayoutBuilder(
       builder: (BuildContext context, BoxConstraints constraints) {
         final bool wide = constraints.maxWidth >= 560;
@@ -492,8 +500,8 @@ class _SummaryGrid extends StatelessWidget {
           _SummaryTile(label: 'Absent', value: absentCount.toString()),
           _SummaryTile(label: 'Late minutes', value: lateMinutes.toString()),
           _SummaryTile(
-            label: 'Absent minutes',
-            value: absentMinutes.toString(),
+            label: 'Absent hours',
+            value: formatHours(absentMinutes),
           ),
         ];
 
@@ -555,12 +563,20 @@ class _DailyRowTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
+    String formatHours(int minutes) {
+      final double hours = minutes / 60.0;
+      if ((hours - hours.roundToDouble()).abs() < 1e-9) {
+        return hours.toStringAsFixed(0);
+      }
+      return hours.toStringAsFixed(1);
+    }
+
     final String subtitle = <String>[
       'P ${row.presentCount}',
       'L ${row.lateCount}',
       'A ${row.absentCount}',
       'LateMin ${row.lateMinutes}',
-      'AbsMin ${row.absentMinutes}',
+      'AbsHr ${formatHours(row.absentMinutes)}',
     ].join(' • ');
 
     return Container(

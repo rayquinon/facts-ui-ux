@@ -1,7 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
-enum AttendanceCalendarDayType { holiday, suspension, examWeek }
+enum AttendanceCalendarDayType { holiday, suspension, examWeek, schoolActivity }
 
 class AttendanceCalendarDay {
   const AttendanceCalendarDay({
@@ -37,6 +37,7 @@ class AttendanceCalendarDay {
       'holiday' => AttendanceCalendarDayType.holiday,
       'suspension' => AttendanceCalendarDayType.suspension,
       'exam_week' => AttendanceCalendarDayType.examWeek,
+      'school_activity' => AttendanceCalendarDayType.schoolActivity,
       _ => null,
     };
     if (type == null) return null;
@@ -151,6 +152,11 @@ class AttendanceCalendarService {
         label: 'Exam Week',
         typeValue: 'exam_week',
       ),
+      AttendanceCalendarDayType.schoolActivity => (
+        code: 'A',
+        label: 'School Activity',
+        typeValue: 'school_activity',
+      ),
     };
 
     final String? uid = _auth.currentUser?.uid;
@@ -191,22 +197,30 @@ class AttendanceCalendarService {
     while (!cursor.isAfter(e)) {
       final String key = AttendanceCalendarDay.dateKeyFor(cursor);
       final DocumentReference<Map<String, dynamic>> ref = _col.doc(key);
-      batch.set(
-        ref,
-        <String, dynamic>{
-          'type': type == AttendanceCalendarDayType.examWeek
-              ? 'exam_week'
-              : (type == AttendanceCalendarDayType.holiday
-                    ? 'holiday'
-                    : 'suspension'),
-          'code': type == AttendanceCalendarDayType.examWeek
-              ? 'Ex'
-              : (type == AttendanceCalendarDayType.holiday ? 'H' : 'S'),
-          'label': type == AttendanceCalendarDayType.examWeek
-              ? 'Exam Week'
-              : (type == AttendanceCalendarDayType.holiday
-                    ? 'Holiday'
-                    : 'Class Suspension'),
+        batch.set(
+      ref,
+      <String, dynamic>{
+        'type': type == AttendanceCalendarDayType.examWeek
+          ? 'exam_week'
+          : (type == AttendanceCalendarDayType.holiday
+            ? 'holiday'
+            : (type == AttendanceCalendarDayType.schoolActivity
+              ? 'school_activity'
+              : 'suspension')),
+        'code': type == AttendanceCalendarDayType.examWeek
+          ? 'Ex'
+          : (type == AttendanceCalendarDayType.holiday
+            ? 'H'
+            : (type == AttendanceCalendarDayType.schoolActivity
+              ? 'A'
+              : 'S')),
+        'label': type == AttendanceCalendarDayType.examWeek
+          ? 'Exam Week'
+          : (type == AttendanceCalendarDayType.holiday
+            ? 'Holiday'
+            : (type == AttendanceCalendarDayType.schoolActivity
+              ? 'School Activity'
+              : 'Class Suspension')),
           if ((reason ?? '').trim().isNotEmpty) 'reason': reason!.trim(),
           'dateKey': key,
           'updatedAt': FieldValue.serverTimestamp(),

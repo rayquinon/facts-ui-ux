@@ -1368,6 +1368,24 @@ function toHttpsError(step, error) {
   return new HttpsError(codeHint, `${step} failed: ${message}`);
 }
 
+async function getCloudAccessToken() {
+  const auth = new GoogleAuth({
+    scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+  });
+  const client = await auth.getClient();
+  const tokenResponse = await client.getAccessToken();
+  const accessToken =
+    tokenResponse && typeof tokenResponse === 'object'
+      ? tokenResponse.token
+      : tokenResponse;
+
+  if (!accessToken) {
+    throw new HttpsError('internal', 'Unable to acquire access token for backup export.');
+  }
+
+  return accessToken;
+}
+
 exports.adminStartDatabaseBackup = onCall({ cors: true, timeoutSeconds: 120 }, async (request) => {
   requireAdmin(request);
 
@@ -1397,19 +1415,7 @@ exports.adminStartDatabaseBackup = onCall({ cors: true, timeoutSeconds: 120 }, a
   const endpoint = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default):exportDocuments`;
 
   try {
-    const auth = new GoogleAuth({
-      scopes: ['https://www.googleapis.com/auth/cloud-platform'],
-    });
-    const client = await auth.getClient();
-    const tokenResponse = await client.getAccessToken();
-    const accessToken =
-      tokenResponse && typeof tokenResponse === 'object'
-        ? tokenResponse.token
-        : tokenResponse;
-
-    if (!accessToken) {
-      throw new HttpsError('internal', 'Unable to acquire access token for backup export.');
-    }
+    const accessToken = await getCloudAccessToken();
 
     const res = await fetch(endpoint, {
       method: 'POST',
@@ -1443,11 +1449,82 @@ exports.adminStartDatabaseBackup = onCall({ cors: true, timeoutSeconds: 120 }, a
         operationName,
         operationId: operationId || null,
         status: 'started',
+        lastCheckedAt: FieldValue.serverTimestamp(),
         requestedByUid: request.auth.uid,
         requestedAt: FieldValue.serverTimestamp(),
       },
       { merge: true }
     );
+
+    // Perform an immediate status check so tiny exports can move to completed
+    // without waiting for the scheduler.
+    if (operationName) {
+      try {
+        const opRes = await fetch(`https://firestore.googleapis.com/v1/${operationName}`, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+        });
+        const opBody = await opRes.json().catch(() => ({}));
+
+        if (!opRes.ok) {
+          await backupDoc.set(
+            {
+              status: 'running',
+              lastCheckedAt: FieldValue.serverTimestamp(),
+              lastCheckError:
+                opBody && opBody.error && opBody.error.message
+                  ? String(opBody.error.message)
+                  : `HTTP ${opRes.status}`,
+            },
+            { merge: true }
+          );
+        } else if (opBody && opBody.done === true) {
+          if (opBody.error) {
+            await backupDoc.set(
+              {
+                status: 'failed',
+                errorMessage:
+                  opBody.error && opBody.error.message
+                    ? String(opBody.error.message)
+                    : 'Backup export failed.',
+                failedAt: FieldValue.serverTimestamp(),
+                completedAt: FieldValue.serverTimestamp(),
+                lastCheckedAt: FieldValue.serverTimestamp(),
+              },
+              { merge: true }
+            );
+          } else {
+            await backupDoc.set(
+              {
+                status: 'completed',
+                completedAt: FieldValue.serverTimestamp(),
+                lastCheckedAt: FieldValue.serverTimestamp(),
+              },
+              { merge: true }
+            );
+          }
+        } else {
+          await backupDoc.set(
+            {
+              status: 'running',
+              lastCheckedAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+        }
+      } catch (_) {
+        await backupDoc.set(
+          {
+            status: 'running',
+            lastCheckedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
+    }
 
     return {
       ok: true,
@@ -1460,6 +1537,117 @@ exports.adminStartDatabaseBackup = onCall({ cors: true, timeoutSeconds: 120 }, a
     throw toHttpsError('Start database backup', error);
   }
 });
+
+exports.syncDatabaseBackupStatuses = onSchedule(
+  {
+    schedule: 'every 2 minutes',
+    timeZone: 'Asia/Manila',
+    timeoutSeconds: 300,
+  },
+  async () => {
+    const db = getFirestore();
+    const activeSnap = await db
+      .collection('adminBackups')
+      .where('status', 'in', ['started', 'running'])
+      .limit(25)
+      .get();
+
+    if (activeSnap.empty) {
+      return;
+    }
+
+    const accessToken = await getCloudAccessToken();
+
+    for (const doc of activeSnap.docs) {
+      const data = doc.data() || {};
+      const operationName = typeof data.operationName === 'string' ? data.operationName.trim() : '';
+      if (!operationName) {
+        await doc.ref.set(
+          {
+            status: 'failed',
+            errorMessage: 'Missing operation name for backup status sync.',
+            failedAt: FieldValue.serverTimestamp(),
+            completedAt: FieldValue.serverTimestamp(),
+            lastCheckedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+        continue;
+      }
+
+      try {
+        const opRes = await fetch(`https://firestore.googleapis.com/v1/${operationName}`, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+        });
+        const opBody = await opRes.json().catch(() => ({}));
+
+        if (!opRes.ok) {
+          await doc.ref.set(
+            {
+              status: 'running',
+              lastCheckedAt: FieldValue.serverTimestamp(),
+              lastCheckError:
+                opBody && opBody.error && opBody.error.message
+                  ? String(opBody.error.message)
+                  : `HTTP ${opRes.status}`,
+            },
+            { merge: true }
+          );
+          continue;
+        }
+
+        if (opBody && opBody.done === true) {
+          if (opBody.error) {
+            await doc.ref.set(
+              {
+                status: 'failed',
+                errorMessage:
+                  opBody.error && opBody.error.message
+                    ? String(opBody.error.message)
+                    : 'Backup export failed.',
+                failedAt: FieldValue.serverTimestamp(),
+                completedAt: FieldValue.serverTimestamp(),
+                lastCheckedAt: FieldValue.serverTimestamp(),
+              },
+              { merge: true }
+            );
+          } else {
+            await doc.ref.set(
+              {
+                status: 'completed',
+                completedAt: FieldValue.serverTimestamp(),
+                lastCheckedAt: FieldValue.serverTimestamp(),
+                lastCheckError: FieldValue.delete(),
+              },
+              { merge: true }
+            );
+          }
+        } else {
+          await doc.ref.set(
+            {
+              status: 'running',
+              lastCheckedAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+        }
+      } catch (error) {
+        await doc.ref.set(
+          {
+            status: 'running',
+            lastCheckedAt: FieldValue.serverTimestamp(),
+            lastCheckError: String(error && error.message ? error.message : error),
+          },
+          { merge: true }
+        );
+      }
+    }
+  }
+);
 
 exports.adminApproveInstructor = onCall({ cors: true }, async (request) => {
   requireAdmin(request);

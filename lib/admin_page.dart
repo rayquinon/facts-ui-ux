@@ -133,6 +133,7 @@ class _AdminPageState extends State<AdminPage> {
           : <String, dynamic>{};
       final String outputUriPrefix =
           (map['outputUriPrefix'] as String?)?.trim() ?? '';
+      final String backupDocId = (map['backupDocId'] as String?)?.trim() ?? '';
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -145,6 +146,10 @@ class _AdminPageState extends State<AdminPage> {
           duration: const Duration(seconds: 5),
         ),
       );
+
+      if (backupDocId.isNotEmpty) {
+        await _showBackupProgressDialog(backupDocId);
+      }
     } catch (error) {
       if (!mounted) return;
       String message = 'Failed to start database back-up.';
@@ -163,6 +168,126 @@ class _AdminPageState extends State<AdminPage> {
         _isStartingDatabaseBackup = false;
       }
     }
+  }
+
+  Future<void> _showBackupProgressDialog(String backupDocId) async {
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        final ThemeData theme = Theme.of(context);
+        return AlertDialog(
+          title: const Text('Database Back-up Progress'),
+          content: SizedBox(
+            width: 560,
+            child: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+              stream: FirebaseFirestore.instance
+                  .collection('adminBackups')
+                  .doc(backupDocId)
+                  .snapshots(),
+              builder:
+                  (
+                    BuildContext context,
+                    AsyncSnapshot<DocumentSnapshot<Map<String, dynamic>>>
+                    snapshot,
+                  ) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return const Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Text('Starting back-up...'),
+                          SizedBox(height: 12),
+                          LinearProgressIndicator(),
+                        ],
+                      );
+                    }
+
+                    if (snapshot.hasError) {
+                      return Text(
+                        'Failed to load backup progress: ${snapshot.error}',
+                      );
+                    }
+
+                    final Map<String, dynamic>? data = snapshot.data?.data();
+                    final String status =
+                        ((data?['status'] as String?) ?? 'started')
+                            .trim()
+                            .toLowerCase();
+                    final bool isDone =
+                        status == 'completed' || status == 'failed';
+                    final bool isFailed = status == 'failed';
+
+                    final String statusLabel = switch (status) {
+                      'completed' => 'Completed',
+                      'failed' => 'Failed',
+                      'running' => 'Running',
+                      _ => 'Started',
+                    };
+
+                    final String output =
+                        (data?['outputUriPrefix'] as String?)?.trim() ??
+                        'Preparing output path...';
+                    final String requestedAt = _formatBackupTimestamp(
+                      data?['requestedAt'],
+                    );
+                    final String completedAt = _formatBackupTimestamp(
+                      data?['completedAt'],
+                    );
+                    final String errorMessage =
+                        (data?['errorMessage'] as String?)?.trim() ?? '';
+
+                    return Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Text(
+                          'Status: $statusLabel',
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w700,
+                            color: isFailed
+                                ? theme.colorScheme.error
+                                : theme.colorScheme.primary,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        LinearProgressIndicator(
+                          value: isDone ? 1 : null,
+                          color: isFailed
+                              ? theme.colorScheme.error
+                              : theme.colorScheme.primary,
+                        ),
+                        const SizedBox(height: 12),
+                        Text('Requested: $requestedAt'),
+                        if (status == 'completed')
+                          Text('Completed: $completedAt'),
+                        const SizedBox(height: 8),
+                        Text(
+                          output,
+                          maxLines: 3,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        if (errorMessage.isNotEmpty) ...<Widget>[
+                          const SizedBox(height: 8),
+                          Text(
+                            errorMessage,
+                            style: TextStyle(color: theme.colorScheme.error),
+                          ),
+                        ],
+                      ],
+                    );
+                  },
+            ),
+          ),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   String _formatBackupTimestamp(Object? raw) {
@@ -1446,11 +1571,30 @@ class _EnrollmentCombinedChartCard extends StatelessWidget {
   }
 }
 
-class _MultiSeriesBarChart extends StatelessWidget {
+class _MultiSeriesBarChart extends StatefulWidget {
   const _MultiSeriesBarChart({required this.bars, required this.maxValue});
 
   final List<_ChartBarEntry> bars;
   final int maxValue;
+
+  @override
+  State<_MultiSeriesBarChart> createState() => _MultiSeriesBarChartState();
+}
+
+class _MultiSeriesBarChartState extends State<_MultiSeriesBarChart> {
+  late final ScrollController _scrollController;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController = ScrollController();
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1461,13 +1605,18 @@ class _MultiSeriesBarChart extends StatelessWidget {
     return SizedBox(
       height: chartHeight,
       child: Scrollbar(
+        controller: _scrollController,
         thumbVisibility: true,
         child: SingleChildScrollView(
+          controller: _scrollController,
+          primary: false,
           scrollDirection: Axis.horizontal,
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.end,
-            children: bars.map((_ChartBarEntry e) {
-              final double ratio = maxValue <= 0 ? 0 : (e.value / maxValue);
+            children: widget.bars.map((_ChartBarEntry e) {
+              final double ratio = widget.maxValue <= 0
+                  ? 0
+                  : (e.value / widget.maxValue);
               final double barHeight = (ratio * 120).clamp(4.0, 120.0);
               final String label = e.label.trim().isEmpty
                   ? '—'
