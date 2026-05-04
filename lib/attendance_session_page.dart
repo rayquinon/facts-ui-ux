@@ -216,6 +216,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
   final Map<String, DateTime> _lastStudentCaptureTimes = <String, DateTime>{};
   final Set<String> _capturedStudentIds = <String>{};
   final Set<String> _pendingCapturedStudentIds = <String>{};
+  bool _isSyncingOutbox = false;
   final ScrollController _captureListController = ScrollController();
 
   _AttendanceSessionViewMode _viewMode = _AttendanceSessionViewMode.roster;
@@ -3608,6 +3609,60 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
     );
   }
 
+  Future<void> _handleManualSync() async {
+    if (_isSyncingOutbox) return;
+    setState(() => _isSyncingOutbox = true);
+
+    final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+    try {
+      final int before = await AttendanceOutboxService.instance.pendingCountBestEffort();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('Syncing $before pending operations...'),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+
+      await AttendanceOutboxService.instance.flushBestEffort();
+
+      final int after = await AttendanceOutboxService.instance.pendingCountBestEffort();
+      final int synced = (before - after) > 0 ? (before - after) : 0;
+      if (synced > 0) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text('Synced $synced operations.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        // Refresh attendees/UI so synced items show as confirmed.
+        try {
+          final String? sessionId = _sessionDocId;
+          if (sessionId != null && sessionId.trim().isNotEmpty) {
+            await _loadRecordedAttendeesBestEffort();
+            await _applyPendingOutboxOpsToState(sessionId);
+          }
+        } catch (_) {}
+      } else {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(after == 0 ? 'No pending operations.' : 'No changes after sync.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('Sync failed: $e'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isSyncingOutbox = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final AttendanceSessionConfig config = widget.config;
@@ -3709,6 +3764,17 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
               tooltip: 'Recognized faces',
               onPressed: _showRecognizedFaces,
               icon: const Icon(Icons.people_alt_outlined),
+            ),
+            IconButton(
+              tooltip: 'Sync now',
+              onPressed: _isSyncingOutbox ? null : _handleManualSync,
+              icon: _isSyncingOutbox
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.cloud_upload_outlined),
             ),
             TextButton.icon(
               onPressed: primaryEnabled ? _handlePrimarySessionAction : null,
