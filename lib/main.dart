@@ -216,6 +216,30 @@ class _StudentInactivityLogoutController with WidgetsBindingObserver {
   }
 }
 
+class _OutboxFlushOnResume with WidgetsBindingObserver {
+  _OutboxFlushOnResume._();
+
+  static final _OutboxFlushOnResume instance = _OutboxFlushOnResume._();
+
+  void enable() {
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  void disable() {
+    WidgetsBinding.instance.removeObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // Best-effort flush any pending attendance writes when returning to
+      // foreground. This helps when network was restored while the app was
+      // backgrounded or the device regained connectivity.
+      unawaited(AttendanceOutboxService.instance.flushBestEffort());
+    }
+  }
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -258,6 +282,8 @@ Future<void> main() async {
     }
   }
   unawaited(AttendanceOutboxService.instance.flushBestEffort());
+  // Auto-flush on app resume so reconnects trigger a sync.
+  _OutboxFlushOnResume.instance.enable();
 
   runApp(const MyApp());
 }
