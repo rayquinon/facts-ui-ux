@@ -27,6 +27,7 @@ import 'services/user_role_service.dart';
 import 'services/app_update_service.dart';
 import 'services/app_update_types.dart';
 import 'services/attendance_outbox_service.dart';
+import 'services/outbox_auto_sync.dart';
 import 'reports/generate_report_page.dart';
 import 'reports/instructor_sessions_report_page.dart';
 import 'reset_password_page.dart';
@@ -284,6 +285,8 @@ Future<void> main() async {
   unawaited(AttendanceOutboxService.instance.flushBestEffort());
   // Auto-flush on app resume so reconnects trigger a sync.
   _OutboxFlushOnResume.instance.enable();
+  // Auto-sync when network connectivity is (re)established.
+  OutboxAutoSync.instance.enable();
 
   runApp(const MyApp());
 }

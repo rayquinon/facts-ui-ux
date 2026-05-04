@@ -38,6 +38,7 @@ dependencies:
   http: ^1.6.0
   firebase_storage: ^13.0.5
   path_provider: ^2.0.14
+  connectivity_plus: ^4.0.1
   file_picker: ^10.3.6
   simple_file_saver: ^2.0.1
   archive: ^4.0.7
