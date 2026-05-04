@@ -47,7 +47,7 @@ class AppUpdateService {
       }
     }
 
-    Future<AppUpdateInfo?> _run() async {
+    Future<AppUpdateInfo?> run() async {
       final PackageInfo info = await PackageInfo.fromPlatform();
       final int currentBuild = int.tryParse(info.buildNumber) ?? 0;
       final String currentVersion = info.version;
@@ -225,7 +225,7 @@ class AppUpdateService {
       return infoObj;
     }
 
-    _ongoingCheck = _run();
+    _ongoingCheck = run();
     try {
       return await _ongoingCheck!;
     } finally {

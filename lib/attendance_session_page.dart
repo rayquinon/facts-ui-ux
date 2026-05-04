@@ -280,6 +280,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
     try {
       final int before = await AttendanceOutboxService.instance.pendingCountBestEffort();
       _autoFlushPendingCount = before;
+      if (!mounted) return;
       final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
       messenger.showSnackBar(
         SnackBar(
@@ -300,6 +301,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
       final int after = await AttendanceOutboxService.instance.pendingCountBestEffort();
       final int before = _autoFlushPendingCount;
       final int synced = (before - after) > 0 ? (before - after) : 0;
+      if (!mounted) return;
       final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
       if (synced > 0) {
         messenger.showSnackBar(
@@ -3685,66 +3687,6 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
         );
       },
     );
-  }
-
-  Future<void> _handleDumpOutbox() async {
-    try {
-      final List<Map<String, String>> files = await AttendanceOutboxService.instance.readOutboxFiles();
-      if (files.isEmpty) {
-        _showSnack('Outbox is empty.');
-        return;
-      }
-      for (final Map<String, String> f in files) {
-        final String name = f['name'] ?? f['path'] ?? 'unknown';
-        final String content = f['content'] ?? '';
-        try {
-          debugPrint('OUTBOX_FILE: $name\n$content');
-        } catch (_) {}
-      }
-      if (!mounted) return;
-      final ThemeData theme = Theme.of(context);
-      await showDialog<void>(
-        context: context,
-        builder: (BuildContext ctx) {
-          return AlertDialog(
-            title: Text('Outbox (${files.length})'),
-            content: SizedBox(
-              width: double.maxFinite,
-              child: SingleChildScrollView(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: files.map((f) {
-                    final String name = f['name'] ?? f['path'] ?? '';
-                    final String content = f['content'] ?? '';
-                    final String preview = content.length > 4000 ? '${content.substring(0,4000)}\n... (truncated)' : content;
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 12),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: <Widget>[
-                          Text(name, style: theme.textTheme.titleMedium),
-                          const SizedBox(height: 6),
-                          SelectableText(preview),
-                        ],
-                      ),
-                    );
-                  }).toList(),
-                ),
-              ),
-            ),
-            actions: <Widget>[
-              TextButton(
-                onPressed: () => Navigator.of(ctx).pop(),
-                child: const Text('Close'),
-              ),
-            ],
-          );
-        },
-      );
-      _showSnack('Outbox contents dumped to logs.');
-    } catch (e) {
-      _showSnack('Dump failed: $e');
-    }
   }
 
   Future<void> _handleManualSync() async {
