@@ -94,7 +94,8 @@ class AttendanceSessionPage extends StatefulWidget {
 
 enum _AttendanceSessionViewMode { roster, verify }
 
-class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
+class _AttendanceSessionPageState extends State<AttendanceSessionPage>
+  with WidgetsBindingObserver {
   // Recognition is strictly gated to minimize false positives.
   // Tune these with real class data if needed.
   static const double _similarityThreshold = 0.67;
@@ -214,6 +215,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   final Map<String, int> _recordedLateMinutes = <String, int>{};
   final Map<String, DateTime> _lastStudentCaptureTimes = <String, DateTime>{};
   final Set<String> _capturedStudentIds = <String>{};
+  final Set<String> _pendingCapturedStudentIds = <String>{};
   final ScrollController _captureListController = ScrollController();
 
   _AttendanceSessionViewMode _viewMode = _AttendanceSessionViewMode.roster;
@@ -234,6 +236,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     if (_recognitionSupported) {
       _faceDetector = FaceDetector(
         options: FaceDetectorOptions(
@@ -254,6 +257,31 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
     });
 
     _initializeSession();
+  }
+
+  
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // When the app resumes, attempt to flush any pending outbox ops and
+      // refresh session attendees so the UI reflects server-confirmed state.
+      unawaited(() async {
+        final String? sessionId = _sessionDocId;
+        if (sessionId == null || sessionId.trim().isEmpty) return;
+        try {
+          await AttendanceOutboxService.instance.flushBestEffort();
+        } catch (_) {
+          // Best-effort only.
+        }
+        try {
+          await _loadRecordedAttendeesBestEffort();
+        } catch (_) {}
+        try {
+          await _applyPendingOutboxOpsToState(sessionId);
+        } catch (_) {}
+      }());
+    }
   }
 
   void _showSnack(String message) {
@@ -954,6 +982,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
       if (ops.isEmpty) return;
       if (!mounted) return;
       setState(() {
+        _pendingCapturedStudentIds.clear();
         for (final Map<String, Object?> payload in ops) {
           final String type = (payload['type'] ?? '').toString();
           if (type == 'attendee') {
@@ -968,6 +997,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
             // Mark as captured locally so the roster disables the student.
             _capturedStudentIds.add(studentId);
+            _pendingCapturedStudentIds.add(studentId);
 
             final Object? minutesLateRaw = payload['minutesLate'];
             if (minutesLateRaw is num) {
@@ -978,6 +1008,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                 (payload['matchUserId'] as String?)?.trim();
             if (matchUserId != null && matchUserId.isNotEmpty) {
               _capturedStudentIds.add(matchUserId);
+              _pendingCapturedStudentIds.add(matchUserId);
               final String? attendanceStatus =
                   (payload['attendanceStatus'] as String?)?.trim();
               if (attendanceStatus != null &&
@@ -3495,6 +3526,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     unawaited(_disposeCameraBestEffort());
     _sessionUiTimer?.cancel();
     _autoEndTimer?.cancel();
@@ -3786,29 +3818,35 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage> {
                                               roster[index];
                                           final bool recorded =
                                               _capturedStudentIds.contains(
-                                                student.userId,
-                                              );
+                                            student.userId,
+                                          );
+                                          final bool pending =
+                                              _pendingCapturedStudentIds
+                                                  .contains(student.userId);
 
                                           return ListTile(
                                             title: Text(student.displayName),
                                             trailing: recorded
-                                                ? Icon(
-                                                    Icons.check_circle,
-                                                    color: theme
-                                                        .colorScheme
-                                                        .primary,
-                                                  )
+                                                ? (pending
+                                                    ? Icon(
+                                                        Icons.cloud_upload,
+                                                        color: Colors.amber,
+                                                      )
+                                                    : Icon(
+                                                        Icons.check_circle,
+                                                        color: theme
+                                                            .colorScheme
+                                                            .primary,
+                                                      ))
                                                 : const Icon(
                                                     Icons.chevron_right,
                                                   ),
-                                            enabled:
-                                                !recorded &&
+                                            enabled: !recorded &&
                                                 !_initializing &&
                                                 !_isEndingSession,
                                             onTap: recorded
                                                 ? null
-                                                : () =>
-                                                      _enterVerifyMode(student),
+                                                : () => _enterVerifyMode(student),
                                           );
                                         },
                                   );

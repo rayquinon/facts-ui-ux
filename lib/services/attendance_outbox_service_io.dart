@@ -157,103 +157,121 @@ class AttendanceOutboxService {
               .collection('attendanceSessions')
               .doc(sessionId);
 
-          if (type == 'capture') {
-            final String captureId = (payload['captureId'] ?? '').toString().trim();
-            final String capturedAtLocalIso = (payload['capturedAtLocalIso'] ?? '').toString();
-            final String? matchUserId = (payload['matchUserId'] as String?)?.trim();
-            final String? matchDisplayName = (payload['matchDisplayName'] as String?)?.trim();
-            final double? confidence = payload['confidence'] is num
-                ? (payload['confidence'] as num).toDouble()
-                : null;
-            final double? similarity = payload['similarity'] is num
-                ? (payload['similarity'] as num).toDouble()
-                : null;
-            final String? attendanceStatus = (payload['attendanceStatus'] as String?)?.trim();
+          // Attempt the operation with a small retry/backoff for transient
+          // network/server unavailability errors. For auth/permission errors
+          // we bail so the op can be retried after re-auth.
+          const int maxAttempts = 3;
+          bool opCompleted = false;
+          for (int attempt = 1; attempt <= maxAttempts && !opCompleted; attempt++) {
+            try {
+              if (type == 'capture') {
+                final String captureId = (payload['captureId'] ?? '').toString().trim();
+                final String capturedAtLocalIso = (payload['capturedAtLocalIso'] ?? '').toString();
+                final String? matchUserId = (payload['matchUserId'] as String?)?.trim();
+                final String? matchDisplayName = (payload['matchDisplayName'] as String?)?.trim();
+                final double? confidence = payload['confidence'] is num
+                    ? (payload['confidence'] as num).toDouble()
+                    : null;
+                final double? similarity = payload['similarity'] is num
+                    ? (payload['similarity'] as num).toDouble()
+                    : null;
+                final String? attendanceStatus = (payload['attendanceStatus'] as String?)?.trim();
 
-            final List<double> embedding = (payload['embedding'] is List)
-                ? (payload['embedding'] as List)
-                    .whereType<num>()
-                    .map((n) => n.toDouble())
-                    .toList(growable: false)
-                : <double>[];
+                final List<double> embedding = (payload['embedding'] is List)
+                    ? (payload['embedding'] as List)
+                        .whereType<num>()
+                        .map((n) => n.toDouble())
+                        .toList(growable: false)
+                    : <double>[];
 
-            if (captureId.isEmpty) {
-              throw StateError('Missing captureId');
+                if (captureId.isEmpty) {
+                  throw StateError('Missing captureId');
+                }
+
+                await sessionRef.collection('captures').doc(captureId).set(<String, dynamic>{
+                  'clientCaptureId': captureId,
+                  'capturedAt': FieldValue.serverTimestamp(),
+                  'capturedAtLocal': capturedAtLocalIso,
+                  'matchUserId': matchUserId,
+                  'matchDisplayName': matchDisplayName,
+                  'confidence': confidence,
+                  'similarity': similarity,
+                  'embedding': embedding,
+                  'attendanceStatus': attendanceStatus,
+                }, SetOptions(merge: true));
+              } else if (type == 'attendee') {
+                final String studentId = (payload['studentId'] ?? '').toString().trim();
+                final String displayName = (payload['displayName'] ?? '').toString();
+                final bool isFirst = payload['isFirstStatusForStudent'] == true;
+                final String capturedAtLocalIso = (payload['capturedAtLocalIso'] ?? '').toString();
+                final double? confidence = payload['confidence'] is num
+                    ? (payload['confidence'] as num).toDouble()
+                    : null;
+                final String? status = (payload['status'] as String?)?.trim();
+                final int? minutesLate = payload['minutesLate'] is num
+                    ? (payload['minutesLate'] as num).round()
+                    : null;
+                final int? minutesAbsent = payload['minutesAbsent'] is num
+                    ? (payload['minutesAbsent'] as num).round()
+                    : null;
+
+                if (studentId.isEmpty) {
+                  throw StateError('Missing studentId');
+                }
+
+                await sessionRef.collection('attendees').doc(studentId).set(<String, dynamic>{
+                  'displayName': displayName,
+                  if (isFirst) 'firstCapturedAt': FieldValue.serverTimestamp(),
+                  if (isFirst) 'firstCapturedAtLocal': capturedAtLocalIso,
+                  'lastCapturedAt': FieldValue.serverTimestamp(),
+                  if (confidence != null) 'confidence': confidence,
+                  if (isFirst && status != null && status.isNotEmpty) 'status': status,
+                  if (isFirst) 'statusComputedAt': FieldValue.serverTimestamp(),
+                  if (isFirst && minutesLate != null) 'minutesLate': minutesLate,
+                  if (isFirst && minutesAbsent != null) 'minutesAbsent': minutesAbsent,
+                }, SetOptions(merge: true));
+              } else if (type == 'session_lastCaptureAt') {
+                await sessionRef.set(<String, dynamic>{
+                  'lastCaptureAt': FieldValue.serverTimestamp(),
+                }, SetOptions(merge: true));
+              } else {
+                // Unknown op type; delete.
+              }
+
+              // Success for this op.
+              try {
+                await file.delete();
+              } catch (_) {}
+              opCompleted = true;
+            } on FirebaseException catch (e) {
+              final String code = e.code;
+              // Auth/permission issues: keep the op for retry later.
+              if (code == 'permission-denied' || code == 'unauthenticated') {
+                return;
+              }
+              // Transient network/server unavailability: retry a few times,
+              // then stop flushing to avoid thrash.
+              if (code == 'unavailable' || code == 'network-request-failed' || code == 'deadline-exceeded') {
+                if (attempt >= maxAttempts) {
+                  return;
+                }
+                // Exponential backoff.
+                final int backoffMs = 200 * (1 << (attempt - 1));
+                await Future.delayed(Duration(milliseconds: backoffMs));
+                continue;
+              }
+              // For truly invalid ops (bad data, missing docs), drop to avoid wedging.
+              try {
+                await file.delete();
+              } catch (_) {}
+              opCompleted = true;
+            } catch (_) {
+              // Unknown error: stop to avoid thrash; keep file for later.
+              return;
             }
-
-            await sessionRef.collection('captures').doc(captureId).set(<String, dynamic>{
-              'clientCaptureId': captureId,
-              'capturedAt': FieldValue.serverTimestamp(),
-              'capturedAtLocal': capturedAtLocalIso,
-              'matchUserId': matchUserId,
-              'matchDisplayName': matchDisplayName,
-              'confidence': confidence,
-              'similarity': similarity,
-              'embedding': embedding,
-              'attendanceStatus': attendanceStatus,
-            }, SetOptions(merge: true));
-          } else if (type == 'attendee') {
-            final String studentId = (payload['studentId'] ?? '').toString().trim();
-            final String displayName = (payload['displayName'] ?? '').toString();
-            final bool isFirst = payload['isFirstStatusForStudent'] == true;
-            final String capturedAtLocalIso = (payload['capturedAtLocalIso'] ?? '').toString();
-            final double? confidence = payload['confidence'] is num
-                ? (payload['confidence'] as num).toDouble()
-                : null;
-            final String? status = (payload['status'] as String?)?.trim();
-            final int? minutesLate = payload['minutesLate'] is num
-                ? (payload['minutesLate'] as num).round()
-                : null;
-            final int? minutesAbsent = payload['minutesAbsent'] is num
-                ? (payload['minutesAbsent'] as num).round()
-                : null;
-
-            if (studentId.isEmpty) {
-              throw StateError('Missing studentId');
-            }
-
-            await sessionRef.collection('attendees').doc(studentId).set(<String, dynamic>{
-              'displayName': displayName,
-              if (isFirst) 'firstCapturedAt': FieldValue.serverTimestamp(),
-              if (isFirst) 'firstCapturedAtLocal': capturedAtLocalIso,
-              'lastCapturedAt': FieldValue.serverTimestamp(),
-              if (confidence != null) 'confidence': confidence,
-              if (isFirst && status != null && status.isNotEmpty) 'status': status,
-              if (isFirst) 'statusComputedAt': FieldValue.serverTimestamp(),
-              if (isFirst && minutesLate != null) 'minutesLate': minutesLate,
-              if (isFirst && minutesAbsent != null) 'minutesAbsent': minutesAbsent,
-            }, SetOptions(merge: true));
-          } else if (type == 'session_lastCaptureAt') {
-            await sessionRef.set(<String, dynamic>{
-              'lastCaptureAt': FieldValue.serverTimestamp(),
-            }, SetOptions(merge: true));
-          } else {
-            // Unknown op type; delete.
           }
-
-          // If we got here, op is done; delete the file.
-          try {
-            await file.delete();
-          } catch (_) {
-            // ignore
-          }
-        } on FirebaseException catch (e) {
-          // If we're offline/unavailable, stop early.
-          final String code = e.code;
-          if (code == 'unavailable' || code == 'network-request-failed') {
-            return;
-          }
-          // If this is an auth/permission issue, keep the op and retry later
-          // (e.g. after re-auth / refreshed custom claims).
-          if (code == 'permission-denied' || code == 'unauthenticated') {
-            return;
-          }
-          // For truly invalid ops (bad data, missing docs), drop to avoid wedging.
-          try {
-            await file.delete();
-          } catch (_) {}
         } catch (_) {
-          // Unknown error: stop to avoid thrash; keep file for later.
+          // Protect outer loop: unknown failures should stop flushing.
           return;
         }
       }
