@@ -384,8 +384,33 @@ class _LoginPageState extends State<LoginPage> {
       return;
     }
 
-    final AppUpdateInfo? update = await AppUpdateService.instance
-      .checkForUpdate(force: showUpToDateDialog);
+    if (!mounted) return;
+    // Provide immediate feedback on Android as well.
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Checking for updates...'),
+        behavior: SnackBarBehavior.floating,
+        duration: Duration(seconds: 5),
+      ),
+    );
+
+    AppUpdateInfo? update;
+    try {
+      update = await AppUpdateService.instance.checkForUpdate(
+        timeout: const Duration(seconds: 10),
+        force: showUpToDateDialog,
+      );
+    } catch (e) {
+      if (showUpToDateDialog && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Update check failed: $e'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
     if (!mounted) return;
 
     if (update == null) {
