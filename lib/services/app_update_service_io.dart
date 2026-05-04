@@ -16,6 +16,15 @@ class AppUpdateService {
 
   static const MethodChannel _channel = MethodChannel('facts.app_update');
 
+  // In-memory guard to avoid concurrent manifest checks/prompts.
+  static Future<AppUpdateInfo?>? _ongoingCheck;
+
+  // Persistent marker file written while an update download/install flow
+  // has been initiated. This prevents re-prompting if the app is relaunched
+  // during an in-progress install (the app process may be killed by the
+  // package installer). The file contains an expiry timestamp.
+  static const String _kUpdateInProgressFile = 'update_in_progress.json';
+
   // Keep this as a plain Hosting file to avoid Firestore/Remote Config costs.
   static const List<String> _manifestUrls = <String>[
     // Custom domain (preferred).
@@ -28,14 +37,71 @@ class AppUpdateService {
     Duration timeout = const Duration(seconds: 3),
     bool force = false,
   }) async {
-    final PackageInfo info = await PackageInfo.fromPlatform();
-    final int currentBuild = int.tryParse(info.buildNumber) ?? 0;
-    final String currentVersion = info.version;
+    // If a check is already running, wait for and return its result to avoid
+    // duplicate prompts and races.
+    if (_ongoingCheck != null) {
+      try {
+        return await _ongoingCheck!;
+      } catch (_) {
+        // If the prior check failed, continue with a fresh one.
+      }
+    }
 
-    final Map<String, dynamic>? manifest = await _fetchManifest(
-      timeout: timeout,
-    );
-    if (manifest == null) return null;
+    Future<AppUpdateInfo?> _run() async {
+      final PackageInfo info = await PackageInfo.fromPlatform();
+      final int currentBuild = int.tryParse(info.buildNumber) ?? 0;
+      final String currentVersion = info.version;
+
+      // If an update flow was recently initiated, skip checks for a short
+      // window to avoid repeatedly prompting while the installer is active.
+      try {
+        if (Platform.isAndroid) {
+          final Directory supportDir = await getApplicationSupportDirectory();
+          final File inprog = File('${supportDir.path}${Platform.pathSeparator}$_kUpdateInProgressFile');
+          if (await inprog.exists()) {
+            try {
+              final String content = await inprog.readAsString();
+              final Object? decoded = jsonDecode(content);
+              if (decoded is Map<String, dynamic>) {
+                final int? pendingBuild = _readInt(decoded['buildNumber']);
+                final String? expires = decoded['expiresAtUtc'] as String?;
+                if (expires != null) {
+                  try {
+                    final DateTime until = DateTime.parse(expires).toUtc();
+                    if (pendingBuild != null && currentBuild >= pendingBuild) {
+                      try {
+                        await inprog.delete();
+                      } catch (_) {
+                        // Best-effort.
+                      }
+                    } else if (DateTime.now().toUtc().isBefore(until)) {
+                      return null;
+                    } else {
+                      // expired marker; remove it
+                      try {
+                        await inprog.delete();
+                      } catch (_) {
+                        // Best-effort.
+                      }
+                    }
+                  } catch (_) {
+                    // ignore parse errors and continue
+                  }
+                }
+              }
+            } catch (_) {
+              // ignore and continue
+            }
+          }
+        }
+      } catch (_) {
+        // Best-effort only.
+      }
+
+      final Map<String, dynamic>? manifest = await _fetchManifest(
+        timeout: timeout,
+      );
+      if (manifest == null) return null;
 
     final int latestBuild = _readInt(manifest['latestBuildNumber']) ?? 0;
     final String latestVersion =
@@ -135,28 +201,36 @@ class AppUpdateService {
       latestBuildNumberEffective: abiChoice.latestBuildEffective,
     );
 
-    // Persist that we are about to (or will) show this manifest for this
-    // device build. This prevents repeated prompts for the same manifest
-    // when the user dismisses the dialog or the install does not complete.
-    unawaited(() async {
-      try {
-        final Directory supportDir = await getApplicationSupportDirectory();
-        if (!await supportDir.exists()) {
-          await supportDir.create(recursive: true);
+      // Persist that we are about to (or will) show this manifest for this
+      // device build. This prevents repeated prompts for the same manifest
+      // when the user dismisses the dialog or the install does not complete.
+      unawaited(() async {
+        try {
+          final Directory supportDir = await getApplicationSupportDirectory();
+          if (!await supportDir.exists()) {
+            await supportDir.create(recursive: true);
+          }
+          final File stateFile = File('${supportDir.path}${Platform.pathSeparator}update_prompt_state.json');
+          final Map<String, Object> payload = <String, Object>{
+            'latestBuild': latestBuild,
+            'currentBuildWhenShown': currentBuild,
+            'shownAtUtc': DateTime.now().toUtc().toIso8601String(),
+          };
+          await stateFile.writeAsString(jsonEncode(payload));
+        } catch (_) {
+          // Best-effort.
         }
-        final File stateFile = File('${supportDir.path}${Platform.pathSeparator}update_prompt_state.json');
-        final Map<String, Object> payload = <String, Object>{
-          'latestBuild': latestBuild,
-          'currentBuildWhenShown': currentBuild,
-          'shownAtUtc': DateTime.now().toUtc().toIso8601String(),
-        };
-        await stateFile.writeAsString(jsonEncode(payload));
-      } catch (_) {
-        // Best-effort.
-      }
-    }());
+      }());
 
-    return infoObj;
+      return infoObj;
+    }
+
+    _ongoingCheck = _run();
+    try {
+      return await _ongoingCheck!;
+    } finally {
+      _ongoingCheck = null;
+    }
   }
 
   _AbiUpdateChoice _chooseAndroidUpdate({
@@ -380,18 +454,51 @@ class AppUpdateService {
     }
 
     final int buildNumber = update.effectiveLatestBuildNumber;
-    final File apkFile =
-        await _getExistingApkFile(buildNumber) ??
-        await _downloadApk(
-          url: url,
-          buildNumber: buildNumber,
-          timeout: timeout,
-          onProgress: onProgress,
-        );
 
-    await _channel.invokeMethod<void>('installApk', <String, Object?>{
-      'path': apkFile.path,
-    });
+    // Write a persistent in-progress marker so if the app is restarted while
+    // the installer is active we don't immediately re-prompt the user.
+    File? markerFile;
+    try {
+      final Directory supportDir = await getApplicationSupportDirectory();
+      if (!await supportDir.exists()) await supportDir.create(recursive: true);
+      markerFile = File('${supportDir.path}${Platform.pathSeparator}$_kUpdateInProgressFile');
+      final DateTime started = DateTime.now().toUtc();
+      final DateTime expires = started.add(const Duration(minutes: 30));
+      final Map<String, Object?> marker = <String, Object?>{
+        'buildNumber': buildNumber,
+        'startedAtUtc': started.toIso8601String(),
+        'expiresAtUtc': expires.toIso8601String(),
+        'url': url,
+      };
+      await markerFile.writeAsString(jsonEncode(marker));
+    } catch (_) {
+      markerFile = null; // Best-effort
+    }
+
+    try {
+      final File apkFile =
+          await _getExistingApkFile(buildNumber) ??
+          await _downloadApk(
+            url: url,
+            buildNumber: buildNumber,
+            timeout: timeout,
+            onProgress: onProgress,
+          );
+
+      await _channel.invokeMethod<void>('installApk', <String, Object?>{
+        'path': apkFile.path,
+      });
+    } catch (e) {
+      // Remove persistent marker on failure so future checks can proceed.
+      try {
+        if (markerFile != null && await markerFile.exists()) {
+          await markerFile.delete();
+        }
+      } catch (_) {
+        // Best-effort.
+      }
+      rethrow;
+    }
   }
 
   Future<File?> _getExistingApkFile(int buildNumber) async {

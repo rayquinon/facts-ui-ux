@@ -45,7 +45,53 @@ class AttendanceOutboxService {
     // No-op on non-IO platforms.
   }
 
+  Future<void> enqueueSessionUpsert({
+    required String sessionId,
+    required String classId,
+    required String subjectCode,
+    required String subjectName,
+    String? section,
+    String? term,
+    String? location,
+    required int dayOfWeek,
+    required int startHour,
+    required int startMinute,
+    required int endHour,
+    required int endMinute,
+    required String scheduleKey,
+    required String dateKey,
+    String? instructorId,
+    String? instructorEmail,
+    required String status,
+    String? scheduledStartAtIso,
+    String? scheduledEndAtIso,
+  }) async {
+    // No-op on non-IO platforms.
+  }
+
+  Future<void> enqueueSessionPointer({
+    required String pointerId,
+    required String sessionId,
+    required String classId,
+    String? instructorId,
+    required String dateKey,
+    required String scheduleKey,
+    required int dayOfWeek,
+    required int startHour,
+    required int startMinute,
+    required int endHour,
+    required int endMinute,
+    required String status,
+    bool ended = false,
+  }) async {
+    // No-op on non-IO platforms.
+  }
+
   Future<void> flushBestEffort() async {
     // No-op on non-IO platforms.
+  }
+
+  Future<List<Map<String, String>>> readOutboxFiles() async {
+    return <Map<String, String>>[];
   }
 }

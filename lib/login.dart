@@ -32,7 +32,6 @@ class _LoginPageState extends State<LoginPage> {
   bool _obscurePassword = true;
   bool _isSubmitting = false;
   String? _appVersionLabel;
-  bool _autoUpdatePromptShown = false;
 
   static final RegExp _emailRegex = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
 
@@ -40,20 +39,6 @@ class _LoginPageState extends State<LoginPage> {
   void initState() {
     super.initState();
     _loadAppVersionLabel();
-    _scheduleAutoUpdatePrompt();
-  }
-
-  void _scheduleAutoUpdatePrompt() {
-    // Only auto-prompt on Android. Web already has a reload prompt mechanism.
-    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
-      return;
-    }
-
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      if (!mounted || _autoUpdatePromptShown) return;
-      _autoUpdatePromptShown = true;
-      await _checkForUpdates(showUpToDateDialog: false);
-    });
   }
 
   Future<void> _loadAppVersionLabel() async {

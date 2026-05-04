@@ -396,6 +396,26 @@ service cloud.firestore {
       }
     }
 
+    // Session pointer index used by clients to quickly discover the active
+    // session for a class/date/schedule. Allow approved instructors (and
+    // admins) to manage pointers so offline-enqueued pointer ops can be
+    // flushed by the client.
+    match /attendanceSessionPointers/{pointerId} {
+      allow read: if isSignedIn();
+
+      function isValidSessionPointerData(data) {
+        return data is map &&
+          data.sessionId is string &&
+          data.classId is string &&
+          data.dateKey is string &&
+          data.scheduleKey is string &&
+          data.status is string;
+      }
+
+      allow create, update: if isSignedIn() && (isApprovedInstructor() || isAdmin()) && isValidSessionPointerData(request.resource.data);
+      allow delete: if isSignedIn() && (isApprovedInstructor() || isAdmin());
+    }
+
     match /alerts/{alertId} {
       allow read: if isAdmin() || isRoleAdmin();
       allow create, update, delete: if isAdmin();

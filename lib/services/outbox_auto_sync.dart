@@ -17,6 +17,13 @@ class OutboxAutoSync {
   Timer? _debounce;
   bool _enabled = false;
 
+  // Broadcast stream to notify listeners when an automatic outbox flush
+  // starts/stops. Emits `true` when a flush is about to begin and `false`
+  // when it completes.
+  final StreamController<bool> _flushingController = StreamController<bool>.broadcast();
+
+  Stream<bool> get flushingStream => _flushingController.stream;
+
   final Duration _debounceDuration = const Duration(seconds: 2);
 
   void enable() {
@@ -64,7 +71,16 @@ class OutboxAutoSync {
           return;
         }
         if (kDebugMode) debugPrint('OutboxAutoSync: flushing due to $reason');
-        await AttendanceOutboxService.instance.flushBestEffort();
+        try {
+          _flushingController.add(true);
+        } catch (_) {}
+        try {
+          await AttendanceOutboxService.instance.flushBestEffort();
+        } finally {
+          try {
+            _flushingController.add(false);
+          } catch (_) {}
+        }
       } catch (e) {
         if (kDebugMode) debugPrint('OutboxAutoSync: flush failed: $e');
       }

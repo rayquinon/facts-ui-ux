@@ -24,7 +24,10 @@ class AttendanceOutboxService {
       final Directory dir = await _outboxDir();
       if (!dir.existsSync()) return 0;
       final List<FileSystemEntity> entities = dir.listSync(followLinks: false);
-      return entities.whereType<File>().length;
+      return entities.whereType<File>().where((f) {
+        final String name = f.path.split(Platform.pathSeparator).last;
+        return name.startsWith('op_') && name.endsWith('.json');
+      }).length;
     } catch (_) {
       return 0;
     }
@@ -126,6 +129,86 @@ class AttendanceOutboxService {
     });
   }
 
+  /// Enqueue a session upsert (create/merge) to be flushed later.
+  Future<void> enqueueSessionUpsert({
+    required String sessionId,
+    required String classId,
+    required String subjectCode,
+    required String subjectName,
+    String? section,
+    String? term,
+    String? location,
+    required int dayOfWeek,
+    required int startHour,
+    required int startMinute,
+    required int endHour,
+    required int endMinute,
+    required String scheduleKey,
+    required String dateKey,
+    String? instructorId,
+    String? instructorEmail,
+    required String status,
+    String? scheduledStartAtIso,
+    String? scheduledEndAtIso,
+  }) async {
+    await _enqueue(<String, Object?>{
+      'type': 'session',
+      'sessionId': sessionId,
+      'classId': classId,
+      'subjectCode': subjectCode,
+      'subjectName': subjectName,
+      'section': section,
+      'term': term,
+      'location': location,
+      'dayOfWeek': dayOfWeek,
+      'startHour': startHour,
+      'startMinute': startMinute,
+      'endHour': endHour,
+      'endMinute': endMinute,
+      'scheduleKey': scheduleKey,
+      'dateKey': dateKey,
+      'instructorId': instructorId,
+      'instructorEmail': instructorEmail,
+      'status': status,
+      'scheduledStartAtIso': scheduledStartAtIso,
+      'scheduledEndAtIso': scheduledEndAtIso,
+    });
+  }
+
+  /// Enqueue a session pointer upsert to be flushed later.
+  Future<void> enqueueSessionPointer({
+    required String pointerId,
+    required String sessionId,
+    required String classId,
+    String? instructorId,
+    required String dateKey,
+    required String scheduleKey,
+    required int dayOfWeek,
+    required int startHour,
+    required int startMinute,
+    required int endHour,
+    required int endMinute,
+    required String status,
+    bool ended = false,
+  }) async {
+    await _enqueue(<String, Object?>{
+      'type': 'session_pointer',
+      'pointerId': pointerId,
+      'sessionId': sessionId,
+      'classId': classId,
+      'instructorId': instructorId,
+      'dateKey': dateKey,
+      'scheduleKey': scheduleKey,
+      'dayOfWeek': dayOfWeek,
+      'startHour': startHour,
+      'startMinute': startMinute,
+      'endHour': endHour,
+      'endMinute': endMinute,
+      'status': status,
+      'ended': ended,
+    });
+  }
+
   Future<void> flushBestEffort() async {
     if (_flushing) return;
     _flushing = true;
@@ -144,7 +227,10 @@ class AttendanceOutboxService {
       }
 
       final List<FileSystemEntity> entities = dir.listSync(followLinks: false);
-      final List<File> files = entities.whereType<File>().toList(growable: false)
+      final List<File> files = entities.whereType<File>().where((f) {
+         final String name = f.path.split(Platform.pathSeparator).last;
+         return name.startsWith('op_') && name.endsWith('.json');
+      }).toList(growable: false)
         ..sort((a, b) => a.path.compareTo(b.path));
 
       unawaited(_debugLog('flushBestEffort: found ${files.length} files'));
@@ -262,6 +348,81 @@ class AttendanceOutboxService {
                 await sessionRef.set(<String, dynamic>{
                   'lastCaptureAt': FieldValue.serverTimestamp(),
                 }, SetOptions(merge: true));
+              } else if (type == 'session') {
+                // Upsert the session doc using supplied payload fields. Timestamps
+                // passed as ISO strings are converted to Firestore Timestamps.
+                final Map<String, dynamic> sessionData = <String, dynamic>{};
+                void putIf(String key, Object? val) {
+                  if (val != null) sessionData[key] = val;
+                }
+                putIf('classId', payload['classId']);
+                putIf('subjectCode', payload['subjectCode']);
+                putIf('subjectName', payload['subjectName']);
+                putIf('section', payload['section']);
+                putIf('term', payload['term']);
+                putIf('location', payload['location']);
+                putIf('dayOfWeek', payload['dayOfWeek']);
+                putIf('startHour', payload['startHour']);
+                putIf('startMinute', payload['startMinute']);
+                putIf('endHour', payload['endHour']);
+                putIf('endMinute', payload['endMinute']);
+                putIf('scheduleKey', payload['scheduleKey']);
+                putIf('dateKey', payload['dateKey']);
+                putIf('instructorId', payload['instructorId']);
+                putIf('instructorEmail', payload['instructorEmail']);
+                putIf('status', payload['status']);
+                // Server-side timestamps to avoid client clock drift.
+                sessionData['startedAt'] = FieldValue.serverTimestamp();
+                sessionData['createdAt'] = FieldValue.serverTimestamp();
+                try {
+                  final String? startIso = (payload['scheduledStartAtIso'] as String?);
+                  if (startIso != null && startIso.isNotEmpty) {
+                    sessionData['scheduledStartAt'] = Timestamp.fromDate(DateTime.parse(startIso));
+                  }
+                } catch (_) {}
+                try {
+                  final String? endIso = (payload['scheduledEndAtIso'] as String?);
+                  if (endIso != null && endIso.isNotEmpty) {
+                    sessionData['scheduledEndAt'] = Timestamp.fromDate(DateTime.parse(endIso));
+                  }
+                } catch (_) {}
+
+                await sessionRef.set(sessionData, SetOptions(merge: true));
+              } else if (type == 'session_pointer') {
+                final String pointerId = (payload['pointerId'] ?? '').toString().trim();
+                if (pointerId.isEmpty) {
+                  // Invalid op; drop it.
+                  try {
+                    await file.delete();
+                    unawaited(_debugLog('flushBestEffort: deleted invalid pointer file ${file.path}'));
+                  } catch (_) {}
+                  opCompleted = true;
+                } else {
+                  final DocumentReference<Map<String, dynamic>> pointerRef = _firestore
+                      .collection('attendanceSessionPointers')
+                      .doc(pointerId);
+                  final Map<String, dynamic> pointerData = <String, dynamic>{
+                    'sessionId': payload['sessionId'],
+                    'classId': payload['classId'],
+                    'instructorId': payload['instructorId'],
+                    'dateKey': payload['dateKey'],
+                    'scheduleKey': payload['scheduleKey'],
+                    'dayOfWeek': payload['dayOfWeek'],
+                    'startHour': payload['startHour'],
+                    'startMinute': payload['startMinute'],
+                    'endHour': payload['endHour'],
+                    'endMinute': payload['endMinute'],
+                    'status': payload['status'],
+                    'updatedAt': FieldValue.serverTimestamp(),
+                  };
+                  final bool ended = payload['ended'] == true;
+                  if (ended) {
+                    pointerData['endedAt'] = FieldValue.serverTimestamp();
+                  } else {
+                    pointerData['endedAt'] = FieldValue.delete();
+                  }
+                  await pointerRef.set(pointerData, SetOptions(merge: true));
+                }
               } else {
                 // Unknown op type; delete.
               }
@@ -324,7 +485,10 @@ class AttendanceOutboxService {
       if (!dir.existsSync()) return <Map<String, Object?>>[];
       final List<FileSystemEntity> entities =
           dir.listSync(followLinks: false);
-      final List<File> files = entities.whereType<File>().toList(growable: false)
+      final List<File> files = entities.whereType<File>().where((f) {
+        final String name = f.path.split(Platform.pathSeparator).last;
+        return name.startsWith('op_') && name.endsWith('.json');
+      }).toList(growable: false)
         ..sort((a, b) => a.path.compareTo(b.path));
 
       final List<Map<String, Object?>> results = <Map<String, Object?>>[];
@@ -380,5 +544,38 @@ class AttendanceOutboxService {
       work = work.substring(5);
     }
     return work.split('_');
+  }
+
+  /// Read the outbox directory and return a list of files with their contents.
+  Future<List<Map<String, String>>> readOutboxFiles() async {
+    try {
+      final Directory dir = await _outboxDir();
+      if (!dir.existsSync()) return <Map<String, String>>[];
+      final List<FileSystemEntity> entities = dir.listSync(followLinks: false);
+      final List<File> files = entities.whereType<File>().toList(growable: false)
+        ..sort((a, b) => a.path.compareTo(b.path));
+
+      final List<Map<String, String>> results = <Map<String, String>>[];
+      for (final File file in files) {
+        try {
+          final String raw = await file.readAsString();
+          final String name = file.path.split(Platform.pathSeparator).last;
+          results.add(<String, String>{
+            'path': file.path,
+            'name': name,
+            'content': raw,
+          });
+        } catch (e) {
+          results.add(<String, String>{
+            'path': file.path,
+            'name': file.path.split(Platform.pathSeparator).last,
+            'content': 'ERROR: $e',
+          });
+        }
+      }
+      return results;
+    } catch (_) {
+      return <Map<String, String>>[];
+    }
   }
 }

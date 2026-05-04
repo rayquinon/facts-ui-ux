@@ -14,6 +14,7 @@ import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'services/face_embedding_service.dart';
 import 'services/face_quality_exception.dart';
 import 'services/attendance_outbox_service.dart';
+import 'services/outbox_auto_sync.dart';
 import 'services/roster_cache_locator.dart';
 import 'services/roster_embeddings_cache.dart';
 import 'services/vps_embeddings_api_client.dart';
@@ -217,6 +218,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
   final Set<String> _capturedStudentIds = <String>{};
   final Set<String> _pendingCapturedStudentIds = <String>{};
   bool _isSyncingOutbox = false;
+  StreamSubscription<bool>? _outboxAutoSyncSub;
+  int _autoFlushPendingCount = 0;
   final ScrollController _captureListController = ScrollController();
 
   _AttendanceSessionViewMode _viewMode = _AttendanceSessionViewMode.roster;
@@ -258,6 +261,74 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
     });
 
     _initializeSession();
+
+    // Subscribe to OutboxAutoSync events so the UI shows sync activity
+    // when connectivity is regained.
+    _outboxAutoSyncSub = OutboxAutoSync.instance.flushingStream.listen((bool isFlushing) {
+      if (isFlushing) {
+        unawaited(_onAutoFlushStarted());
+      } else {
+        unawaited(_onAutoFlushCompleted());
+      }
+    });
+  }
+
+  Future<void> _onAutoFlushStarted() async {
+    if (!mounted) return;
+    if (_isSyncingOutbox) return;
+    setState(() => _isSyncingOutbox = true);
+    try {
+      final int before = await AttendanceOutboxService.instance.pendingCountBestEffort();
+      _autoFlushPendingCount = before;
+      final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('Syncing $before pending operations...'),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    } catch (_) {
+      // Best-effort only.
+    }
+  }
+
+  Future<void> _onAutoFlushCompleted() async {
+    if (!mounted) return;
+    if (!_isSyncingOutbox) return;
+    try {
+      final int after = await AttendanceOutboxService.instance.pendingCountBestEffort();
+      final int before = _autoFlushPendingCount;
+      final int synced = (before - after) > 0 ? (before - after) : 0;
+      final ScaffoldMessengerState messenger = ScaffoldMessenger.of(context);
+      if (synced > 0) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text('Synced $synced operations.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        try {
+          final String? sessionId = _sessionDocId;
+          if (sessionId != null && sessionId.trim().isNotEmpty) {
+            await _loadRecordedAttendeesBestEffort();
+            await _applyPendingOutboxOpsToState(sessionId);
+          }
+        } catch (_) {}
+      } else {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(after == 0 ? 'No pending operations.' : 'No changes after sync.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (_) {
+      // Best-effort only.
+    } finally {
+      if (mounted) setState(() => _isSyncingOutbox = false);
+      _autoFlushPendingCount = 0;
+    }
   }
 
   
@@ -882,29 +953,35 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
       // Ignore cache probe failures.
     }
 
-    // Always ensure the session doc exists locally (queued for sync).
-    await canonicalRef.set(<String, dynamic>{
-      'classId': widget.config.classId,
-      'subjectCode': widget.config.subjectCode,
-      'subjectName': widget.config.subjectName,
-      'section': widget.config.section,
-      'term': widget.config.term,
-      'location': widget.config.location,
-      'dayOfWeek': widget.config.dayOfWeek,
-      'startHour': widget.config.start.hour,
-      'startMinute': widget.config.start.minute,
-      'endHour': widget.config.end.hour,
-      'endMinute': widget.config.end.minute,
-      'scheduleKey': widget.config.scheduleKey,
-      'dateKey': dateKey,
-      'scheduledStartAt': Timestamp.fromDate(scheduledStart),
-      'scheduledEndAt': Timestamp.fromDate(scheduledEnd),
-      'instructorId': uid,
-      'instructorEmail': user?.email,
-      'status': 'active',
-      'startedAt': FieldValue.serverTimestamp(),
-      'createdAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+    // Instead of writing directly to Firestore (which creates a local pending
+    // write that may be reverted if the server denies it), enqueue a session
+    // upsert op to the outbox. The flush handler will perform the server
+    // write when the user's permissions allow it.
+    try {
+      await AttendanceOutboxService.instance.enqueueSessionUpsert(
+        sessionId: canonicalSessionId,
+        classId: widget.config.classId,
+        subjectCode: widget.config.subjectCode,
+        subjectName: widget.config.subjectName,
+        section: widget.config.section,
+        term: widget.config.term,
+        location: widget.config.location,
+        dayOfWeek: widget.config.dayOfWeek,
+        startHour: widget.config.start.hour,
+        startMinute: widget.config.start.minute,
+        endHour: widget.config.end.hour,
+        endMinute: widget.config.end.minute,
+        scheduleKey: widget.config.scheduleKey,
+        dateKey: dateKey,
+        instructorId: uid,
+        instructorEmail: user?.email,
+        status: 'active',
+        scheduledStartAtIso: scheduledStart.toUtc().toIso8601String(),
+        scheduledEndAtIso: scheduledEnd.toUtc().toIso8601String(),
+      );
+    } catch (_) {
+      // Best-effort only.
+    }
 
     _sessionDocId ??= canonicalSessionId;
 
@@ -3586,6 +3663,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
     _autoEndTimer?.cancel();
     _faceDetector?.close();
     _captureListController.dispose();
+    _outboxAutoSyncSub?.cancel();
     unawaited(_pauseSessionBestEffort());
     super.dispose();
   }
@@ -3607,6 +3685,66 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
         );
       },
     );
+  }
+
+  Future<void> _handleDumpOutbox() async {
+    try {
+      final List<Map<String, String>> files = await AttendanceOutboxService.instance.readOutboxFiles();
+      if (files.isEmpty) {
+        _showSnack('Outbox is empty.');
+        return;
+      }
+      for (final Map<String, String> f in files) {
+        final String name = f['name'] ?? f['path'] ?? 'unknown';
+        final String content = f['content'] ?? '';
+        try {
+          debugPrint('OUTBOX_FILE: $name\n$content');
+        } catch (_) {}
+      }
+      if (!mounted) return;
+      final ThemeData theme = Theme.of(context);
+      await showDialog<void>(
+        context: context,
+        builder: (BuildContext ctx) {
+          return AlertDialog(
+            title: Text('Outbox (${files.length})'),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: files.map((f) {
+                    final String name = f['name'] ?? f['path'] ?? '';
+                    final String content = f['content'] ?? '';
+                    final String preview = content.length > 4000 ? '${content.substring(0,4000)}\n... (truncated)' : content;
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Text(name, style: theme.textTheme.titleMedium),
+                          const SizedBox(height: 6),
+                          SelectableText(preview),
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ),
+            ),
+            actions: <Widget>[
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('Close'),
+              ),
+            ],
+          );
+        },
+      );
+      _showSnack('Outbox contents dumped to logs.');
+    } catch (e) {
+      _showSnack('Dump failed: $e');
+    }
   }
 
   Future<void> _handleManualSync() async {
@@ -3943,30 +4081,31 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
                                               _pendingCapturedStudentIds
                                                   .contains(student.userId);
 
-                                          return ListTile(
+                                            return ListTile(
                                             title: Text(student.displayName),
                                             trailing: recorded
-                                                ? (pending
-                                                    ? Icon(
-                                                        Icons.cloud_upload,
-                                                        color: Colors.amber,
-                                                      )
-                                                    : Icon(
-                                                        Icons.check_circle,
-                                                        color: theme
-                                                            .colorScheme
-                                                            .primary,
-                                                      ))
-                                                : const Icon(
-                                                    Icons.chevron_right,
-                                                  ),
+                                              ? (pending
+                                                ? Icon(
+                                                  Icons.cloud_upload,
+                                                  color: Colors.amber,
+                                                  )
+                                                : Icon(
+                                                  Icons.check_circle,
+                                                  color: theme
+                                                    .colorScheme
+                                                    .primary,
+                                                  ))
+                                              : const Icon(
+                                                Icons.chevron_right,
+                                                ),
                                             enabled: !recorded &&
-                                                !_initializing &&
-                                                !_isEndingSession,
-                                            onTap: recorded
-                                                ? null
-                                                : () => _enterVerifyMode(student),
-                                          );
+                                              !pending &&
+                                              !_initializing &&
+                                              !_isEndingSession,
+                                            onTap: recorded || pending
+                                              ? null
+                                              : () => _enterVerifyMode(student),
+                                            );
                                         },
                                   );
                                 },
@@ -4032,32 +4171,88 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
       scheduledEnd = scheduledEnd.add(const Duration(days: 1));
     }
 
+    // Prefer to write the pointer directly only if the local cached user
+    // profile indicates the instructor is already approved. If not approved
+    // (or cache check fails) enqueue the pointer upsert to the outbox so
+    // the write is performed by the flush worker when permitted. This
+    // avoids creating local Firestore writes that may be reverted by the
+    // server and undo the instructor's offline captures.
+    final String? uid = FirebaseAuth.instance.currentUser?.uid;
+    final String dateKey = _dateKey(now);
     try {
-      await _firestore
-          .collection(_kSessionPointerCollection)
-          .doc(pointerId)
-          .set(<String, dynamic>{
-            'sessionId': sessionId,
-            'classId': widget.config.classId,
-            'instructorId': FirebaseAuth.instance.currentUser?.uid,
-            'dateKey': _dateKey(now),
-            'scheduleKey': widget.config.scheduleKey,
-            'dayOfWeek': widget.config.dayOfWeek,
-            'startHour': widget.config.start.hour,
-            'startMinute': widget.config.start.minute,
-            'endHour': widget.config.end.hour,
-            'endMinute': widget.config.end.minute,
-            'scheduledStartAt': Timestamp.fromDate(scheduledStart),
-            'status': status,
-            'scheduledEndAt': Timestamp.fromDate(scheduledEnd),
-            'updatedAt': FieldValue.serverTimestamp(),
-            if (ended)
-              'endedAt': FieldValue.serverTimestamp()
-            else
-              'endedAt': FieldValue.delete(),
-          }, SetOptions(merge: true));
+      bool doDirect = false;
+      if (uid != null && uid.isNotEmpty) {
+        try {
+          final DocumentSnapshot<Map<String, dynamic>> userSnap = await _firestore
+              .collection('users')
+              .doc(uid)
+              .get(const GetOptions(source: Source.cache));
+          if (userSnap.exists) {
+            final Object? approvedRaw = userSnap.data()?['approved'];
+            if (approvedRaw == true) doDirect = true;
+          }
+        } catch (_) {
+          // Cache read failed; fall through to enqueue.
+        }
+      }
+
+      if (doDirect) {
+        await _firestore
+            .collection(_kSessionPointerCollection)
+            .doc(pointerId)
+            .set(<String, dynamic>{
+              'sessionId': sessionId,
+              'classId': widget.config.classId,
+              'instructorId': uid,
+              'dateKey': dateKey,
+              'scheduleKey': widget.config.scheduleKey,
+              'dayOfWeek': widget.config.dayOfWeek,
+              'startHour': widget.config.start.hour,
+              'startMinute': widget.config.start.minute,
+              'endHour': widget.config.end.hour,
+              'endMinute': widget.config.end.minute,
+              'scheduledStartAt': Timestamp.fromDate(scheduledStart),
+              'status': status,
+              'scheduledEndAt': Timestamp.fromDate(scheduledEnd),
+              'updatedAt': FieldValue.serverTimestamp(),
+              if (ended) 'endedAt': FieldValue.serverTimestamp() else 'endedAt': FieldValue.delete(),
+            }, SetOptions(merge: true));
+      } else {
+        await AttendanceOutboxService.instance.enqueueSessionPointer(
+          pointerId: pointerId,
+          sessionId: sessionId,
+          classId: widget.config.classId,
+          instructorId: uid,
+          dateKey: dateKey,
+          scheduleKey: widget.config.scheduleKey,
+          dayOfWeek: widget.config.dayOfWeek,
+          startHour: widget.config.start.hour,
+          startMinute: widget.config.start.minute,
+          endHour: widget.config.end.hour,
+          endMinute: widget.config.end.minute,
+          status: status,
+          ended: ended,
+        );
+      }
     } catch (_) {
-      // Best-effort only.
+      // Best-effort only: enqueue as a fallback.
+      try {
+        await AttendanceOutboxService.instance.enqueueSessionPointer(
+          pointerId: pointerId,
+          sessionId: sessionId,
+          classId: widget.config.classId,
+          instructorId: uid,
+          dateKey: dateKey,
+          scheduleKey: widget.config.scheduleKey,
+          dayOfWeek: widget.config.dayOfWeek,
+          startHour: widget.config.start.hour,
+          startMinute: widget.config.start.minute,
+          endHour: widget.config.end.hour,
+          endMinute: widget.config.end.minute,
+          status: status,
+          ended: ended,
+        );
+      } catch (_) {}
     }
   }
 
