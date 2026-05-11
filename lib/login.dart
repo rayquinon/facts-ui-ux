@@ -2,12 +2,13 @@
 
 import 'dart:math' as math;
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
-import 'signup_pickrole.dart';
+import 'privacy_consent_page.dart';
 import 'widgets/clay_surface.dart';
 import 'services/user_role_service.dart';
 import 'services/app_update_service.dart';
@@ -53,9 +54,6 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
-  void _openSignUpPage() {
-    Navigator.of(context).pushNamed(SignupPickRolePage.routeName);
-  }
 
   @override
   void dispose() {
@@ -147,11 +145,47 @@ class _LoginPageState extends State<LoginPage> {
             ),
           );
         }
-        Navigator.of(context).pushReplacementNamed(
-          VerifyEmailPage.routeName,
-          arguments: const VerifyEmailPageArgs(destinationRoute: '/'),
-        );
+        
+        // Check if user has consented to privacy before going to verify email
+        try {
+          final doc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
+          final hasConsented = (doc.data()?['privacyConsentAt'] != null);
+          if (!mounted) return;
+          
+          Navigator.of(context).pushReplacementNamed(
+            hasConsented ? VerifyEmailPage.routeName : PrivacyConsentPage.routeName,
+            arguments: hasConsented 
+                ? const VerifyEmailPageArgs(destinationRoute: '/')
+                : VerifyEmailPage.routeName,
+          );
+        } catch (_) {
+          // Default to verify email if privacy check fails
+          if (!mounted) return;
+          Navigator.of(context).pushReplacementNamed(
+            VerifyEmailPage.routeName,
+            arguments: const VerifyEmailPageArgs(destinationRoute: '/'),
+          );
+        }
         return;
+      }
+
+      // Check privacy consent for email-verified students
+      if (!isAdmin) {
+        try {
+          final doc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
+          final hasConsented = (doc.data()?['privacyConsentAt'] != null);
+          if (!mounted) return;
+          
+          if (!hasConsented) {
+            Navigator.of(context).pushReplacementNamed(
+              PrivacyConsentPage.routeName,
+              arguments: '/',
+            );
+            return;
+          }
+        } catch (_) {
+          // If privacy check fails, still let them proceed
+        }
       }
 
       // Always go through AuthGate so any new gates (phone verification, etc)
@@ -808,28 +842,14 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                   ),
                   const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: <Widget>[
-                      Text(
-                        'New to F.A.C.T.S.?',
-                        style: theme.textTheme.bodyMedium,
-                      ),
-                      TextButton(
-                        onPressed: _openSignUpPage,
-                        child: const Text('Sign up'),
-                      ),
-                    ],
-                  ),
-                  if (kIsWeb || defaultTargetPlatform == TargetPlatform.android)
-                    Align(
-                      alignment: isTablet
-                          ? Alignment.centerLeft
-                          : Alignment.center,
-                      child: TextButton.icon(
-                        onPressed: _checkForUpdates,
-                        icon: const Icon(Icons.system_update_alt, size: 18),
-                        label: const Text(
+                  Align(
+                    alignment: isTablet
+                        ? Alignment.centerLeft
+                        : Alignment.center,
+                    child: TextButton.icon(
+                      onPressed: _checkForUpdates,
+                      icon: const Icon(Icons.system_update_alt, size: 18),
+                      label: const Text(
                           'Check for updates',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,

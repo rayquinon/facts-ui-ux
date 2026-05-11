@@ -230,8 +230,19 @@ async function hasAdminRole(uid) {
 async function getUserProfile(uid) {
   const db = getFirestore();
   const snap = await db.collection('users').doc(uid).get();
-  if (!snap.exists) return null;
-  const data = snap.data() || {};
+  let data = snap.exists ? snap.data() || {} : null;
+
+  // Imported student accounts are stored as users/{studentId}, but they also
+  // persist the Firebase Auth uid in the document. Fall back to that shape so
+  // backend role checks can resolve them without duplicating user docs.
+  if (!data || typeof data.role !== 'string') {
+    const uidMatch = await db.collection('users').where('uid', '==', uid).limit(1).get();
+    if (!uidMatch.empty) {
+      data = uidMatch.docs[0].data() || {};
+    }
+  }
+
+  if (!data) return null;
   return {
     uid,
     role: typeof data.role === 'string' ? data.role.trim().toLowerCase() : null,
@@ -1865,22 +1876,101 @@ exports.adminDeleteUser = onCall({ cors: true, timeoutSeconds: 120 }, async (req
     throw toHttpsError('Delete studentIdIndex', error);
   }
 
-  // Delete the user profile doc.
+  // Delete the user profile doc(s).
+  // Try deleting from users/{uid} first (backward compatibility)
   try {
     await db.collection('users').doc(uid).delete();
   } catch (_) {
     // Best-effort.
   }
 
-  // Finally, delete Firebase Auth account.
+  // Also search for and delete users documents where the uid field matches
+  // (handles Phase 1 imports stored as users/{studentId})
+  try {
+    const usersWithUid = await db.collection('users').where('uid', '==', uid).get();
+    const batch = db.batch();
+    usersWithUid.docs.forEach((doc) => {
+      batch.delete(doc.ref);
+    });
+    if (usersWithUid.size > 0) {
+      await batch.commit();
+    }
+  } catch (error) {
+    console.warn(`Warning: Could not delete users with uid field: ${error}`);
+    // Non-fatal, continue with Auth deletion
+  }
+
+  // Finally, delete Firebase Auth account (non-fatal if user doesn't exist).
   try {
     await getAuth().deleteUser(uid);
   } catch (error) {
-    throw new HttpsError('internal', `Auth deletion failed: ${error && error.message ? error.message : String(error)}`);
+    // Only throw if it's not a "user not found" error
+    const errorCode = error.code || String(error);
+    if (!errorCode.includes('user-not-found') && !errorCode.includes('no user record')) {
+      throw new HttpsError('internal', `Auth deletion failed: ${error && error.message ? error.message : String(error)}`);
+    }
+    // Otherwise, log and continue - user might have been manually deleted
+    console.log(`Note: Firebase Auth user ${uid} not found (may have been manually deleted)`);
   }
 
   return { ok: true };
 });
+
+exports.adminCleanupGhostUserDocuments = onCall(
+  { cors: true, timeoutSeconds: 300 },
+  async (request) => {
+    requireAdmin(request);
+
+    const db = getFirestore();
+    let processed = 0;
+    let deleted = 0;
+    let errors = [];
+
+    try {
+      // Use listDocuments() so we can inspect both existing docs and missing
+      // parent docs that only exist due to subcollections (ghost docs).
+      const usersRef = db.collection('users');
+      const userRefs = await usersRef.listDocuments();
+
+      for (const userRef of userRefs) {
+        processed++;
+        try {
+          const userSnap = await userRef.get();
+          if (userSnap.exists) {
+            continue;
+          }
+
+          const subcollections = await userRef.listCollections();
+          if (subcollections.length === 0) {
+            continue;
+          }
+
+          for (const subCol of subcollections) {
+            await deleteQueryInBatches(subCol);
+          }
+
+          // Delete missing parent reference after subcollections are removed.
+          await userRef.delete();
+          deleted++;
+          console.log(`Deleted ghost user document: ${userRef.id}`);
+        } catch (error) {
+          console.error(`Failed to process user doc ${userRef.id}:`, error);
+          errors.push({ docId: userRef.id, error: String(error && error.message) });
+        }
+      }
+    } catch (error) {
+      console.error('Ghost cleanup failed:', error);
+      throw new HttpsError('internal', `Cleanup operation failed: ${error && error.message ? error.message : String(error)}`);
+    }
+
+    return {
+      ok: true,
+      processed,
+      deleted,
+      errors: errors.slice(0, 10),
+    };
+  }
+);
 
 async function deleteAttendanceSessionById({ db, sessionId }) {
   const sessionRef = db.collection('attendanceSessions').doc(sessionId);
@@ -2508,6 +2598,537 @@ async function rollbackAttendanceDerivedDataForSession({ db, sessionId }) {
   return { ok: true, rolledBack: true, classId, dateKey, touchedStats, touchedDaily };
 }
 
+/**
+ * Bulk create student accounts from CSV import data.
+ * 
+ * Requires admin authentication.
+ * 
+ * Input: {
+ *   students: [{
+ *     email: string,
+ *     displayName: string,
+ *     studentId: string,
+ *     section: string,
+ *     password: string,  // typically student ID/number as password
+ *     phoneNumber?: string
+ *   }, ...]
+ * }
+ * 
+ * Returns: {
+ *   ok: boolean,
+ *   created: [{
+ *     email: string,
+ *     uid: string,
+ *     studentId: string
+ *   }, ...],
+ *   failed: [{
+ *     email: string,
+ *     studentId: string,
+ *     error: string
+ *   }, ...],
+ *   createdCount: number,
+ *   failedCount: number
+ * }
+ */
+exports.adminBulkCreateStudentAccounts = onCall(
+  { cors: true, timeoutSeconds: 540 },
+  async (request) => {
+    console.log('adminBulkCreateStudentAccounts called');
+    console.log('Request auth:', request.auth?.uid);
+    console.log('Request data keys:', request.data ? Object.keys(request.data) : 'no data');
+    
+    try {
+      requireAdmin(request);
+    } catch (authErr) {
+      console.error('Admin auth check failed:', authErr);
+      throw authErr;
+    }
+
+    const students = Array.isArray(request.data && request.data.students)
+      ? request.data.students
+      : [];
+    
+    console.log('Processing', students.length, 'student accounts');
+
+    if (!students.length) {
+      throw new HttpsError('invalid-argument', 'students array is required and must not be empty');
+    }
+
+    const created = [];
+    const failed = [];
+    const auth = getAuth();
+    const db = getFirestore();
+
+    // Process each student account creation
+    for (const student of students) {
+      const email = typeof student.email === 'string' ? student.email.trim() : '';
+      const displayName = typeof student.displayName === 'string' ? student.displayName.trim() : '';
+      const studentId = typeof student.studentId === 'string' ? student.studentId.trim() : '';
+      const section = typeof student.section === 'string' ? student.section.trim() : '';
+      const password = typeof student.password === 'string' ? student.password.trim() : '';
+      const rawPhoneNumber = typeof student.phoneNumber === 'string' ? student.phoneNumber.trim() : '';
+      const normalizedPhoneNumber = rawPhoneNumber ? normalizePhoneInput(rawPhoneNumber) : '';
+      const hasValidPhoneNumber = isValidE164(normalizedPhoneNumber);
+
+      // Validate required fields
+      if (!email || !displayName || !studentId || !section || !password) {
+        failed.push({
+          email: email || '(empty)',
+          studentId: studentId || '(empty)',
+          error: 'Missing required field: email, displayName, studentId, section, or password',
+        });
+        continue;
+      }
+
+      try {
+        console.log(`Creating account for ${email} (studentId: ${studentId})`);
+        
+        // Check if user already exists by email
+        let existingUser = null;
+        try {
+          existingUser = await auth.getUserByEmail(email);
+        } catch (e) {
+          // User doesn't exist, which is what we want
+          console.log(`User ${email} does not exist yet`);
+        }
+
+        let uid;
+        if (existingUser) {
+          // User already exists, skip creation
+          uid = existingUser.uid;
+          console.log(`User ${email} already exists with uid ${uid}`);
+          created.push({
+            email,
+            uid,
+            studentId,
+            status: 'already-exists',
+          });
+        } else {
+          // Create new user with email and password
+          console.log(`Creating new user for ${email} with password length ${(password + '').length}`);
+          const userRecord = await auth.createUser({
+            email,
+            password,
+            displayName,
+          });
+          uid = userRecord.uid;
+          console.log(`User ${email} created with uid ${uid}`);
+          created.push({
+            email,
+            uid,
+            studentId,
+            status: 'created',
+          });
+        }
+
+        // Normalize studentId for the index (trim, uppercase, remove whitespace/dashes)
+        const normalizedStudentId = String(studentId)
+          .trim()
+          .toUpperCase()
+          .replaceAll(/\s+/g, '')
+          .replaceAll(/\u2010|\u2011|\u2012|\u2013|\u2014|\u2015|\u2212/g, '-')
+          .replaceAll(/-{2,}/g, '-');
+
+        // Update existing Firestore document with account info and verification flags
+        // Use the original studentId from input (same as Phase 1) to update the same document
+        const userRef = db.collection('users').doc(studentId);
+        const indexRef = db.collection('studentIdIndex').doc(normalizedStudentId);
+
+        const existingProfileSnap = await userRef.get();
+        const existingProfile = existingProfileSnap.exists ? (existingProfileSnap.data() || {}) : {};
+        const mustChangePassword = existingProfile.passwordChangedAt == null && existingProfile.mustChangePassword !== false;
+
+        const importedStudentProfile = {
+          uid, // Link the Firebase Auth uid to both document shapes.
+          displayName,
+          'Full Name': displayName,
+          email,
+          Email: email,
+          role: 'student',
+          studentId: normalizedStudentId,
+          'Student ID': normalizedStudentId,
+          section,
+          accountOrigin: 'student-import',
+          emailVerified: false,
+          phoneNumberVerified: false,
+          emailVerificationStatus: 'not-verified',
+          phoneNumberVerificationStatus: 'not-verified',
+          mustChangePassword,
+          'createdAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        };
+
+        const batch = db.batch();
+        batch.set(
+          userRef,
+          importedStudentProfile,
+          { merge: true }
+        );
+
+        if (hasValidPhoneNumber) {
+          batch.set(
+            userRef,
+            {
+              phoneNumber: normalizedPhoneNumber,
+              phoneNumberCandidate: normalizedPhoneNumber,
+            },
+            { merge: true }
+          );
+        } else if (rawPhoneNumber) {
+          batch.set(
+            userRef,
+            {
+              phoneNumber: rawPhoneNumber,
+              phoneNumberCandidate: rawPhoneNumber,
+            },
+            { merge: true }
+          );
+        }
+
+        // Only set index if it's a new account
+        if (!existingUser) {
+          batch.set(indexRef, {
+            uid,
+            studentId: normalizedStudentId,
+            email,
+            createdAt: FieldValue.serverTimestamp(),
+          });
+        }
+
+        await batch.commit();
+      } catch (error) {
+        const errorMsg =
+          error && error.message ? String(error.message) : String(error);
+        console.error(`Failed to create account for ${email}:`, error);
+        failed.push({
+          email,
+          studentId,
+          error: errorMsg,
+        });
+      }
+    }
+
+    // Set custom claims for all student accounts so Firestore rules can verify role
+    for (const account of created) {
+      try {
+        const existingClaims = (await auth.getUser(account.uid)).customClaims || {};
+        await auth.setCustomUserClaims(account.uid, { ...existingClaims, student: true });
+      } catch (claimErr) {
+        console.warn(`Failed to set student claim for ${account.email} (${account.uid}):`, claimErr);
+      }
+    }
+
+    console.log(`adminBulkCreateStudentAccounts complete: ${created.length} created, ${failed.length} failed`);
+    return {
+      ok: true,
+      created,
+      failed,
+      createdCount: created.length,
+      failedCount: failed.length,
+    };
+  }
+);
+
+exports.adminBulkCreateInstructorAccounts = onCall(
+  { cors: true, timeoutSeconds: 540 },
+  async (request) => {
+    console.log('adminBulkCreateInstructorAccounts called');
+    console.log('Request auth:', request.auth?.uid);
+    console.log('Request data keys:', request.data ? Object.keys(request.data) : 'no data');
+    
+    try {
+      requireAdmin(request);
+    } catch (authErr) {
+      console.error('Admin auth check failed:', authErr);
+      throw authErr;
+    }
+
+    const instructors = Array.isArray(request.data && request.data.instructors)
+      ? request.data.instructors
+      : [];
+    
+    console.log('Processing', instructors.length, 'instructor accounts');
+
+    if (!instructors.length) {
+      throw new HttpsError('invalid-argument', 'instructors array is required and must not be empty');
+    }
+
+    const created = [];
+    const failed = [];
+    const auth = getAuth();
+    const db = getFirestore();
+
+    // Process each instructor account creation
+    for (const instructor of instructors) {
+      const email = typeof instructor.email === 'string' ? instructor.email.trim() : '';
+      const displayName = typeof instructor.displayName === 'string' ? instructor.displayName.trim() : '';
+      const instructorId = typeof instructor.instructorId === 'string' ? instructor.instructorId.trim() : '';
+      const department = typeof instructor.department === 'string' ? instructor.department.trim() : '';
+      const password = typeof instructor.password === 'string' ? instructor.password.trim() : '';
+      const rawPhoneNumber = typeof instructor.phoneNumber === 'string' ? instructor.phoneNumber.trim() : '';
+      const normalizedPhoneNumber = rawPhoneNumber ? normalizePhoneInput(rawPhoneNumber) : '';
+      const hasValidPhoneNumber = isValidE164(normalizedPhoneNumber);
+
+      // Validate required fields
+      if (!email || !displayName || !instructorId || !password) {
+        failed.push({
+          email: email || '(empty)',
+          instructorId: instructorId || '(empty)',
+          error: 'Missing required field: email, displayName, instructorId, or password',
+        });
+        continue;
+      }
+
+      try {
+        console.log(`Creating account for ${email} (instructorId: ${instructorId})`);
+        
+        // Check if user already exists by email
+        let existingUser = null;
+        try {
+          existingUser = await auth.getUserByEmail(email);
+        } catch (e) {
+          // User doesn't exist, which is what we want
+          console.log(`User ${email} does not exist yet`);
+        }
+
+        let uid;
+        if (existingUser) {
+          // User already exists, skip creation
+          uid = existingUser.uid;
+          console.log(`User ${email} already exists with uid ${uid}`);
+          created.push({
+            email,
+            uid,
+            instructorId,
+            status: 'already-exists',
+          });
+        } else {
+          // Create new user with email and password
+          console.log(`Creating new user for ${email} with password length ${(password + '').length}`);
+          const userRecord = await auth.createUser({
+            email,
+            password,
+            displayName,
+          });
+          uid = userRecord.uid;
+          console.log(`User ${email} created with uid ${uid}`);
+          created.push({
+            email,
+            uid,
+            instructorId,
+            status: 'created',
+          });
+        }
+
+        // Normalize instructorId for the index (trim, uppercase, remove whitespace/dashes)
+        const normalizedInstructorId = String(instructorId)
+          .trim()
+          .toUpperCase()
+          .replaceAll(/\s+/g, '')
+          .replaceAll(/\u2010|\u2011|\u2012|\u2013|\u2014|\u2015|\u2212/g, '-')
+          .replaceAll(/-{2,}/g, '-');
+
+        // Update existing Firestore document with account info and verification flags
+        const userRef = db.collection('users').doc(instructorId);
+        const indexRef = db.collection('instructorIdIndex').doc(normalizedInstructorId);
+
+        const existingProfileSnap = await userRef.get();
+        const existingProfile = existingProfileSnap.exists ? (existingProfileSnap.data() || {}) : {};
+        const mustChangePassword = existingProfile.passwordChangedAt == null && existingProfile.mustChangePassword !== false;
+
+        const importedInstructorProfile = {
+          uid,
+          displayName,
+          'Full Name': displayName,
+          email,
+          Email: email,
+          role: 'instructor',
+          instructorId: normalizedInstructorId,
+          department: department || '',
+          accountOrigin: 'instructor-import',
+          emailVerified: false,
+          phoneNumberVerified: false,
+          emailVerificationStatus: 'not-verified',
+          phoneNumberVerificationStatus: 'not-verified',
+          mustChangePassword,
+          'createdAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        };
+
+        const batch = db.batch();
+        batch.set(
+          userRef,
+          importedInstructorProfile,
+          { merge: true }
+        );
+
+        if (hasValidPhoneNumber) {
+          await auth.updateUser(uid, { phoneNumber: normalizedPhoneNumber });
+          batch.set(
+            userRef,
+            {
+              phoneNumber: normalizedPhoneNumber,
+              authPhoneNumber: normalizedPhoneNumber,
+            },
+            { merge: true }
+          );
+        } else if (rawPhoneNumber) {
+          batch.set(
+            userRef,
+            {
+              phoneNumber: rawPhoneNumber,
+            },
+            { merge: true }
+          );
+        }
+
+        // Only set index if it's a new account
+        if (!existingUser) {
+          batch.set(indexRef, {
+            uid,
+            instructorId: normalizedInstructorId,
+            email,
+            createdAt: FieldValue.serverTimestamp(),
+          });
+        }
+
+        await batch.commit();
+      } catch (error) {
+        const errorMsg =
+          error && error.message ? String(error.message) : String(error);
+        console.error(`Failed to create account for ${email}:`, error);
+        failed.push({
+          email,
+          instructorId,
+          error: errorMsg,
+        });
+      }
+    }
+
+    // Set custom claims for all instructor accounts so Firestore rules can verify role
+    for (const account of created) {
+      try {
+        const existingClaims = (await auth.getUser(account.uid)).customClaims || {};
+        await auth.setCustomUserClaims(account.uid, { ...existingClaims, instructor: true });
+      } catch (claimErr) {
+        console.warn(`Failed to set instructor claim for ${account.email} (${account.uid}):`, claimErr);
+      }
+    }
+
+    console.log(`adminBulkCreateInstructorAccounts complete: ${created.length} created, ${failed.length} failed`);
+    return {
+      ok: true,
+      created,
+      failed,
+      createdCount: created.length,
+      failedCount: failed.length,
+    };
+  }
+);
+
+/**
+ * Admin callable to find and optionally remove mirror user documents.
+ *
+ * A "mirror" doc is a document under `users/{uid}` where there also exists
+ * another document (typically `users/{studentId}`) whose `uid` field equals
+ * that uid. This callable performs a dry-run by default and returns the
+ * list of candidate mirror doc ids. To actually delete, call with
+ * `{ dryRun: false, force: true }` (force will remove subcollections).
+ *
+ * Requires admin privileges.
+ */
+exports.adminRemoveMirrorUserDocs = onCall({ cors: true, timeoutSeconds: 540 }, async (request) => {
+  requireAdmin(request);
+  const db = getFirestore();
+  const dryRun = request.data && request.data.dryRun !== undefined ? !!request.data.dryRun : true;
+  const force = request.data && request.data.force === true;
+
+  try {
+    const allDocRefs = await db.collection('users').listDocuments();
+
+    // First pass: build map of authUid -> canonicalDocId (doc that stores uid field)
+    const uidToCanonical = new Map();
+    for (const ref of allDocRefs) {
+      try {
+        const snap = await ref.get();
+        if (!snap.exists) continue;
+        const data = snap.data() || {};
+        const u = typeof data.uid === 'string' ? data.uid.trim() : '';
+        if (u) {
+          // If multiple canonical docs point to same uid, prefer the first seen.
+          if (!uidToCanonical.has(u)) uidToCanonical.set(u, ref.id);
+        }
+      } catch (e) {
+        console.warn('adminRemoveMirrorUserDocs: read error', ref.id, e && e.message);
+      }
+    }
+
+    const candidates = [];
+    const skipped = [];
+    const errors = [];
+    let deletedCount = 0;
+
+    for (const ref of allDocRefs) {
+      const id = ref.id;
+      const canonicalId = uidToCanonical.get(id);
+      if (!canonicalId || canonicalId === id) continue; // not a mirror
+
+      // At this point, there's at least one other doc whose uid == id.
+      // Ensure we don't accidentally delete a canonical doc.
+      try {
+        // Check for subcollections; don't delete children unless force=true.
+        const subcols = await ref.listCollections();
+        if (subcols && subcols.length > 0 && !force) {
+          skipped.push({ id, reason: 'hasSubcollections' });
+          continue;
+        }
+
+        candidates.push({ id, canonicalId, hasSubcollections: (subcols && subcols.length > 0) || false });
+
+        if (!dryRun) {
+          // If force, delete subcollections first using helper.
+          if (subcols && subcols.length > 0) {
+            for (const subCol of subcols) {
+              try {
+                // deleteQueryInBatches accepts a Query/Collection reference.
+                await deleteQueryInBatches(subCol);
+              } catch (e) {
+                console.warn('adminRemoveMirrorUserDocs: failed deleting subcollection', subCol.path, e && e.message);
+                errors.push({ id, subcollection: subCol.path, error: String(e && e.message) });
+              }
+            }
+          }
+
+          try {
+            await ref.delete();
+            deletedCount++;
+          } catch (e) {
+            console.warn('adminRemoveMirrorUserDocs: failed deleting doc', id, e && e.message);
+            errors.push({ id, error: String(e && e.message) });
+          }
+        }
+      } catch (e) {
+        console.warn('adminRemoveMirrorUserDocs: error processing', id, e && e.message);
+        errors.push({ id, error: String(e && e.message) });
+      }
+    }
+
+    return {
+      ok: true,
+      dryRun,
+      force,
+      processed: allDocRefs.length,
+      candidates,
+      skipped,
+      deletedCount,
+      errors,
+    };
+  } catch (e) {
+    console.error('adminRemoveMirrorUserDocs failed', e && e.message);
+    throw toHttpsError('adminRemoveMirrorUserDocs', e);
+  }
+});
+
 exports.adminDeleteAttendanceSession = onCall({ cors: true, timeoutSeconds: 300 }, async (request) => {
   requireAdmin(request);
   const sessionId = request.data && request.data.sessionId ? String(request.data.sessionId) : '';
@@ -2524,6 +3145,50 @@ exports.adminDeleteAttendanceSession = onCall({ cors: true, timeoutSeconds: 300 
     return { ok: true, ...res, rollback };
   } catch (error) {
     throw toHttpsError('Delete attendance session', error);
+  }
+});
+
+/**
+ * Admin function to set admin claim for a specific user.
+ * Requires the calling user to be an admin.
+ * 
+ * Input: { targetUid: string }
+ * Returns: { ok: boolean, message: string }
+ */
+exports.adminSetAdminClaim = onCall({ cors: true }, async (request) => {
+  requireAdmin(request);
+
+  const targetUid = String(request.data && request.data.targetUid || '').trim();
+  if (!targetUid) {
+    throw new HttpsError('invalid-argument', 'targetUid is required');
+  }
+
+  const auth = getAuth();
+  const db = getFirestore();
+
+  try {
+    // Get the target user
+    const userRecord = await auth.getUser(targetUid);
+    console.log(`Setting admin claim for user: ${userRecord.email} (${targetUid})`);
+
+    // Set the admin claim
+    const existingClaims = userRecord.customClaims || {};
+    await auth.setCustomUserClaims(targetUid, { ...existingClaims, admin: true });
+
+    // Record in Firestore
+    await db.collection('users').doc(targetUid).set(
+      { 
+        adminClaimSetAt: FieldValue.serverTimestamp(),
+        adminClaimSetBy: request.auth.uid,
+      },
+      { merge: true }
+    );
+
+    console.log(`Successfully set admin claim for ${targetUid}`);
+    return { ok: true, message: `Admin claim set for ${userRecord.email}` };
+  } catch (error) {
+    console.error(`Failed to set admin claim for ${targetUid}:`, error);
+    throw toHttpsError('Set admin claim', error);
   }
 });
 
@@ -2701,6 +3366,162 @@ exports.mergeAttendanceSessionAttemptsForSlot = onCall(
       deletedIds: deleted,
       failedCount: failed.length,
       failed,
+    };
+  }
+);
+
+exports.adminBackfillStudentClaims = onCall(
+  { cors: true, timeoutSeconds: 540 },
+  async (request) => {
+    const auth = getAuth();
+    const db = getFirestore();
+
+    if (!request.auth) {
+      throw new HttpsError('unauthenticated', 'Must be signed in');
+    }
+
+    const callerToken = request.auth.token || {};
+    const isAdmin = callerToken.admin === true || callerToken.admin === 'true';
+
+    if (!isAdmin) {
+      throw new HttpsError('permission-denied', 'Must be admin to run backfill');
+    }
+
+    let processed = 0;
+    let updated = 0;
+    let skipped = 0;
+    let failed = 0;
+    const errors = [];
+
+    try {
+      const usersSnap = await db.collection('users').get();
+      console.log(`Found ${usersSnap.docs.length} docs in users collection`);
+
+      for (const doc of usersSnap.docs) {
+        try {
+          processed += 1;
+          const data = doc.data() || {};
+          const uid = typeof data.uid === 'string' ? data.uid.trim() : '';
+          const role = typeof data.role === 'string' ? data.role.trim() : '';
+
+          if (!uid) {
+            console.log(`Doc ${doc.id}: no uid field, skipping`);
+            skipped += 1;
+            continue;
+          }
+
+          if (role !== 'student') {
+            console.log(`Doc ${doc.id}: role is "${role}", not student, skipping`);
+            skipped += 1;
+            continue;
+          }
+
+          let user;
+          try {
+            user = await auth.getUser(uid);
+          } catch (getErr) {
+            console.warn(`Failed to get Auth user ${uid}: ${getErr && getErr.message}`);
+            failed += 1;
+            errors.push({ docId: doc.id, uid, step: 'getUser', error: String(getErr && getErr.message) });
+            continue;
+          }
+
+          const existingClaims = user.customClaims || {};
+          if (existingClaims.student === true) {
+            console.log(`Auth user ${uid}: already has student claim, skipping`);
+            skipped += 1;
+            continue;
+          }
+
+          try {
+            const newClaims = { ...existingClaims, student: true };
+            await auth.setCustomUserClaims(uid, newClaims);
+            updated += 1;
+            console.log(`Auth user ${uid}: set student:true claim`);
+
+            // Keep the mirrored users/{uid} doc in sync so Firestore rules can
+            // resolve the student's section and role for dashboard reads.
+            await db.collection('users').doc(uid).set(
+              {
+                uid,
+                role: 'student',
+                studentId: typeof data.studentId === 'string' ? data.studentId : doc.id,
+                section: typeof data.section === 'string' ? data.section : '',
+                displayName: typeof data.displayName === 'string' ? data.displayName : '',
+                'Full Name': typeof data['Full Name'] === 'string' ? data['Full Name'] : '',
+                email: typeof data.email === 'string' ? data.email : '',
+                Email: typeof data.Email === 'string' ? data.Email : '',
+                accountOrigin: 'student-import',
+                importedProfile: true,
+                mirroredFromStudentId: doc.id,
+                mirroredAt: FieldValue.serverTimestamp(),
+              },
+              { merge: true }
+            );
+          } catch (setErr) {
+            console.error(`Failed to set claim for ${uid}: ${setErr && setErr.message}`);
+            failed += 1;
+            errors.push({ docId: doc.id, uid, step: 'setCustomUserClaims', error: String(setErr && setErr.message) });
+          }
+        } catch (error) {
+          failed += 1;
+          console.error(`Unexpected error processing doc ${doc.id}:`, error);
+          errors.push({ docId: doc.id, step: 'process', error: String(error && error.message) });
+        }
+      }
+    } catch (error) {
+      console.error('Backfill failed:', error);
+      throw new HttpsError('internal', `Backfill operation failed: ${error && error.message}`);
+    }
+
+    console.log(`adminBackfillStudentClaims: processed ${processed}, updated ${updated}, skipped ${skipped}, failed ${failed}`);
+    return {
+      ok: true,
+      processed,
+      updated,
+      skipped,
+      failed,
+      errors: errors.slice(0, 10),
+    };
+  }
+);
+
+exports.studentCompletePasswordChange = onCall(
+  { cors: true, timeoutSeconds: 120 },
+  async (request) => {
+    const uid = requireSignedIn(request);
+    const db = getFirestore();
+
+    const profileQuery = await db.collection('users').where('uid', '==', uid).get();
+    if (profileQuery.docs.length === 0) {
+      throw new HttpsError('not-found', 'Student profile not found');
+    }
+
+    const updates = {
+      mustChangePassword: false,
+      passwordChangedAt: FieldValue.serverTimestamp(),
+      passwordStatus: 'changed',
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+
+    let studentId = '';
+    for (const profileDoc of profileQuery.docs) {
+      const profileData = profileDoc.data() || {};
+      const candidateStudentId = typeof profileData.studentId === 'string' && profileData.studentId.trim()
+        ? profileData.studentId.trim()
+        : profileDoc.id;
+      if (!studentId) {
+        studentId = candidateStudentId;
+      }
+      await profileDoc.ref.set(updates, { merge: true });
+      if (candidateStudentId !== profileDoc.id) {
+        await db.collection('users').doc(candidateStudentId).set(updates, { merge: true });
+      }
+    }
+
+    return {
+      ok: true,
+      studentId,
     };
   }
 );

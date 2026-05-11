@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
@@ -174,8 +175,20 @@ class _VerifyEmailPageState extends State<VerifyEmailPage> {
   }
 
   Future<void> _navigateAfterVerified(User? user) async {
+    // Update Firestore to mark email as verified.
+    if (user != null) {
+      try {
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(user.uid)
+            .update({'emailVerificationStatus': 'verified'});
+      } catch (_) {
+        // Continue even if update fails; user has verified in Auth.
+      }
+    }
     // Always go through AuthGate so role-based gates (like phone verification)
     // are applied consistently.
+    if (!mounted) return;
     Navigator.of(
       context,
     ).pushNamedAndRemoveUntil('/', (Route<dynamic> route) => false);

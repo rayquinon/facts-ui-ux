@@ -80,6 +80,7 @@ class AttendanceOutboxService {
     required String? matchDisplayName,
     required double? confidence,
     required double? similarity,
+    required int? inferenceDurationMs,
     required List<double> embedding,
     required String? attendanceStatus,
   }) async {
@@ -92,6 +93,7 @@ class AttendanceOutboxService {
       'matchDisplayName': matchDisplayName,
       'confidence': confidence,
       'similarity': similarity,
+      'inferenceDurationMs': inferenceDurationMs,
       'embedding': embedding,
       'attendanceStatus': attendanceStatus,
     });
@@ -289,6 +291,9 @@ class AttendanceOutboxService {
                 final double? similarity = payload['similarity'] is num
                     ? (payload['similarity'] as num).toDouble()
                     : null;
+                final int? inferenceDurationMs = payload['inferenceDurationMs'] is num
+                  ? (payload['inferenceDurationMs'] as num).round()
+                  : null;
                 final String? attendanceStatus = (payload['attendanceStatus'] as String?)?.trim();
 
                 final List<double> embedding = (payload['embedding'] is List)
@@ -310,6 +315,7 @@ class AttendanceOutboxService {
                   'matchDisplayName': matchDisplayName,
                   'confidence': confidence,
                   'similarity': similarity,
+                  if (inferenceDurationMs != null) 'inferenceDurationMs': inferenceDurationMs,
                   'embedding': embedding,
                   'attendanceStatus': attendanceStatus,
                 }, SetOptions(merge: true));

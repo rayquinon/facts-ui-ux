@@ -1,15 +1,15 @@
 {
     "latestVersionName":  "1.1.19",
-    "arm64UrlAlt":  "https://simple-distributed-database.web.app/downloads/app-latest-arm64-1.1.19-4134.apk?v=20260505",
+    "arm64UrlAlt":  "https://simple-distributed-database.web.app/downloads/app-latest-arm64-1.1.19-4134.apk?v=20260507100503",
     "latestBuildNumber":  4134,
-    "x64UrlAlt":  "https://simple-distributed-database.web.app/downloads/app-latest-x86_64-1.1.19-4134.apk?v=20260505",
+    "x64UrlAlt":  "https://simple-distributed-database.web.app/downloads/app-latest-x86_64-1.1.19-4134.apk?v=20260507100503",
     "androidPageUrl":  "https://facts.shiro.codes/android/",
-    "x64Url":  "https://facts.shiro.codes/downloads/app-latest-x86_64-1.1.19-4134.apk?v=20260505",
+    "x64Url":  "https://facts.shiro.codes/downloads/app-latest-x86_64-1.1.19-4134.apk?v=20260507100503",
     "androidPageUrlAlt":  "https://simple-distributed-database.web.app/android/",
-    "arm64Url":  "https://facts.shiro.codes/downloads/app-latest-arm64-1.1.19-4134.apk?v=20260505",
-    "updatedAtUtc":  "2026-05-05T13:30:00Z",
-    "apkUrl":  "https://facts.shiro.codes/downloads/app-latest-1.1.19-4134.apk?v=20260505",
-    "armeabiUrl":  "https://facts.shiro.codes/downloads/app-latest-armeabi-v7a-1.1.19-4134.apk?v=20260505",
-    "armeabiUrlAlt":  "https://simple-distributed-database.web.app/downloads/app-latest-armeabi-v7a-1.1.19-4134.apk?v=20260505",
-    "apkUrlAlt":  "https://simple-distributed-database.web.app/downloads/app-latest-1.1.19-4134.apk?v=20260505"
+    "arm64Url":  "https://facts.shiro.codes/downloads/app-latest-arm64-1.1.19-4134.apk?v=20260507100503",
+    "updatedAtUtc":  "2026-05-07T10:05:03.1784861Z",
+    "apkUrl":  "https://facts.shiro.codes/downloads/app-latest-1.1.19-4134.apk?v=20260507100503",
+    "armeabiUrl":  "https://facts.shiro.codes/downloads/app-latest-armeabi-v7a-1.1.19-4134.apk?v=20260507100503",
+    "armeabiUrlAlt":  "https://simple-distributed-database.web.app/downloads/app-latest-armeabi-v7a-1.1.19-4134.apk?v=20260507100503",
+    "apkUrlAlt":  "https://simple-distributed-database.web.app/downloads/app-latest-1.1.19-4134.apk?v=20260507100503"
 }

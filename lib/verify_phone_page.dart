@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -143,6 +144,7 @@ class _VerifyPhonePageState extends State<VerifyPhonePage> {
             );
             await FirebaseAuth.instance.currentUser?.reload();
             if (!mounted) return;
+            await _updatePhoneVerificationStatus();
             _clearResendCooldown();
             widget.onVerified();
           } on FirebaseAuthException catch (e) {
@@ -221,6 +223,7 @@ class _VerifyPhonePageState extends State<VerifyPhonePage> {
       await user.linkWithCredential(credential);
       await user.reload();
       if (!mounted) return;
+      await _updatePhoneVerificationStatus();
       widget.onVerified();
     } on FirebaseAuthException catch (e) {
       if (!mounted) return;
@@ -230,6 +233,20 @@ class _VerifyPhonePageState extends State<VerifyPhonePage> {
       setState(() => _error = 'Verification failed. Please try again.');
     } finally {
       if (mounted) setState(() => _verifying = false);
+    }
+  }
+
+  Future<void> _updatePhoneVerificationStatus() async {
+    final User? user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .update({'phoneNumberVerificationStatus': 'verified'});
+    } catch (_) {
+      // Continue even if update fails; user has verified in Auth.
     }
   }
 

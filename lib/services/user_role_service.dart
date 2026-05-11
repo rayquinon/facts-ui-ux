@@ -89,17 +89,68 @@ class UserRoleService {
       }
     }
 
-    final DocumentReference<Map<String, dynamic>> ref = FirebaseFirestore
-        .instance
+    final FirebaseFirestore firestore = FirebaseFirestore.instance;
+    final DocumentReference<Map<String, dynamic>> ref = firestore
         .collection('users')
         .doc(uid);
-    final DocumentSnapshot<Map<String, dynamic>> snapshot = await ref.get();
-    final Map<String, dynamic>? data = snapshot.data();
-    final Object? roleValue = data?['role'];
-    if (roleValue is String) {
-      final String role = roleValue.toLowerCase();
-      _roleCache[uid] = role;
-      return role;
+
+    Map<String, dynamic>? data;
+    try {
+      final DocumentSnapshot<Map<String, dynamic>> snapshot = await ref.get();
+      data = snapshot.data();
+      final Object? roleValue = data?['role'];
+      if (roleValue is String) {
+        final String role = roleValue.toLowerCase();
+        _roleCache[uid] = role;
+        return role;
+      }
+    } on FirebaseException catch (error) {
+      // Imported student profiles may live under users/{studentId}. If the
+      // direct doc lookup is blocked or missing, fall through to a query by uid.
+      if (error.code != 'permission-denied' && error.code != 'not-found') {
+        rethrow;
+      }
+    }
+
+    try {
+      // Imported student accounts are stored as users/{studentId}, but they also
+      // persist their Firebase Auth uid in the document. Fall back to that shape
+      // so sign-in and role checks still resolve the student role.
+      final QuerySnapshot<Map<String, dynamic>> uidMatch = await firestore
+          .collection('users')
+          .where('uid', isEqualTo: uid)
+          .limit(1)
+          .get();
+      if (uidMatch.docs.isNotEmpty) {
+        final QueryDocumentSnapshot<Map<String, dynamic>> matchedDoc =
+            uidMatch.docs.first;
+        final Map<String, dynamic> uidData = matchedDoc.data();
+        final Object? matchedRoleValue = uidData['role'];
+        if (matchedRoleValue is String) {
+          final String role = matchedRoleValue.toLowerCase();
+          _roleCache[uid] = role;
+          return role;
+        }
+
+        if (attemptRepairIfMissing) {
+          final String? inferred = _inferRoleFromProfile(uidData);
+          if (inferred != null) {
+            try {
+              await matchedDoc.reference.set(<String, dynamic>{
+                'role': inferred,
+              }, SetOptions(merge: true));
+            } on FirebaseException {
+              // Best-effort only.
+            }
+            _roleCache[uid] = inferred;
+            return inferred;
+          }
+        }
+      }
+    } on FirebaseException catch (error) {
+      if (error.code != 'permission-denied') {
+        rethrow;
+      }
     }
 
     if (attemptRepairIfMissing) {
@@ -194,6 +245,7 @@ class UserRoleService {
   /// index in sync.
   static Future<void> adminSwapStudentId({
     required String uid,
+    required String userDocId,
     required String newStudentId,
     required String? oldStudentId,
     required Map<String, Object?> otherUpdates,
@@ -213,8 +265,8 @@ class UserRoleService {
 
     final FirebaseFirestore firestore = FirebaseFirestore.instance;
     final DocumentReference<Map<String, dynamic>> userRef = firestore
-        .collection('users')
-        .doc(uid);
+      .collection('users')
+      .doc(userDocId);
     final DocumentReference<Map<String, dynamic>> newIndexRef = firestore
         .collection(_studentIdIndexCollection)
         .doc(normalizedNew);
@@ -257,6 +309,7 @@ class UserRoleService {
 
       tx.set(userRef, <String, Object?>{
         ...otherUpdates,
+        'uid': uid,
         'studentId': normalizedNew,
         'Student ID': normalizedNew,
       }, SetOptions(merge: true));

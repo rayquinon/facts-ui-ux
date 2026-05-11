@@ -44,8 +44,6 @@ class _InstructorPageState extends State<InstructorPage> {
   _profileSubscription;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>?
   _assignmentSubscription;
-  bool _approvalLoaded = false;
-  bool _isApproved = false;
   bool _isLoadingAssignments = true;
   String? _assignmentError;
   List<_InstructorClassAssignment> _assignments =
@@ -303,7 +301,7 @@ class _InstructorPageState extends State<InstructorPage> {
   @override
   void initState() {
     super.initState();
-    _listenToApproval();
+    _subscribeToAssignments();
     _ensurePushInitialized();
   }
 
@@ -780,59 +778,6 @@ class _InstructorPageState extends State<InstructorPage> {
     );
   }
 
-  void _listenToApproval() {
-    final User? user = FirebaseAuth.instance.currentUser;
-    final String? uid = user?.uid;
-    if (uid == null || uid.isEmpty) {
-      setState(() {
-        _approvalLoaded = true;
-        _isApproved = false;
-      });
-      return;
-    }
-
-    _profileSubscription?.cancel();
-    _profileSubscription = FirebaseFirestore.instance
-        .collection('users')
-        .doc(uid)
-        .snapshots()
-        .listen(
-          (DocumentSnapshot<Map<String, dynamic>> snapshot) {
-            final Map<String, dynamic>? data = snapshot.data();
-            final bool approved = data?['approved'] == true;
-            if (!mounted) return;
-            setState(() {
-              _approvalLoaded = true;
-              _isApproved = approved;
-            });
-
-            if (approved) {
-              if (_assignmentSubscription == null) {
-                _subscribeToAssignments();
-              }
-            } else {
-              _assignmentSubscription?.cancel();
-              _assignmentSubscription = null;
-              if (mounted) {
-                setState(() {
-                  _isLoadingAssignments = false;
-                  _assignmentError = null;
-                  _assignments = <_InstructorClassAssignment>[];
-                  _scheduleEntries = <_InstructorSchedule>[];
-                });
-              }
-            }
-          },
-          onError: (Object error) {
-            if (!mounted) return;
-            setState(() {
-              _approvalLoaded = true;
-              _isApproved = false;
-            });
-          },
-        );
-  }
-
   Future<void> _handleSignOut() async {
     final bool shouldSignOut = await showConfirmSignOutDialog(context);
     if (!shouldSignOut) return;
@@ -1300,57 +1245,6 @@ class _InstructorPageState extends State<InstructorPage> {
 
   @override
   Widget build(BuildContext context) {
-    if (!_approvalLoaded) {
-      return const Scaffold(
-        body: SafeArea(child: Center(child: CircularProgressIndicator())),
-      );
-    }
-
-    if (!_isApproved) {
-      return Scaffold(
-        appBar: AppBar(
-          title: const Text('Instructor Workspace'),
-          actions: <Widget>[
-            TextButton.icon(
-              onPressed: _handleSignOut,
-              icon: const Icon(Icons.logout, size: 18),
-              label: const Text('Sign out'),
-            ),
-          ],
-        ),
-        body: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 520),
-                child: const Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: <Widget>[
-                    Icon(Icons.verified_user_outlined, size: 42),
-                    SizedBox(height: 12),
-                    Text(
-                      'Your instructor account is pending approval.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    SizedBox(height: 8),
-                    Text(
-                      'Please wait for the admin to approve your account. You will be able to access instructor features once approved.',
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-    }
-
     final ThemeData theme = Theme.of(context);
     final DateTime liveTime = DateTime.now();
     final DateTime sessionTime = _activeTime;

@@ -15,11 +15,12 @@ import 'dart:convert';
 import 'package:path_provider/path_provider.dart';
 
 import 'admin_page.dart';
+import 'change_password_page.dart';
 import 'face_enrollment_page.dart';
 import 'firebase_options.dart';
 import 'instructor_page.dart';
 import 'login.dart';
-import 'signup_pickrole.dart';
+import 'privacy_consent_page.dart';
 import 'student_page.dart';
 import 'attendance_session_page.dart';
 import 'services/crash_reporter.dart';
@@ -295,31 +296,32 @@ class FactsApp extends StatelessWidget {
   const FactsApp({super.key});
 
   static const Color _brandNavy = Color(0xFF1A1851);
-  static const Color _brandGold = Color(0xFFFCB315);
 
   static ColorScheme _buildColorScheme() {
-    // Claymorphism works best with a dark, slightly colored base and warm accent.
-    // Keep contrast high and avoid pure white; use a warm off-white for text.
-    final Color onDark = Colors.white.withValues(alpha: 0.92);
-    final Color onDarkMuted = Colors.white.withValues(alpha: 0.70);
+    // Full true inversion: light surfaces, dark text.
+    final Color onLight = Colors.black.withValues(alpha: 0.90);
+    final Color onLightMuted = Colors.black.withValues(alpha: 0.60);
 
-    final ColorScheme base = ColorScheme.dark(
-      primary: _brandGold,
-      onPrimary: _brandNavy,
-      secondary: _brandGold,
-      onSecondary: _brandNavy,
-      surface: _brandNavy,
-      onSurface: onDark,
-      outline: Colors.white.withValues(alpha: 0.18),
-      error: const Color(0xFFFF6B6B),
-      onError: Colors.black,
+    // Keep the original brand colors, but invert their roles.
+    final ColorScheme base = ColorScheme.light(
+      primary: _brandNavy,
+      onPrimary: Colors.white,
+      secondary: _brandNavy,
+      onSecondary: Colors.white,
+      surface: Colors.white,
+      onSurface: onLight,
+      outline: Colors.black.withValues(alpha: 0.18),
+      error: const Color(0xFFC62828),
+      onError: Colors.white,
     );
 
     return base.copyWith(
-      surfaceContainerHighest: const Color(0xFF24225F),
-      onSurfaceVariant: onDarkMuted,
+      surfaceContainerHighest: const Color(0xFFF2F2F7),
+      onSurfaceVariant: onLightMuted,
     );
   }
+
+
 
   @override
   Widget build(BuildContext context) {
@@ -327,16 +329,22 @@ class FactsApp extends StatelessWidget {
     final Color offWhite = scheme.onSurface;
     final Color muted = scheme.onSurface.withValues(alpha: 0.70);
     final Color claySurface = scheme.surfaceContainerHighest;
-    final Color clayShadow = Colors.black.withValues(alpha: 0.38);
-    final Color clayHighlight = Colors.white.withValues(alpha: 0.08);
+    // (claySurface declared above)
+    final Color clayShadow = Colors.black.withValues(alpha: 0.35);
+    final Color clayHighlight = Colors.white.withValues(alpha: 0.06);
+
+
+
+
 
     return MaterialApp(
       navigatorKey: _rootNavigatorKey,
       title: 'Facts',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        brightness: Brightness.dark,
         colorScheme: scheme,
+
+
         visualDensity: VisualDensity.adaptivePlatformDensity,
         useMaterial3: true,
         scaffoldBackgroundColor: scheme.surface,
@@ -356,25 +364,25 @@ class FactsApp extends StatelessWidget {
             fontWeight: FontWeight.w700,
           ),
         ),
-        cardTheme: CardThemeData(
-          color: claySurface,
-          elevation: 0,
-          shadowColor: Colors.transparent,
-          surfaceTintColor: Colors.transparent,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(24),
-            side: BorderSide(color: scheme.outline),
+          cardTheme: CardThemeData(
+            // Minimal surfaces: keep dark, reduce “clay” depth even further.
+            color: scheme.surfaceContainerLowest,
+            elevation: 0,
+            shadowColor: Colors.transparent,
+            surfaceTintColor: Colors.transparent,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+              side: BorderSide(color: scheme.outline.withValues(alpha: 0.45)),
+            ),
+            // Avoid a global Card margin: many screens already add padding/margins.
+            margin: EdgeInsets.zero,
           ),
-          // Avoid a global Card margin: many screens already add padding/margins,
-          // and a large default margin can cause cramped layouts/overflow.
-          margin: EdgeInsets.zero,
-        ),
         dialogTheme: DialogThemeData(
-          backgroundColor: claySurface,
+          backgroundColor: scheme.surfaceContainerLowest,
           surfaceTintColor: Colors.transparent,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(24),
-            side: BorderSide(color: scheme.outline),
+            borderRadius: BorderRadius.circular(18),
+            side: BorderSide(color: scheme.outline.withValues(alpha: 0.55)),
           ),
           titleTextStyle: ThemeData.dark().textTheme.titleMedium?.copyWith(
             color: offWhite,
@@ -398,7 +406,7 @@ class FactsApp extends StatelessWidget {
             foregroundColor: scheme.onPrimary,
             textStyle: const TextStyle(fontWeight: FontWeight.w700),
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(18),
+              borderRadius: BorderRadius.circular(16),
             ),
           ),
         ),
@@ -419,14 +427,15 @@ class FactsApp extends StatelessWidget {
         ),
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
-          fillColor: claySurface,
+          // Minimal: keep inputs on the main surface.
+          fillColor: scheme.surfaceContainerLowest,
           hintStyle: TextStyle(color: muted),
           labelStyle: TextStyle(color: offWhite),
           helperStyle: TextStyle(color: muted),
           errorStyle: const TextStyle(color: Color(0xFFFFA3A3)),
           enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(18),
-            borderSide: BorderSide(color: scheme.outline),
+            borderRadius: BorderRadius.circular(16),
+            borderSide: BorderSide(color: scheme.outline.withValues(alpha: 0.55)),
           ),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(18),
@@ -442,7 +451,7 @@ class FactsApp extends StatelessWidget {
           ),
         ),
         dividerTheme: DividerThemeData(
-          color: scheme.outline.withValues(alpha: 0.9),
+          color: scheme.outline.withValues(alpha: 0.55),
           thickness: 1,
           space: 1,
         ),
@@ -452,8 +461,9 @@ class FactsApp extends StatelessWidget {
           foregroundColor: scheme.onPrimary,
           elevation: 0,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-            side: BorderSide(color: clayHighlight),
+            borderRadius: BorderRadius.circular(16),
+            // Minimal: remove visible outline “glow”.
+            side: BorderSide(color: clayHighlight.withValues(alpha: 0.25)),
           ),
         ),
         listTileTheme: ListTileThemeData(
@@ -500,10 +510,13 @@ class FactsApp extends StatelessWidget {
       },
       routes: <String, WidgetBuilder>{
         LoginPage.routeName: (BuildContext context) => const LoginPage(),
-        SignupPickRolePage.routeName: (BuildContext context) =>
-            const SignupPickRolePage(),
         NotificationsPage.routeName: (BuildContext context) =>
             const NotificationsPage(),
+        PrivacyConsentPage.routeName: (BuildContext context) {
+          final ModalRoute<dynamic>? route = ModalRoute.of(context);
+          final String? nextRoute = route?.settings.arguments as String?;
+          return PrivacyConsentPage(nextRoute: nextRoute);
+        },
         VerifyEmailPage.routeName: (BuildContext context) {
           final ModalRoute<dynamic>? route = ModalRoute.of(context);
           final VerifyEmailPageArgs? args =
@@ -512,6 +525,8 @@ class FactsApp extends StatelessWidget {
         },
         AdminPage.routeName: (BuildContext context) => const AdminPage(),
         StudentPage.routeName: (BuildContext context) => const StudentPage(),
+        ChangePasswordPage.routeName: (BuildContext context) =>
+          const ChangePasswordPage(),
         InstructorPage.routeName: (BuildContext context) =>
             const InstructorPage(),
         FaceEnrollmentPage.routeName: (BuildContext context) {
@@ -850,11 +865,17 @@ class _AuthGateState extends State<AuthGate> {
   Future<Map<String, dynamic>> _fetchAuthInfo(User user, int refreshKey) async {
     final bool forceRefresh = refreshKey > 0;
     final IdTokenResult token = await user.getIdTokenResult(forceRefresh);
-    final String? role = await UserRoleService.fetchRoleByUid(
-      user.uid,
-      forceRefresh: forceRefresh,
-      attemptRepairIfMissing: true,
-    );
+    String? role;
+    try {
+      role = await UserRoleService.fetchRoleByUid(
+        user.uid,
+        forceRefresh: forceRefresh,
+        attemptRepairIfMissing: true,
+      );
+    } catch (error, stackTrace) {
+      debugPrint('Role lookup failed for ${user.uid}: $error\n$stackTrace');
+      role = null;
+    }
 
     final Map<String, Object?> claims = token.claims == null
         ? <String, Object?>{}
@@ -867,7 +888,7 @@ class _AuthGateState extends State<AuthGate> {
 
     // If Firestore role is missing (common for legacy/mismatched profiles),
     // fall back to custom claims so approved instructors can get in.
-    final String? resolvedRole = role ?? (isInstructor ? 'instructor' : null);
+    String? resolvedRole = role ?? (isInstructor ? 'instructor' : null);
 
     // Best-effort: write the resolved role back to Firestore so other parts
     // of the app that query by `role` behave correctly.
@@ -882,7 +903,40 @@ class _AuthGateState extends State<AuthGate> {
       }
     }
 
-    return <String, dynamic>{'isAdmin': isAdmin, 'role': resolvedRole};
+    Map<String, dynamic>? profileData;
+    bool mustChangePassword = false;
+    try {
+      final QuerySnapshot<Map<String, dynamic>> profileQuery = await FirebaseFirestore.instance
+          .collection('users')
+          .where('uid', isEqualTo: user.uid)
+          .limit(1)
+          .get();
+      if (profileQuery.docs.isNotEmpty) {
+        profileData = profileQuery.docs.first.data();
+        mustChangePassword = profileData['mustChangePassword'] == true;
+      }
+    } catch (error, stackTrace) {
+      debugPrint('Profile lookup failed for ${user.uid}: $error\n$stackTrace');
+    }
+
+    if (resolvedRole == null) {
+      if (profileData != null) {
+        final Object? importedRoleValue = profileData['role'];
+        if (importedRoleValue is String && importedRoleValue.trim().isNotEmpty) {
+          resolvedRole = importedRoleValue.toLowerCase();
+        } else if ((profileData['section'] as String?)?.trim().isNotEmpty == true ||
+            (profileData['studentId'] as String?)?.trim().isNotEmpty == true) {
+          resolvedRole = 'student';
+        }
+      }
+    }
+
+    return <String, dynamic>{
+      'isAdmin': isAdmin,
+      'role': resolvedRole,
+      'profileData': profileData,
+      'mustChangePassword': mustChangePassword,
+    };
   }
 
   @override
@@ -925,6 +979,7 @@ class _AuthGateState extends State<AuthGate> {
                 final Map<String, dynamic>? data = authSnapshot.data;
                 final bool isAdmin = data?['isAdmin'] == true;
                 final String? role = data?['role'] as String?;
+                final bool mustChangePassword = data?['mustChangePassword'] == true;
 
                 if (kIsWeb &&
                     !isAdmin &&
@@ -974,11 +1029,14 @@ class _AuthGateState extends State<AuthGate> {
                     if ((user.phoneNumber ?? '').isEmpty) {
                       return VerifyPhonePage(onVerified: _triggerAuthRefresh);
                     }
+                    if (mustChangePassword) {
+                      return const ChangePasswordPage();
+                    }
                     return const StudentPage();
                   case 'instructor':
                     _StudentInactivityLogoutController.instance.disable();
-                    if ((user.phoneNumber ?? '').isEmpty) {
-                      return VerifyPhonePage(onVerified: _triggerAuthRefresh);
+                    if (mustChangePassword) {
+                      return const ChangePasswordPage();
                     }
                     return const InstructorPage();
                   default:

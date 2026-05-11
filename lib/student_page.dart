@@ -102,6 +102,24 @@ class _StudentPageState extends State<StudentPage> {
     return record != null;
   }
 
+  Stream<DocumentSnapshot<Map<String, dynamic>>> _profileStream(User user) {
+    return FirebaseFirestore.instance
+        .collection('users')
+        .where('uid', isEqualTo: user.uid)
+        .limit(1)
+        .snapshots()
+        .asyncExpand((QuerySnapshot<Map<String, dynamic>> querySnap) {
+          if (querySnap.docs.isNotEmpty) {
+            return querySnap.docs.first.reference.snapshots();
+          }
+          return FirebaseFirestore.instance
+              .collection('users')
+              .doc(user.uid)
+              .snapshots()
+              .map((DocumentSnapshot<Map<String, dynamic>> snapshot) => snapshot);
+        });
+  }
+
   void _retryEnrollmentCheck(String uid) {
     setState(() {
       _enrollmentUid = uid;
@@ -170,10 +188,7 @@ class _StudentPageState extends State<StudentPage> {
     _ensureEnrollmentFuture(user.uid);
 
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
-          .collection('users')
-          .doc(user.uid)
-          .snapshots(),
+      stream: _profileStream(user),
       builder:
           (
             BuildContext context,
@@ -198,6 +213,20 @@ class _StudentPageState extends State<StudentPage> {
               );
             }
             final Map<String, dynamic>? data = snapshot.data?.data();
+
+            if (snapshot.data != null && !snapshot.data!.exists) {
+              return const Scaffold(
+                body: Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(24),
+                    child: Text(
+                      'Your profile is missing. Please contact support.',
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+              );
+            }
 
             return FutureBuilder<bool>(
               future: _hasEnrollmentFuture,

@@ -21,6 +21,7 @@ class AttendanceOutboxService {
     required String? matchDisplayName,
     required double? confidence,
     required double? similarity,
+    required int? inferenceDurationMs,
     required List<double> embedding,
     required String? attendanceStatus,
   }) async {

@@ -133,7 +133,7 @@ class _RequestExcuseDialogState extends State<RequestExcuseDialog> {
   }
 
   Future<void> _pickPdf() async {
-    final FilePickerResult? result = await FilePicker.platform.pickFiles(
+final FilePickerResult? result = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: const <String>['pdf'],
       withData: true,

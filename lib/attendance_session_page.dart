@@ -2030,6 +2030,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
 
     _isProcessingFrame = true;
     try {
+      final Stopwatch inferenceWatch = Stopwatch()..start();
       final InputImage inputImage = _buildInputImage(image);
       final List<Face> faces = await detector.processImage(inputImage);
       if (faces.isEmpty) {
@@ -2138,6 +2139,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
               leftEye: leftEye,
               rightEye: rightEye,
             );
+        inferenceWatch.stop();
+        final int inferenceDurationMs = inferenceWatch.elapsedMilliseconds;
         _lastCaptureTime = _now();
         final _RecognizedStudent? selected = _selectedStudent;
         if (_viewMode == _AttendanceSessionViewMode.verify &&
@@ -2146,6 +2149,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
             selected,
             embedding,
             tuning,
+            inferenceDurationMs: inferenceDurationMs,
             sourceImage: image,
             sourceBbox: bbox,
             sourceLeftEye: leftEye,
@@ -2157,6 +2161,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
           await _handleEmbeddingCapture(
             embedding,
             tuning,
+            inferenceDurationMs: inferenceDurationMs,
             sourceImage: image,
             sourceBbox: bbox,
             sourceLeftEye: leftEye,
@@ -2282,6 +2287,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
   Future<void> _handleEmbeddingCapture(
     List<double> embedding,
     _DistanceTuning tuning, {
+    int inferenceDurationMs = 0,
     CameraImage? sourceImage,
     Rect? sourceBbox,
     Offset? sourceLeftEye,
@@ -2311,12 +2317,14 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
 
     _MatchResult result = _matchEmbedding(smoothed, tuning);
     List<double> embeddingUsed = smoothed;
+    int totalInferenceDurationMs = inferenceDurationMs;
 
     if (sourceImage != null &&
         sourceBbox != null &&
         sourceLeftEye != null &&
         sourceRightEye != null &&
         _shouldTryLegacyFallback(result, tuning)) {
+      final Stopwatch legacyWatch = Stopwatch()..start();
       try {
         final List<double> legacyEmbedding = await _embeddingService
             .generateEmbeddingAlignedLegacy(
@@ -2329,6 +2337,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
           legacyEmbedding,
           tuning,
         );
+        legacyWatch.stop();
+        totalInferenceDurationMs += legacyWatch.elapsedMilliseconds;
         final chosen = _chooseBetweenNormalAndLegacy(
           result,
           smoothed,
@@ -2494,7 +2504,12 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
       _recordLocalCapture(result, captureTime);
       _capturedStudentIds.add(studentId);
       try {
-        await _persistCapture(result, embeddingUsed, captureTime);
+        await _persistCapture(
+          result,
+          embeddingUsed,
+          captureTime,
+          inferenceDurationMs: totalInferenceDurationMs,
+        );
       } catch (_) {
         // If persistence fails, allow re-capture.
         _capturedStudentIds.remove(studentId);
@@ -2576,6 +2591,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
     _RecognizedStudent selected,
     List<double> embedding,
     _DistanceTuning tuning, {
+    int inferenceDurationMs = 0,
     CameraImage? sourceImage,
     Rect? sourceBbox,
     Offset? sourceLeftEye,
@@ -2609,12 +2625,14 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
       tuning,
     );
     List<double> embeddingUsed = smoothed;
+    int totalInferenceDurationMs = inferenceDurationMs;
 
     if (sourceImage != null &&
         sourceBbox != null &&
         sourceLeftEye != null &&
         sourceRightEye != null &&
         _shouldTryLegacyFallback(result, tuning)) {
+      final Stopwatch legacyWatch = Stopwatch()..start();
       try {
         final List<double> legacyEmbedding = await _embeddingService
             .generateEmbeddingAlignedLegacy(
@@ -2628,6 +2646,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
           selected,
           tuning,
         );
+        legacyWatch.stop();
+        totalInferenceDurationMs += legacyWatch.elapsedMilliseconds;
 
         // Prefer normal if both accept; otherwise pick the one that accepts.
         if (legacyResult.student != null && result.student == null) {
@@ -2645,6 +2665,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
     if (sourceImage != null &&
         sourceBbox != null &&
         _shouldTryUnalignedFallback(result)) {
+      final Stopwatch unalignedWatch = Stopwatch()..start();
       try {
         final List<double> unalignedEmbedding = await _embeddingService
             .generateEmbedding(sourceImage, sourceBbox);
@@ -2653,6 +2674,8 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
           selected,
           tuning,
         );
+        unalignedWatch.stop();
+        totalInferenceDurationMs += unalignedWatch.elapsedMilliseconds;
 
         if (unalignedResult.student != null && result.student == null) {
           result = unalignedResult;
@@ -2746,7 +2769,12 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
     _recordLocalCapture(result, captureTime);
     _capturedStudentIds.add(candidateId);
     try {
-      await _persistCapture(result, embeddingUsed, captureTime);
+      await _persistCapture(
+        result,
+        embeddingUsed,
+        captureTime,
+        inferenceDurationMs: totalInferenceDurationMs,
+      );
     } catch (_) {
       _capturedStudentIds.remove(candidateId);
       rethrow;
@@ -3003,6 +3031,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
     _MatchResult result,
     List<double> embedding,
     DateTime captureTime,
+    {int inferenceDurationMs = 0,}
   ) async {
     final String? sessionId = _sessionDocId;
     if (sessionId == null) {
@@ -3060,6 +3089,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
             'matchDisplayName': result.student?.displayName,
             'confidence': result.confidence,
             'similarity': result.similarity,
+            'inferenceDurationMs': inferenceDurationMs,
             'embedding': embedding,
             'attendanceStatus': attendanceStatus,
           }, SetOptions(merge: true));
@@ -3072,6 +3102,7 @@ class _AttendanceSessionPageState extends State<AttendanceSessionPage>
         matchDisplayName: result.student?.displayName,
         confidence: result.confidence,
         similarity: result.similarity,
+        inferenceDurationMs: inferenceDurationMs,
         embedding: embedding,
         attendanceStatus: attendanceStatus,
       );

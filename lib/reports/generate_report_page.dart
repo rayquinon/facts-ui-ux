@@ -1491,7 +1491,12 @@ class _GenerateReportPageState extends State<GenerateReportPage> {
         color: background,
         borderRadius: BorderRadius.circular(8),
       ),
-      child: Text(label, style: theme.textTheme.labelMedium),
+      child: Text(
+        label,
+        style: theme.textTheme.labelMedium?.copyWith(
+          color: colors.onPrimaryContainer,
+        ),
+      ),
     );
   }
 

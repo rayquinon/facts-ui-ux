@@ -6,6 +6,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import 'admin_student_import_panel.dart';
 import 'analytics/analytics_class_picker_page.dart';
 import 'attendance_calendar_overrides_page.dart';
 import 'widgets/confirm_sign_out_dialog.dart';
@@ -27,7 +28,9 @@ enum _AdminSection {
   classes,
   attendanceSessions,
   excuses,
+  accountImport,
 }
+
 
 class AdminPage extends StatefulWidget {
   const AdminPage({super.key});
@@ -80,6 +83,11 @@ class _AdminPageState extends State<AdminPage> {
       _AdminSection.excuses,
       'Excuse Requests',
       Icons.report_problem_outlined,
+    ),
+    _SectionNavItem(
+      _AdminSection.accountImport,
+      'Account Import',
+      Icons.file_upload_outlined,
     ),
   ];
 
@@ -1015,6 +1023,7 @@ class _AdminPageState extends State<AdminPage> {
     switch (section) {
       case _AdminSection.overview:
         return FutureBuilder<_AdminOverviewStats>(
+
           future: _overviewFuture,
           builder:
               (
@@ -1133,6 +1142,8 @@ class _AdminPageState extends State<AdminPage> {
         );
       case _AdminSection.excuses:
         return _buildExcuseRequestsPanel();
+      case _AdminSection.accountImport:
+        return const AccountImportPanel();
     }
   }
 
@@ -3966,6 +3977,26 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     return false;
   }
 
+  String _canonicalUserDocKey(QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+    final Map<String, dynamic> data = _patchedUserData(doc);
+    final String uid = (data['uid'] as String?)?.trim() ?? '';
+    return uid.isNotEmpty ? uid : doc.id;
+  }
+
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _dedupeUserDocs(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
+    if (docs.length <= 1) return docs;
+
+    final Map<String, QueryDocumentSnapshot<Map<String, dynamic>>> uniqueByKey =
+        <String, QueryDocumentSnapshot<Map<String, dynamic>>>{};
+    for (final QueryDocumentSnapshot<Map<String, dynamic>> doc in docs) {
+      final String key = _canonicalUserDocKey(doc);
+      uniqueByKey.putIfAbsent(key, () => doc);
+    }
+    return uniqueByKey.values.toList(growable: false);
+  }
+
   List<QueryDocumentSnapshot<Map<String, dynamic>>> _filteredUserDocs() {
     if (_loadedUserDocs.isEmpty) {
       return const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
@@ -3974,37 +4005,37 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     final String q = _searchQuery;
     final String? sectionFilter = _selectedStudentSectionFilter;
 
-    final List<QueryDocumentSnapshot<Map<String, dynamic>>>
-    docs = _loadedUserDocs
-        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-          final Map<String, dynamic> data = _patchedUserData(doc);
-          return !_isAdminAccount(doc.id, data);
-        })
-        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-          final Map<String, dynamic> data = _patchedUserData(doc);
-          final String role = ((data['role'] as String?) ?? '').toLowerCase();
-          if (role == 'student') {
-            return _showStudents;
-          }
-          if (role == 'instructor') {
-            return _showInstructors;
-          }
-          return true;
-        })
-        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-          if (sectionFilter == null || sectionFilter.isEmpty) return true;
-          final Map<String, dynamic> data = _patchedUserData(doc);
-          final String role = ((data['role'] as String?) ?? '').toLowerCase();
-          if (role != 'student') return true;
-          final String section = _resolveStudentSection(data);
-          return section == sectionFilter;
-        })
-        .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
-          if (q.isEmpty) return true;
-          final Map<String, dynamic> data = _patchedUserData(doc);
-          return _buildSearchHaystack(data, doc.id).contains(q);
-        })
-        .toList(growable: true);
+    final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
+        _dedupeUserDocs(_loadedUserDocs)
+            .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+              final Map<String, dynamic> data = _patchedUserData(doc);
+              return !_isAdminAccount(doc.id, data);
+            })
+            .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+              final Map<String, dynamic> data = _patchedUserData(doc);
+              final String role = ((data['role'] as String?) ?? '').toLowerCase();
+              if (role == 'student') {
+                return _showStudents;
+              }
+              if (role == 'instructor') {
+                return _showInstructors;
+              }
+              return true;
+            })
+            .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+              if (sectionFilter == null || sectionFilter.isEmpty) return true;
+              final Map<String, dynamic> data = _patchedUserData(doc);
+              final String role = ((data['role'] as String?) ?? '').toLowerCase();
+              if (role != 'student') return true;
+              final String section = _resolveStudentSection(data);
+              return section == sectionFilter;
+            })
+            .where((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+              if (q.isEmpty) return true;
+              final Map<String, dynamic> data = _patchedUserData(doc);
+              return _buildSearchHaystack(data, doc.id).contains(q);
+            })
+            .toList(growable: true);
 
     docs.sort((a, b) {
       final Map<String, dynamic> dataA = _patchedUserData(a);
@@ -4316,18 +4347,20 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     const VpsEmbeddingsApiClient vpsClient = VpsEmbeddingsApiClient();
 
     for (final QueryDocumentSnapshot<Map<String, dynamic>> doc in docs) {
-      final String name = _resolveDisplayName(doc.data(), doc.id);
+      final Map<String, dynamic> data = doc.data();
+      final String profileUid = _resolveProfileUid(data, doc.id);
+      final String name = _resolveDisplayName(data, doc.id);
       try {
         // Best-effort: also remove face embedding from VPS (source of truth).
         try {
-          await vpsClient.deleteEmbeddingForUid(doc.id);
+          await vpsClient.deleteEmbeddingForUid(profileUid);
         } catch (_) {
           // Ignore; user deletion should still proceed.
         }
         await _functions.httpsCallable('adminDeleteUser').call(
-          <String, dynamic>{'uid': doc.id},
+          <String, dynamic>{'uid': profileUid},
         );
-        deleted.add(doc.id);
+        deleted.add(profileUid);
         success++;
         _tickBulkProgress(succeeded: true, currentLabel: name);
       } catch (_) {
@@ -4430,11 +4463,12 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     try {
       final QuerySnapshot<Map<String, dynamic>> snap =
           await _buildUsersPageQuery().get();
-      final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = snap.docs;
+      final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
+          _dedupeUserDocs(snap.docs);
       setState(() {
         _loadedUserDocs = docs;
-        _lastUserDoc = docs.isEmpty ? null : docs.last;
-        _hasMoreUsers = docs.length == _usersFetchPageSize;
+        _lastUserDoc = snap.docs.isEmpty ? null : snap.docs.last;
+        _hasMoreUsers = snap.docs.length == _usersFetchPageSize;
       });
     } catch (error) {
       if (!mounted) return;
@@ -4454,14 +4488,15 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     try {
       final QuerySnapshot<Map<String, dynamic>> snap =
           await _buildUsersPageQuery().get();
-      final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = snap.docs;
+      final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs =
+          _dedupeUserDocs(snap.docs);
       setState(() {
         _loadedUserDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>[
           ..._loadedUserDocs,
           ...docs,
         ];
-        _lastUserDoc = docs.isEmpty ? _lastUserDoc : docs.last;
-        _hasMoreUsers = docs.length == _usersFetchPageSize;
+        _lastUserDoc = snap.docs.isEmpty ? _lastUserDoc : snap.docs.last;
+        _hasMoreUsers = snap.docs.length == _usersFetchPageSize;
       });
     } catch (error) {
       if (!mounted) return;
@@ -4660,22 +4695,6 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     return parts.join(' ').toLowerCase();
   }
 
-  Future<void> _approveInstructor(String uid) async {
-    try {
-      await _functions.httpsCallable('adminApproveInstructor').call(
-        <String, dynamic>{'uid': uid},
-      );
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Instructor approved.')));
-    } catch (error) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Failed to approve: $error')));
-    }
-  }
 
   Future<void> _clearFaceEnrollment(String uid) async {
     final bool? confirmed = await showDialog<bool>(
@@ -4796,27 +4815,82 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     }
   }
 
+  // ignore: unused_element
+  Future<void> _cleanupGhostUserDocuments() async {
+    if (_bulkActionRunning || _loadingUsers) return;
+
+    final bool confirmed = await _confirmBulkAction(
+      title: 'Clean ghost user documents?',
+      message:
+          'This removes empty parent documents in the users collection that only exist because of subcollections. It will not delete real user accounts.',
+      confirmLabel: 'Clean',
+    );
+    if (!confirmed) return;
+
+    setState(() => _bulkActionRunning = true);
+    try {
+      final HttpsCallableResult<Object?> result = await _functions
+          .httpsCallable('adminCleanupGhostUserDocuments')
+          .call();
+      final Map<String, dynamic> data = result.data is Map
+          ? Map<String, dynamic>.from(result.data as Map)
+          : <String, dynamic>{};
+      final int processed = (data['processed'] as num?)?.toInt() ?? 0;
+      final int deleted = (data['deleted'] as num?)?.toInt() ?? 0;
+      final int errors = (data['errors'] as List?)?.length ?? 0;
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Ghost cleanup complete. Processed: $processed, deleted: $deleted, errors: $errors.',
+          ),
+        ),
+      );
+
+      _refreshUsers();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to clean ghost user documents: $error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _bulkActionRunning = false);
+      }
+    }
+  }
+
   Future<void> _editUserProfile(
     DocumentSnapshot<Map<String, dynamic>> doc,
   ) async {
     final Map<String, dynamic>? data = doc.data();
     if (data == null) return;
     final String role = (data['role'] as String?)?.toLowerCase() ?? '';
+    final String profileUid =
+        ((data['uid'] as String?) ?? '').trim().isNotEmpty
+            ? ((data['uid'] as String?) ?? '').trim()
+            : doc.id;
 
-    String originalPhoneNumber = '';
+    String authPhoneNumber = '';
     try {
       final result = await _functions
           .httpsCallable('adminGetUserAuthPhoneNumber')
-          .call(<String, dynamic>{'uid': doc.id});
+          .call(<String, dynamic>{'uid': profileUid});
       final Object? raw = (result.data is Map)
           ? (result.data as Map)['phoneNumber']
           : null;
       if (raw is String) {
-        originalPhoneNumber = raw.trim();
+        authPhoneNumber = raw.trim();
       }
     } catch (_) {
       // Best-effort: if not available, show empty.
     }
+
+    final String firestorePhoneNumber =
+        (data['phoneNumber'] as String?)?.trim() ?? '';
+    final String originalPhoneNumber =
+        authPhoneNumber.isNotEmpty ? authPhoneNumber : firestorePhoneNumber;
 
     if (!mounted) return;
 
@@ -4923,14 +4997,17 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                             final String desiredPhone = normalizePhone(
                               phoneController.text,
                             );
-                            final String originalPhone = normalizePhone(
-                              originalPhoneNumber,
+                            final String originalAuthPhone = normalizePhone(
+                              authPhoneNumber,
                             );
 
                             final Map<String, Object?> update =
                                 <String, Object?>{
                                   'displayName': nameController.text.trim(),
                                   'Full Name': nameController.text.trim(),
+                                  'phoneNumber': desiredPhone.isEmpty
+                                      ? null
+                                      : desiredPhone,
                                 };
                             if (role == 'instructor') {
                               update['Department'] = departmentController.text
@@ -4951,7 +5028,8 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                   (data['studentId'] as String?) ??
                                   (data['Student ID'] as String?);
                               await UserRoleService.adminSwapStudentId(
-                                uid: doc.id,
+                                uid: profileUid,
+                                userDocId: doc.id,
                                 newStudentId: newStudentId,
                                 oldStudentId: oldStudentId,
                                 otherUpdates: <String, Object?>{
@@ -4960,13 +5038,13 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                 },
                               );
 
-                              if (desiredPhone != originalPhone) {
+                              if (desiredPhone != originalAuthPhone) {
                                 await _functions
                                     .httpsCallable(
                                       'adminSetUserAuthPhoneNumber',
                                     )
                                     .call(<String, dynamic>{
-                                      'uid': doc.id,
+                                      'uid': profileUid,
                                       'phoneNumber': desiredPhone,
                                     });
                               }
@@ -4976,11 +5054,11 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                               return;
                             }
 
-                            if (desiredPhone != originalPhone) {
+                            if (desiredPhone != originalAuthPhone) {
                               await _functions
                                   .httpsCallable('adminSetUserAuthPhoneNumber')
                                   .call(<String, dynamic>{
-                                    'uid': doc.id,
+                                    'uid': profileUid,
                                     'phoneNumber': desiredPhone,
                                   });
                             }
@@ -5086,92 +5164,81 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
     return fallbackId;
   }
 
+  String _resolveProfileUid(Map<String, dynamic>? data, String fallbackId) {
+    final String? uid = data == null ? null : (data['uid'] as String?);
+    if (uid != null && uid.trim().isNotEmpty) {
+      return uid.trim();
+    }
+    return fallbackId;
+  }
+
+  bool _isStudentImportAccount(Map<String, dynamic> data) {
+    final String origin = (data['accountOrigin'] as String?)?.trim().toLowerCase() ?? '';
+    return origin == 'student-import' || data['importedByCsv'] == true;
+  }
+
+  List<Widget> _buildVerificationChips(
+    BuildContext context,
+    Map<String, dynamic> data,
+  ) {
+    if (!_isStudentImportAccount(data)) {
+      return const <Widget>[];
+    }
+
+    final ThemeData theme = Theme.of(context);
+    final String emailStatus = (data['emailVerificationStatus'] as String?)?.trim().toLowerCase() ?? 'not-verified';
+    final String phoneStatus = (data['phoneNumberVerificationStatus'] as String?)?.trim().toLowerCase() ?? 'not-verified';
+
+    final List<Widget> chips = <Widget>[];
+
+    // Email verification chip
+    final bool emailVerified = emailStatus == 'verified';
+    final Color emailChipColor = emailVerified ? theme.colorScheme.primary : theme.colorScheme.error;
+    chips.add(
+      Chip(
+        visualDensity: VisualDensity.compact,
+        avatar: Icon(
+          emailVerified ? Icons.mail_rounded : Icons.email_outlined,
+          size: 16,
+          color: emailChipColor,
+        ),
+        label: Text(
+          emailVerified ? 'Email verified' : 'Email not verified',
+          style: TextStyle(color: emailChipColor),
+        ),
+        side: BorderSide(color: emailChipColor.withValues(alpha: 0.35)),
+        backgroundColor: emailChipColor.withValues(alpha: 0.08),
+      ),
+    );
+
+    // Phone verification chip
+    final bool phoneVerified = phoneStatus == 'verified';
+    final Color phoneChipColor = phoneVerified ? theme.colorScheme.primary : theme.colorScheme.error;
+    chips.add(
+      Chip(
+        visualDensity: VisualDensity.compact,
+        avatar: Icon(
+          phoneVerified ? Icons.phone : Icons.phone_outlined,
+          size: 16,
+          color: phoneChipColor,
+        ),
+        label: Text(
+          phoneVerified ? 'Phone verified' : 'Phone not verified',
+          style: TextStyle(color: phoneChipColor),
+        ),
+        side: BorderSide(color: phoneChipColor.withValues(alpha: 0.35)),
+        backgroundColor: phoneChipColor.withValues(alpha: 0.08),
+      ),
+    );
+
+    return chips;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                const Text(
-                  'Instructor approvals',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 8),
-                StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: _firestore
-                      .collection('users')
-                      .where('role', isEqualTo: 'instructor')
-                      .snapshots(),
-                  builder:
-                      (
-                        BuildContext context,
-                        AsyncSnapshot<QuerySnapshot<Map<String, dynamic>>>
-                        snapshot,
-                      ) {
-                        if (snapshot.connectionState ==
-                            ConnectionState.waiting) {
-                          return const Padding(
-                            padding: EdgeInsets.symmetric(vertical: 8),
-                            child: LinearProgressIndicator(),
-                          );
-                        }
-                        if (snapshot.hasError) {
-                          return Text(
-                            'Failed to load approvals: ${snapshot.error}',
-                          );
-                        }
-                        final List<QueryDocumentSnapshot<Map<String, dynamic>>>
-                        docs =
-                            (snapshot.data?.docs ??
-                                    <
-                                      QueryDocumentSnapshot<
-                                        Map<String, dynamic>
-                                      >
-                                    >[])
-                                .where((
-                                  QueryDocumentSnapshot<Map<String, dynamic>>
-                                  doc,
-                                ) {
-                                  final Map<String, dynamic> data = doc.data();
-                                  return data['approved'] != true;
-                                })
-                                .toList(growable: false);
-                        if (docs.isEmpty) {
-                          return const Text('No pending instructor accounts.');
-                        }
-                        return Column(
-                          children: docs.map((
-                            QueryDocumentSnapshot<Map<String, dynamic>> doc,
-                          ) {
-                            final Map<String, dynamic> data = doc.data();
-                            final String name = _resolveDisplayName(
-                              data,
-                              doc.id,
-                            );
-                            final String email =
-                                (data['Email'] as String?) ?? '';
-                            return ListTile(
-                              contentPadding: EdgeInsets.zero,
-                              title: Text(name),
-                              subtitle: email.isEmpty ? null : Text(email),
-                              trailing: FilledButton(
-                                onPressed: () => _approveInstructor(doc.id),
-                                child: const Text('Approve'),
-                              ),
-                            );
-                          }).toList(),
-                        );
-                      },
-                ),
-              ],
-            ),
-          ),
-        ),
         const SizedBox(height: 12),
         Card(
           child: Padding(
@@ -5287,10 +5354,13 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                             switch (action) {
                               case _BulkUserAction.editProfile:
                                 await _runBulkEditProfiles();
+                                break;
                               case _BulkUserAction.clearFaceEnrollment:
                                 await _runBulkClearFaceEnrollment();
+                                break;
                               case _BulkUserAction.deleteUser:
                                 await _runBulkDeleteUsers();
+                                break;
                             }
                           },
                           itemBuilder: (BuildContext context) {
@@ -5618,6 +5688,8 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                 final bool selected = _selectedUserIds.contains(
                                   doc.id,
                                 );
+                                final List<Widget> verificationChips =
+                                    _buildVerificationChips(context, data);
 
                                 final ThemeData theme = Theme.of(context);
                                 final Widget menuIcon = hasEnrollment
@@ -5668,15 +5740,38 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                         )
                                       : null,
                                   title: Text(name),
-                                  subtitle: Text(
-                                    role.isEmpty
-                                        ? 'No role'
-                                        : (role.toLowerCase() == 'instructor'
-                                              ? (approved
-                                                    ? 'Instructor (approved)'
-                                                    : 'Instructor (pending)')
-                                              : role),
-                                  ),
+                                  subtitle: verificationChips.isEmpty
+                                      ? Text(
+                                          role.isEmpty
+                                              ? 'No role'
+                                              : (role.toLowerCase() == 'instructor'
+                                                    ? (approved
+                                                          ? 'Instructor (approved)'
+                                                          : 'Instructor (pending)')
+                                                    : role),
+                                        )
+                                      : Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: <Widget>[
+                                            Text(
+                                              role.isEmpty
+                                                  ? 'No role'
+                                                  : (role.toLowerCase() ==
+                                                          'instructor'
+                                                      ? (approved
+                                                            ? 'Instructor (approved)'
+                                                            : 'Instructor (pending)')
+                                                      : role),
+                                            ),
+                                            const SizedBox(height: 6),
+                                            Wrap(
+                                              spacing: 6,
+                                              runSpacing: 6,
+                                              children: verificationChips,
+                                            ),
+                                          ],
+                                        ),
                                   trailing: _multiSelectEnabled
                                       ? (selected
                                             ? const Icon(Icons.check_circle)
@@ -5690,14 +5785,17 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                               case 'edit':
                                                 _editUserProfile(doc);
                                                 break;
-                                              case 'approve':
-                                                _approveInstructor(doc.id);
-                                                break;
                                               case 'clearEnrollment':
                                                 _clearFaceEnrollment(doc.id);
                                                 break;
                                               case 'delete':
-                                                _deleteUser(doc.id, name);
+                                                _deleteUser(
+                                                  _resolveProfileUid(
+                                                    doc.data(),
+                                                    doc.id,
+                                                  ),
+                                                  name,
+                                                );
                                                 break;
                                             }
                                           },
@@ -5707,15 +5805,6 @@ class _UserManagementPanelState extends State<_UserManagementPanel> {
                                                 value: 'edit',
                                                 child: Text('Edit profile'),
                                               ),
-                                              if (role.toLowerCase() ==
-                                                      'instructor' &&
-                                                  !approved)
-                                                const PopupMenuItem<String>(
-                                                  value: 'approve',
-                                                  child: Text(
-                                                    'Approve instructor',
-                                                  ),
-                                                ),
                                               if (hasEnrollment ||
                                                   hasLegacyEnrollment)
                                                 const PopupMenuItem<String>(
@@ -7322,7 +7411,7 @@ class _AttendanceSessionDetailsDialog extends StatelessWidget {
     final Query<Map<String, dynamic>> q = sessionRef
         .collection('captures')
         .orderBy('capturedAt', descending: true)
-        .limit(200);
+        .limit(1000);
 
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: q.snapshots(),
@@ -7352,36 +7441,82 @@ class _AttendanceSessionDetailsDialog extends StatelessWidget {
               return '${dt.year}-${two(dt.month)}-${two(dt.day)} ${two(dt.hour)}:${two(dt.minute)}:${two(dt.second)}';
             }
 
-            return ListView.separated(
-              padding: const EdgeInsets.all(8),
-              itemCount: docs.length,
-              separatorBuilder: (_, __) => const Divider(height: 1),
-              itemBuilder: (BuildContext context, int index) {
-                final Map<String, dynamic> data = docs[index].data();
-                final String name =
-                    (data['matchDisplayName'] as String?) ??
-                    (data['matchUserId'] as String?) ??
-                    'Unknown';
-                final String status =
-                    (data['attendanceStatus'] as String?) ?? '';
-                final double? confidence = (data['confidence'] is num)
-                    ? (data['confidence'] as num).toDouble()
-                    : null;
-                final Timestamp? capturedAt = data['capturedAt'] as Timestamp?;
+            int? asInt(Object? value) {
+              if (value is num) return value.round();
+              if (value is String) return int.tryParse(value.trim());
+              return null;
+            }
 
-                final List<String> bits = <String>[
-                  if (status.isNotEmpty) 'Status: $status',
-                  if (confidence != null)
-                    'Conf: ${(confidence * 100).toStringAsFixed(0)}%',
-                  if (capturedAt != null) fmtTs(capturedAt),
-                ];
+            final List<int> inferenceDurations = docs
+                .map((QueryDocumentSnapshot<Map<String, dynamic>> doc) {
+                  return asInt(doc.data()['inferenceDurationMs']);
+                })
+                .whereType<int>()
+                .toList(growable: false);
+            final int inferenceCount = inferenceDurations.length;
+            final double? averageInferenceMs = inferenceCount == 0
+                ? null
+                : inferenceDurations.fold<int>(0, (int sum, int v) => sum + v) /
+                    inferenceCount;
 
-                return ListTile(
-                  title: Text(name),
-                  subtitle: bits.isEmpty ? null : Text(bits.join(' • ')),
-                  dense: true,
-                );
-              },
+            return Column(
+              children: <Widget>[
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                  child: Row(
+                    children: <Widget>[
+                      _kvChip(
+                        'Avg inference',
+                        averageInferenceMs == null
+                            ? 'n/a'
+                            : '${averageInferenceMs.toStringAsFixed(0)} ms',
+                      ),
+                      const SizedBox(width: 8),
+                      _kvChip('Timed scans', '$inferenceCount / ${docs.length}'),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: ListView.separated(
+                    padding: const EdgeInsets.all(8),
+                    itemCount: docs.length,
+                    separatorBuilder: (_, __) => const Divider(height: 1),
+                    itemBuilder: (BuildContext context, int index) {
+                      final Map<String, dynamic> data = docs[index].data();
+                      final String name =
+                          (data['matchDisplayName'] as String?) ??
+                          (data['matchUserId'] as String?) ??
+                          'Unknown';
+                      final String status =
+                          (data['attendanceStatus'] as String?) ?? '';
+                      final double? confidence = (data['confidence'] is num)
+                          ? (data['confidence'] as num).toDouble()
+                          : null;
+                      final int? inferenceDurationMs = asInt(
+                        data['inferenceDurationMs'],
+                      );
+                      final Timestamp? capturedAt =
+                          data['capturedAt'] as Timestamp?;
+
+                      final List<String> bits = <String>[
+                        if (status.isNotEmpty) 'Status: $status',
+                        if (confidence != null)
+                          'Conf: ${(confidence * 100).toStringAsFixed(0)}%',
+                        if (inferenceDurationMs != null)
+                          'Inference: $inferenceDurationMs ms',
+                        if (capturedAt != null) fmtTs(capturedAt),
+                      ];
+
+                      return ListTile(
+                        title: Text(name),
+                        subtitle: bits.isEmpty ? null : Text(bits.join(' • ')),
+                        dense: true,
+                      );
+                    },
+                  ),
+                ),
+              ],
             );
           },
     );

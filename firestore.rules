@@ -65,7 +65,8 @@ service cloud.firestore {
     }
 
     function isStudent() {
-      return roleMatches(currentRole(), studentRoleValues());
+      return roleMatches(currentRole(), studentRoleValues()) ||
+             (isSignedIn() && request.auth.token.student == true);
     }
 
     function currentUserSection() {
@@ -214,6 +215,10 @@ service cloud.firestore {
         return isSignedIn() && request.auth.uid == userId;
       }
 
+      function isImportedOwner() {
+        return isSignedIn() && resource.data.uid is string && resource.data.uid == request.auth.uid;
+      }
+
       function touchesFaceEmbeddingFields() {
         return request.writeFields.hasAny([
           'faceEmbed',
@@ -259,7 +264,7 @@ service cloud.firestore {
         (!('approved' in request.resource.data) || request.resource.data.approved == false)
       ) || isAdmin()) && !touchesFaceEmbeddingFields();
 
-      allow read: if isOwner() || isAdmin() || isRoleAdmin() || isInstructor();
+      allow read: if isOwner() || isImportedOwner() || isAdmin() || isRoleAdmin() || isInstructor();
 
       allow update: if (isAdmin() || validOwnerUpdate()) && !touchesFaceEmbeddingFields();
 
